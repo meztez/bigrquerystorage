@@ -1,0 +1,13 @@
+Package: bigrquerystorage
+Type: Package
+Title: R Client for BigQuery Storage API
+Version: 0.1.0
+Authors@R: c(
+  person("Bruno", "Tremblay", role = "ctb", email = "openr@neoxone.com"),
+  person(family = "Google LLC", role = c("cph", "fnd")))
+Maintainer: Bruno Tremblay <openr@neoxone.com>
+Description: Provides facilities to interact with BigQuery Storage API. Based
+    on the official Python client.
+License: file LICENSE
+Encoding: UTF-8
+LazyData: true
