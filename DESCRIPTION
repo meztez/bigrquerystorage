@@ -11,3 +11,5 @@ Description: Provides facilities to interact with BigQuery Storage API. Based
 License: file LICENSE
 Encoding: UTF-8
 LazyData: true
+URL: https://github.com/meztez/bigrquerystorage
+BugReports: https://github.com/meztez/bigrquerystorage/issues
