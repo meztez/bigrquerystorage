@@ -2,3 +2,10 @@
 .Rhistory
 .RData
 .Ruserdata
+venv/
+*.py
+*.sh
+*.json
+*.o
+*.so
+*.dll

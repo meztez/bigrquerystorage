@@ -1,15 +1,26 @@
 Package: bigrquerystorage
 Type: Package
 Title: R Client for BigQuery Storage API
-Version: 0.1.0
+Version: 0.0.9999
 Authors@R: c(
-  person("Bruno", "Tremblay", role = "ctb", email = "openr@neoxone.com"),
+  person("Bruno", "Tremblay", role = c("aut", "cre"), email = "openr@neoxone.com"),
+  person("Neal", "Fultz", role = "aut", email = "nfultz@gmail.com"),
   person(family = "Google LLC", role = c("cph", "fnd")))
 Maintainer: Bruno Tremblay <openr@neoxone.com>
-Description: Provides facilities to interact with BigQuery Storage API. Based
-    on the official Python client.
+Description: Provides facilities to interact with BigQuery Storage API.
 License: file LICENSE
+Imports:
+    RProtoBuf,
+    R6,
+    Rcpp
 Encoding: UTF-8
 LazyData: true
 URL: https://github.com/meztez/bigrquerystorage
 BugReports: https://github.com/meztez/bigrquerystorage/issues
+LinkingTo: Rcpp
+Suggests: 
+    testthat
+SystemRequirements: 
+    grpc
+    protobuf
+RoxygenNote: 7.1.1
