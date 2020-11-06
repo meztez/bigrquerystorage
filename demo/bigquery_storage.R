@@ -1,5 +1,6 @@
 ### Adapted from https://cloud.google.com/bigquery/docs/reference/storage/libraries#client-libraries-install-python
 library(bigrquerystorage)
+library(arrow)
 
 # TODO(developer): Set the project_id variable.
 project_id <- "labo-brunotremblay-253317"
@@ -40,12 +41,32 @@ session <- client$CreateReadSession$build(parent = parent, read_session = reques
 
 res <- client$CreateReadSession$call(session, c("read_session.table" = session$read_session$table))
 
+
+
 reader <- client$ReadRows$build(read_stream = res$streams[[1]]$name)
+arrow_reader <- RecordBatchStreamReader$create(res$arrow_schema$serialized_schema)
+batches <- list()
+no_message <- FALSE
+while (!no_message) {
+  tryCatch({
+    stream <- client$ReadRows$call(reader, c("read_stream" = reader$read_stream))
+    batch <- record_batch(stream$arrow_record_batch$serialized_record_batch, schema = arrow_reader$schema)
+    batches <- append(batches, batch)
+    cat("Batch ", length(batches), "Offset ", stream$row_count + reader$offset, "\n")
+    reader$offset <- stream$row_count + reader$offset
+    # Too slow, break early while I figure out a better implementation
+    if (length(batches) > 5) {
+      break
+    }
+  }, error = function(e) {
+    if (!grepl("No response from the gRPC server", e, fixed = TRUE)) {
+      stop(e)
+    } else {
+      no_message = TRUE
+    }
+  })
+}
 
-stream <- client$ReadRows$call(reader, c("read_stream" = reader$read_stream))
 
-library(arrow)
-reader <- RecordBatchStreamReader$create(res$arrow_schema$serialized_schema)
-batch <- record_batch(stream$arrow_record_batch$serialized_record_batch, schema = reader$schema)
-c(batch,batch)
-as.data.frame(batch)
+dt <- as.data.frame(do.call(Table$create,batches))
+nrow(dt)
