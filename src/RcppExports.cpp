@@ -5,31 +5,6 @@
 
 using namespace Rcpp;
 
-// rpc_init
-void rpc_init(bool verbose);
-RcppExport SEXP _bigrquerystorage_rpc_init(SEXP verboseSEXP) {
-BEGIN_RCPP
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< bool >::type verbose(verboseSEXP);
-    rpc_init(verbose);
-    return R_NilValue;
-END_RCPP
-}
-// rpc
-RawVector rpc(CharacterVector server, CharacterVector endpoint, RawVector requestArg, CharacterVector metadata, int timeout);
-RcppExport SEXP _bigrquerystorage_rpc(SEXP serverSEXP, SEXP endpointSEXP, SEXP requestArgSEXP, SEXP metadataSEXP, SEXP timeoutSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< CharacterVector >::type server(serverSEXP);
-    Rcpp::traits::input_parameter< CharacterVector >::type endpoint(endpointSEXP);
-    Rcpp::traits::input_parameter< RawVector >::type requestArg(requestArgSEXP);
-    Rcpp::traits::input_parameter< CharacterVector >::type metadata(metadataSEXP);
-    Rcpp::traits::input_parameter< int >::type timeout(timeoutSEXP);
-    rcpp_result_gen = Rcpp::wrap(rpc(server, endpoint, requestArg, metadata, timeout));
-    return rcpp_result_gen;
-END_RCPP
-}
 // grpc_version
 CharacterVector grpc_version();
 RcppExport SEXP _bigrquerystorage_grpc_version() {

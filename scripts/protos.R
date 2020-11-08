@@ -1,21 +1,13 @@
 #* Get latest version required proto from googleapis
-#*
-#*
-unlink(c("./inst/proto", "./scripts/repos"), recursive = TRUE, force = TRUE)
+# git clone --depth 1 https://github.com/googleapis/googleapis ./scripts/googleapis")
 
-dir.create("./inst/proto", showWarnings = FALSE)
-dir.create("./scripts/repos", showWarnings = FALSE)
-
-system("git clone --depth 1 git@github.com:googleapis/googleapis.git ./scripts/repos/googleapis")
-system("git clone --depth 1 git@github.com:protocolbuffers/protobuf.git ./scripts/repos/protobuf")
-
-fpath <- grep("bigquery/storage", dir("./scripts/repos/googleapis", "storage.proto$", full.names = TRUE, recursive = TRUE), value = TRUE)
+fpath <- grep("bigquery/storage/v1/", dir("./scripts/googleapis", "storage.proto$", full.names = TRUE, recursive = TRUE), value = TRUE)
 
 import_path <- function(fpath) {
   imports <- lapply(fpath, function(path) { grep("^import", readLines(path), value = TRUE) })
   imports <- gsub("import \"|\";", "", sort(unique(unlist(imports))))
   if (length(imports) > 0) {
-    imports <- c(paste0("./scripts/repos/googleapis/", imports), paste0("./scripts/repos/protobuf/src/", imports))
+    imports <- paste0("./scripts/googleapis/", imports)
     imports <- imports[file.exists(imports)]
     return(sort(unique(c(imports, import_path(imports)))))
   }
@@ -23,9 +15,7 @@ import_path <- function(fpath) {
 }
 
 fpath <- c(fpath, import_path(fpath))
-tpath <- gsub("scripts/repos/googleapis|scripts/repos/protobuf/src", "inst/proto", fpath)
-sapply(unique(dirname(tpath)), dir.create, recursive = TRUE, showWarnings = FALSE)
-copied <- file.copy(fpath, tpath, overwrite = TRUE)
-fpath[!copied]
-
-unlink("./scripts/repos", recursive = TRUE, force = TRUE)
+short_path <- gsub(".*scripts/googleapis/", "", fpath)
+system(sprintf("protoc -I=/usr/local/include/ -I=./scripts/googleapis/ --include_imports --include_source_info -o src/googleapis/storage.descriptor %s", short_path[1]))
+system(sprintf("protoc -I=/usr/local/include/ -I=./scripts/googleapis/ --cpp_out=./src/googleapis %s", paste(short_path, collapse = " ")))
+system(sprintf("protoc -I=/usr/local/include/ -I=./scripts/googleapis/ --plugin=protoc-gen-grpc=`which grpc_cpp_plugin` --grpc_out=./src/googleapis %s", short_path[1]))
