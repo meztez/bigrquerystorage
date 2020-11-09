@@ -1,0 +1,17 @@
+# Default make file
+PKG_CPPFLAGS  += -I. `pkg-config --cflags protobuf grpc`
+PKG_LIBS += -I. `pkg-config --libs protobuf grpc`
+
+# Include all C++ files in src/ and its subdirectories
+SUBDIR_SOURCES = @SUBDIR_SOURCES@
+SOURCES=@SUBDIR_SOURCES@ ./RcppExports.cpp ./bqs.cpp
+
+# Obtain the object files
+OBJECTS=$(SUBDIR_SOURCES:.cc=.o) RcppExports.o bqs.o
+
+# Make the shared object
+all: $(SHLIB)
+
+# Provide recipe to remove all objects
+clean: @echo Non
+#@rm -f $(OBJECTS)

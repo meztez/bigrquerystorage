@@ -16,6 +16,8 @@ import_path <- function(fpath) {
 
 fpath <- c(fpath, import_path(fpath))
 short_path <- gsub(".*scripts/googleapis/", "", fpath)
-system(sprintf("protoc -I=/usr/local/include/ -I=./scripts/googleapis/ --include_imports --include_source_info -o src/googleapis/storage.descriptor %s", short_path[1]))
-system(sprintf("protoc -I=/usr/local/include/ -I=./scripts/googleapis/ --cpp_out=./src/googleapis %s", paste(short_path, collapse = " ")))
-system(sprintf("protoc -I=/usr/local/include/ -I=./scripts/googleapis/ --plugin=protoc-gen-grpc=`which grpc_cpp_plugin` --grpc_out=./src/googleapis %s", short_path[1]))
+config_path <- grep("/v1/", dir(pattern = "bigquerystorage_grpc_service_config.json", full.names = TRUE, recursive = TRUE), value = TRUE)
+system(sprintf("protoc -I=/usr/local/include/ -I=./scripts/googleapis/ --cpp_out=./src %s", paste(short_path, collapse = " ")))
+system(sprintf("protoc -I=/usr/local/include/ -I=./scripts/googleapis/ --plugin=protoc-gen-grpc=`which grpc_cpp_plugin` --grpc_out=./src %s", short_path[1]))
+file.copy(config_path, file.path("src", basename(config_path)), overwrite = TRUE)
+

@@ -5,4 +5,5 @@
 ^.*.py$
 ^.*.sh$
 ^.*.json$
-
+^autom4te.cache.*$
+^config.*

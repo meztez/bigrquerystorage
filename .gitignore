@@ -10,3 +10,5 @@ scripts/googleapis/
 *.o
 *.so
 *.dll
+autom4te.cache/
+config.*
