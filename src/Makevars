@@ -1,10 +1,11 @@
 # Default make file
-PKG_CPPFLAGS  += -I. `pkg-config --cflags protobuf grpc`
-PKG_LIBS += -I. `pkg-config --libs protobuf grpc`
+PKG_CPPFLAGS += -I.
+PKG_CXXFLAGS += `pkg-config --cflags protobuf grpc`
+PKG_LIBS += `pkg-config --libs protobuf grpc`
 
 # Include all C++ files in src/ and its subdirectories
-SUBDIR_SOURCES = ./onload.cc ./google/api/annotations.pb.cc ./google/api/resource.pb.cc ./google/api/client.pb.cc ./google/api/http.pb.cc ./google/api/field_behavior.pb.cc ./google/cloud/bigquery/storage/v1/storage.pb.cc ./google/cloud/bigquery/storage/v1/stream.pb.cc ./google/cloud/bigquery/storage/v1/arrow.pb.cc ./google/cloud/bigquery/storage/v1/storage.grpc.pb.cc ./google/cloud/bigquery/storage/v1/avro.pb.cc ./bqs.cc 
-SOURCES=./onload.cc ./google/api/annotations.pb.cc ./google/api/resource.pb.cc ./google/api/client.pb.cc ./google/api/http.pb.cc ./google/api/field_behavior.pb.cc ./google/cloud/bigquery/storage/v1/storage.pb.cc ./google/cloud/bigquery/storage/v1/stream.pb.cc ./google/cloud/bigquery/storage/v1/arrow.pb.cc ./google/cloud/bigquery/storage/v1/storage.grpc.pb.cc ./google/cloud/bigquery/storage/v1/avro.pb.cc ./bqs.cc  ./RcppExports.cpp ./bqs.cpp
+SUBDIR_SOURCES = ./google/api/annotations.pb.cc ./google/api/resource.pb.cc ./google/api/client.pb.cc ./google/api/http.pb.cc ./google/api/field_behavior.pb.cc ./google/cloud/bigquery/storage/v1/storage.pb.cc ./google/cloud/bigquery/storage/v1/stream.pb.cc ./google/cloud/bigquery/storage/v1/arrow.pb.cc ./google/cloud/bigquery/storage/v1/storage.grpc.pb.cc ./google/cloud/bigquery/storage/v1/avro.pb.cc
+SOURCES=./google/api/annotations.pb.cc ./google/api/resource.pb.cc ./google/api/client.pb.cc ./google/api/http.pb.cc ./google/api/field_behavior.pb.cc ./google/cloud/bigquery/storage/v1/storage.pb.cc ./google/cloud/bigquery/storage/v1/stream.pb.cc ./google/cloud/bigquery/storage/v1/arrow.pb.cc ./google/cloud/bigquery/storage/v1/storage.grpc.pb.cc ./google/cloud/bigquery/storage/v1/avro.pb.cc  ./RcppExports.cpp ./bqs.cpp
 
 # Obtain the object files
 OBJECTS=$(SUBDIR_SOURCES:.cc=.o) RcppExports.o bqs.o
@@ -12,6 +13,8 @@ OBJECTS=$(SUBDIR_SOURCES:.cc=.o) RcppExports.o bqs.o
 # Make the shared object
 all: $(SHLIB)
 
+$(SHLIB):
+
 # Provide recipe to remove all objects
-clean: @echo Non
+clean: echo Non
 #@rm -f $(OBJECTS)
