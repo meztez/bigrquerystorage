@@ -1,20 +1,11 @@
 # Default make file
-PKG_CPPFLAGS += -I.
-PKG_CXXFLAGS += `pkg-config --cflags protobuf grpc`
-PKG_LIBS += `pkg-config --libs protobuf grpc`
-
-# Include all C++ files in src/ and its subdirectories
-SUBDIR_SOURCES = ./google/api/annotations.pb.cc ./google/api/resource.pb.cc ./google/api/client.pb.cc ./google/api/http.pb.cc ./google/api/field_behavior.pb.cc ./google/cloud/bigquery/storage/v1/storage.pb.cc ./google/cloud/bigquery/storage/v1/stream.pb.cc ./google/cloud/bigquery/storage/v1/arrow.pb.cc ./google/cloud/bigquery/storage/v1/storage.grpc.pb.cc ./google/cloud/bigquery/storage/v1/avro.pb.cc
-SOURCES=./google/api/annotations.pb.cc ./google/api/resource.pb.cc ./google/api/client.pb.cc ./google/api/http.pb.cc ./google/api/field_behavior.pb.cc ./google/cloud/bigquery/storage/v1/storage.pb.cc ./google/cloud/bigquery/storage/v1/stream.pb.cc ./google/cloud/bigquery/storage/v1/arrow.pb.cc ./google/cloud/bigquery/storage/v1/storage.grpc.pb.cc ./google/cloud/bigquery/storage/v1/avro.pb.cc  ./RcppExports.cpp ./bqs.cpp
+PKG_CPPFLAGS += `pkg-config --cflags protobuf grpc`
+PKG_CXXFLAGS += -std=c++11 -I.
+PKG_LIBS += -L/usr/local/lib -L/usr/lib -L/usr/share/lib `pkg-config --libs protobuf grpc++`\
+            -pthread\
+            -Wl,--no-as-needed -lgrpc++_reflection -Wl,--as-needed\
+            -ldl\
+            -I.
 
 # Obtain the object files
-OBJECTS=$(SUBDIR_SOURCES:.cc=.o) RcppExports.o bqs.o
-
-# Make the shared object
-all: $(SHLIB)
-
-$(SHLIB):
-
-# Provide recipe to remove all objects
-clean: echo Non
-#@rm -f $(OBJECTS)
+OBJECTS=google/api/resource.pb.o google/api/field_behavior.pb.o google/api/client.pb.o google/api/http.pb.o google/api/annotations.pb.o google/cloud/bigquery/storage/v1/arrow.pb.o google/cloud/bigquery/storage/v1/avro.pb.o google/cloud/bigquery/storage/v1/stream.pb.o google/cloud/bigquery/storage/v1/storage.pb.o google/api/resource.grpc.pb.o google/api/field_behavior.grpc.pb.o google/api/client.grpc.pb.o google/api/http.grpc.pb.o google/api/annotations.grpc.pb.o google/cloud/bigquery/storage/v1/arrow.grpc.pb.o google/cloud/bigquery/storage/v1/avro.grpc.pb.o google/cloud/bigquery/storage/v1/stream.grpc.pb.o google/cloud/bigquery/storage/v1/storage.grpc.pb.o cpp11.o bqs.o

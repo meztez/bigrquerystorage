@@ -3,6 +3,7 @@
 .RData
 .Ruserdata
 venv/
+src2/
 scripts/googleapis/
 *.py
 *.sh
