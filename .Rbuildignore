@@ -1,8 +1,8 @@
 ^.*\.Rproj$
 ^\.Rproj\.user$
-^venv.*$
 ^scripts.*$
-^.*.py$
-^.*.sh$
-^.*.json$
-
+^.*\.py$
+^.*\.sh$
+^.*\.o$
+^\.httr-oauth$
+^README\.Rmd$

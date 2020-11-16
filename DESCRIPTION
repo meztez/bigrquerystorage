@@ -4,23 +4,23 @@ Title: R Client for BigQuery Storage API
 Version: 0.0.9999
 Authors@R: c(
   person("Bruno", "Tremblay", role = c("aut", "cre"), email = "openr@neoxone.com"),
-  person("Neal", "Fultz", role = "aut", email = "nfultz@gmail.com"),
   person(family = "Google LLC", role = c("cph", "fnd")))
 Maintainer: Bruno Tremblay <openr@neoxone.com>
 Description: Provides facilities to interact with BigQuery Storage API.
 License: file LICENSE
 Imports:
-    RProtoBuf,
-    R6,
-    Rcpp
+    cpp11,
+    arrow
 Encoding: UTF-8
 LazyData: true
 URL: https://github.com/meztez/bigrquerystorage
 BugReports: https://github.com/meztez/bigrquerystorage/issues
-LinkingTo: Rcpp
+LinkingTo: cpp11
 Suggests: 
-    testthat
-SystemRequirements: 
+    testthat,
+    bigrquery
+SystemRequirements:
+    C++11
     grpc
     protobuf
 RoxygenNote: 7.1.1
