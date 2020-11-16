@@ -46,8 +46,8 @@ bqs_table_download <- function(
     bq_table[1],
     bq_table[2],
     bq_table[3],
-    clientInfo = bqs_ua(),
-    config = config)
+    client_info = bqs_ua(),
+    service_configuration = config)
   arrow_reader <- RecordBatchStreamReader$create(raw$schema)
 
   arrow_dt <- do.call(
