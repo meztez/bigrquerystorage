@@ -4,6 +4,6 @@ grpc_version <- function() {
   .Call("_bigrquerystorage_grpc_version", PACKAGE = "bigrquerystorage")
 }
 
-bqs_dl_arrow_batches <- function(parent, project, dataset, table, client_info, service_configuration) {
-  .Call("_bigrquerystorage_bqs_dl_arrow_batches", parent, project, dataset, table, client_info, service_configuration, PACKAGE = "bigrquerystorage")
+bqs_ipc_stream <- function(parent, project, dataset, table, client_info, service_configuration) {
+  .Call("_bigrquerystorage_bqs_ipc_stream", parent, project, dataset, table, client_info, service_configuration, PACKAGE = "bigrquerystorage")
 }

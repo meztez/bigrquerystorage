@@ -7,7 +7,7 @@
 bqs_table_download(
   x,
   billing,
-  as_df = FALSE,
+  as_data_frame = TRUE,
   config = system.file("bqs_config/bigquerystorage_grpc_service_config.json", package =
     "bigrquerystorage", mustWork = TRUE)
 )
@@ -17,7 +17,7 @@ bqs_table_download(
 
 \item{billing}{Billing project. Used as parent for `CreateReadSession` grpc method.}
 
-\item{as_df}{Transform to a data.frame after arrow processing.}
+\item{as_data_frame}{Transform to a data.frame after arrow processing.}
 
 \item{config}{Path to BigQuery Storage grpc service configuration file.}
 }

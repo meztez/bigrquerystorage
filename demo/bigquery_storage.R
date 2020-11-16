@@ -19,10 +19,10 @@ system.time({
 
 #Test bigrquerystorage
 system.time({
-  dtb <- bigrquerystorage::bqs_table_download("bigquery-public-data.usa_names.usa_1910_current", "labo-brunotremblay-253317", TRUE)
+  dtb <- bigrquerystorage::bqs_table_download("bigquery-public-data.usa_names.usa_1910_current", "labo-brunotremblay-253317")
 })
 # user  system elapsed
-# 12.357   0.486  20.739
+# 5.436   0.576  13.168
 
 #Compare table
 all.equal(dta, dtb)

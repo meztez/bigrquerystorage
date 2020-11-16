@@ -12,8 +12,8 @@
 #include <fstream>
 #include <string>
 #include <cpp11.hpp>
+#include <Rinternals.h>
 
-using namespace cpp11;
 using grpc::Channel;
 using grpc::ClientContext;
 using grpc::ClientReader;
@@ -62,12 +62,10 @@ std::string readfile(std::string filename)
   return content;
 }
 
-cpp11::raws to_raw(const std::string input) {
-  cpp11::writable::raws rv(input.size());
+void to_raw(const std::string input, cpp11::writable::raws* output) {
   for(unsigned long i=0; i<input.size(); i++) {
-    rv[i] = input.c_str()[i];
+    output->push_back(input.c_str()[i]);
   }
-  return rv;
 }
 
 class BigQueryReadClient {
@@ -96,7 +94,7 @@ public:
     Status status = stub_->CreateReadSession(&context, method_request, &method_response);
     if (!status.ok()) {
       std::string err;
-      err += "grpc CreateReadSession failed with code ";
+      err += "grpc method CreateReadSession failed with code ";
       err += status.error_code();
       err += ": ";
       err += status.error_message();
@@ -105,7 +103,7 @@ public:
     return method_response;
 
   }
-  cpp11::list ReadRows(const std::string &stream) {
+  void ReadRows(const std::string stream, cpp11::writable::raws* ipc_stream) {
 
     ClientContext context;
     context.AddMetadata("x-goog-request-params", "read_stream=" + stream);
@@ -115,20 +113,24 @@ public:
     method_request.set_read_stream(stream);
     method_request.set_offset(0);
 
-    cpp11::writable::list received_batches;
     ReadRowsResponse method_response;
 
     std::unique_ptr<ClientReader<ReadRowsResponse> > reader(
         stub_->ReadRows(&context, method_request));
     while (reader->Read(&method_response)) {
-      received_batches.push_back(to_raw(method_response.arrow_record_batch().serialized_record_batch()));
+      to_raw(method_response.arrow_record_batch().serialized_record_batch(), ipc_stream);
       method_request.set_offset(method_request.offset() + method_response.row_count());
+      R_CheckUserInterrupt();
     }
     Status status = reader->Finish();
     if (!status.ok()) {
-      stop("grpc ReadRows failed.");
+      std::string err;
+      err += "grpc method ReadRows failed with code ";
+      err += status.error_code();
+      err += ": ";
+      err += status.error_message();
+      cpp11::stop(err.c_str());
     }
-    return received_batches;
   }
 private:
   std::unique_ptr<BigQueryRead::Stub> stub_;
@@ -137,7 +139,7 @@ private:
 
 //' @noRd
 [[cpp11::register]]
-cpp11::list bqs_dl_arrow_batches(std::string parent, std::string project, std::string dataset, std::string table, std::string client_info, std::string service_configuration) {
+cpp11::raws bqs_ipc_stream(std::string parent, std::string project, std::string dataset, std::string table, std::string client_info, std::string service_configuration) {
   grpc::ChannelArguments channel_arguments;
   channel_arguments.SetServiceConfigJSON(readfile(service_configuration));
   BigQueryReadClient client(
@@ -147,12 +149,20 @@ cpp11::list bqs_dl_arrow_batches(std::string parent, std::string project, std::s
 
   client.SetClientInfo(client_info);
 
+  cpp11::writable::raws ipc_stream;
+
   ReadSession read_session = client.CreateReadSession(parent, project, dataset, table);
 
-  cpp11::list client_response = client.ReadRows(read_session.streams(0).name());
-  cpp11::raws schema = to_raw(read_session.arrow_schema().serialized_schema());
+  // Add schema to IPC stream
+  to_raw(read_session.arrow_schema().serialized_schema(), &ipc_stream);
 
-  cpp11::writable::list li({"schema"_nm = schema, "arrow_batches"_nm = client_response});
 
-  return li;
+  // Add batches to IPC stream
+  client.ReadRows(read_session.streams(0).name(), &ipc_stream);
+
+  // Remove extra allocation
+  ipc_stream.resize(ipc_stream.size());
+
+  // Return stream
+  return ipc_stream;
 }

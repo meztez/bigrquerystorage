@@ -12,21 +12,21 @@ extern "C" SEXP _bigrquerystorage_grpc_version() {
   END_CPP11
 }
 // bqs.cpp
-cpp11::list bqs_dl_arrow_batches(std::string parent, std::string project, std::string dataset, std::string table, std::string client_info, std::string service_configuration);
-extern "C" SEXP _bigrquerystorage_bqs_dl_arrow_batches(SEXP parent, SEXP project, SEXP dataset, SEXP table, SEXP client_info, SEXP service_configuration) {
+cpp11::raws bqs_ipc_stream(std::string parent, std::string project, std::string dataset, std::string table, std::string client_info, std::string service_configuration);
+extern "C" SEXP _bigrquerystorage_bqs_ipc_stream(SEXP parent, SEXP project, SEXP dataset, SEXP table, SEXP client_info, SEXP service_configuration) {
   BEGIN_CPP11
-    return cpp11::as_sexp(bqs_dl_arrow_batches(cpp11::as_cpp<cpp11::decay_t<std::string>>(parent), cpp11::as_cpp<cpp11::decay_t<std::string>>(project), cpp11::as_cpp<cpp11::decay_t<std::string>>(dataset), cpp11::as_cpp<cpp11::decay_t<std::string>>(table), cpp11::as_cpp<cpp11::decay_t<std::string>>(client_info), cpp11::as_cpp<cpp11::decay_t<std::string>>(service_configuration)));
+    return cpp11::as_sexp(bqs_ipc_stream(cpp11::as_cpp<cpp11::decay_t<std::string>>(parent), cpp11::as_cpp<cpp11::decay_t<std::string>>(project), cpp11::as_cpp<cpp11::decay_t<std::string>>(dataset), cpp11::as_cpp<cpp11::decay_t<std::string>>(table), cpp11::as_cpp<cpp11::decay_t<std::string>>(client_info), cpp11::as_cpp<cpp11::decay_t<std::string>>(service_configuration)));
   END_CPP11
 }
 
 extern "C" {
 /* .Call calls */
-extern SEXP _bigrquerystorage_bqs_dl_arrow_batches(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP _bigrquerystorage_bqs_ipc_stream(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP _bigrquerystorage_grpc_version();
 
 static const R_CallMethodDef CallEntries[] = {
-    {"_bigrquerystorage_bqs_dl_arrow_batches", (DL_FUNC) &_bigrquerystorage_bqs_dl_arrow_batches, 6},
-    {"_bigrquerystorage_grpc_version",         (DL_FUNC) &_bigrquerystorage_grpc_version,         0},
+    {"_bigrquerystorage_bqs_ipc_stream", (DL_FUNC) &_bigrquerystorage_bqs_ipc_stream, 6},
+    {"_bigrquerystorage_grpc_version",   (DL_FUNC) &_bigrquerystorage_grpc_version,   0},
     {NULL, NULL, 0}
 };
 }
