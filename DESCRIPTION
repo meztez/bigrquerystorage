@@ -9,14 +9,16 @@ Maintainer: Bruno Tremblay <openr@neoxone.com>
 Description: Provides facilities to interact with BigQuery Storage API.
 License: file LICENSE
 Imports:
-    cpp11
+    cpp11,
+    arrow
 Encoding: UTF-8
 LazyData: true
 URL: https://github.com/meztez/bigrquerystorage
 BugReports: https://github.com/meztez/bigrquerystorage/issues
 LinkingTo: cpp11
 Suggests: 
-    testthat
+    testthat,
+    bigrquery
 SystemRequirements:
     C++11
     grpc

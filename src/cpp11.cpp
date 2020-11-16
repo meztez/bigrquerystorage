@@ -12,10 +12,10 @@ extern "C" SEXP _bigrquerystorage_grpc_version() {
   END_CPP11
 }
 // bqs.cpp
-cpp11::list bqs_dl_arrow_batches(std::string parent, std::string pj_id, std::string ds_id, std::string tb_id, std::string client, std::string config);
-extern "C" SEXP _bigrquerystorage_bqs_dl_arrow_batches(SEXP parent, SEXP pj_id, SEXP ds_id, SEXP tb_id, SEXP client, SEXP config) {
+cpp11::list bqs_dl_arrow_batches(std::string parent, std::string pj_id, std::string ds_id, std::string tb_id, std::string clientInfo, std::string config);
+extern "C" SEXP _bigrquerystorage_bqs_dl_arrow_batches(SEXP parent, SEXP pj_id, SEXP ds_id, SEXP tb_id, SEXP clientInfo, SEXP config) {
   BEGIN_CPP11
-    return cpp11::as_sexp(bqs_dl_arrow_batches(cpp11::as_cpp<cpp11::decay_t<std::string>>(parent), cpp11::as_cpp<cpp11::decay_t<std::string>>(pj_id), cpp11::as_cpp<cpp11::decay_t<std::string>>(ds_id), cpp11::as_cpp<cpp11::decay_t<std::string>>(tb_id), cpp11::as_cpp<cpp11::decay_t<std::string>>(client), cpp11::as_cpp<cpp11::decay_t<std::string>>(config)));
+    return cpp11::as_sexp(bqs_dl_arrow_batches(cpp11::as_cpp<cpp11::decay_t<std::string>>(parent), cpp11::as_cpp<cpp11::decay_t<std::string>>(pj_id), cpp11::as_cpp<cpp11::decay_t<std::string>>(ds_id), cpp11::as_cpp<cpp11::decay_t<std::string>>(tb_id), cpp11::as_cpp<cpp11::decay_t<std::string>>(clientInfo), cpp11::as_cpp<cpp11::decay_t<std::string>>(config)));
   END_CPP11
 }
 

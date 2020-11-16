@@ -1,7 +1,7 @@
 # Default make file
-PKG_CPPFLAGS += `pkg-config --cflags protobuf grpc`
-PKG_CXXFLAGS += -std=c++11 -I.
-PKG_LIBS += -L/usr/local/lib -L/usr/lib -L/usr/share/lib `pkg-config --libs protobuf grpc++`\
+PKG_CPPFLAGS = `pkg-config --cflags protobuf grpc`
+PKG_CXXFLAGS = -I.
+PKG_LIBS = -L/usr/local/lib -L/usr/lib -L/usr/share/lib `pkg-config --libs protobuf grpc++`\
             -pthread\
             -Wl,--no-as-needed -lgrpc++_reflection -Wl,--as-needed\
             -ldl\

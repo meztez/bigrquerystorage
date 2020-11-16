@@ -2,14 +2,10 @@
 .Rhistory
 .RData
 .Ruserdata
-venv/
-src2/
 scripts/googleapis/
 *.py
 *.sh
-*.json
 *.o
 *.so
 *.dll
-autom4te.cache/
-config.*
+.httr-oauth

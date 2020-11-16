@@ -62,13 +62,21 @@ std::string readfile(std::string filename)
   return content;
 }
 
+cpp11::raws to_raw(const std::string input) {
+  cpp11::writable::raws rv(input.size());
+  for(unsigned long i=0; i<input.size(); i++) {
+    rv[i] = input.c_str()[i];
+  }
+  return rv;
+}
+
 class BigQueryReadClient {
 public:
   BigQueryReadClient(std::shared_ptr<Channel> channel)
     : stub_(BigQueryRead::NewStub(channel)) {
   }
-  void SetClient(const std::string &client) {
-    client_ = client;
+  void SetClientInfo(const std::string &clientInfo) {
+    clientInfo_ = clientInfo;
   }
   ReadSession CreateReadSession(const std::string parent, const std::string &pj_id, const std::string &ds_id, const std::string &tb_id) {
     CreateReadSessionRequest rsrq;
@@ -81,7 +89,7 @@ public:
     rsrq.set_parent("projects/" + parent);
     ClientContext context;
     context.AddMetadata("x-goog-request-params", "read_session.table=" + table);
-    context.AddMetadata("x-goog-api-client", client_);
+    context.AddMetadata("x-goog-api-client", clientInfo_);
     ReadSession rsrp;
 
     // The actual RPC.
@@ -98,13 +106,13 @@ public:
     }
 
   }
-  std::vector<std::string> ReadRows(ReadSession &rs) {
+  cpp11::list ReadRows(ReadSession &rs) {
 
-    std::vector<std::string> srbv;
+    cpp11::writable::list srbv;
 
     ClientContext context;
     context.AddMetadata("x-goog-request-params", "read_stream=" + rs.streams(0).name());
-    context.AddMetadata("x-goog-api-client", client_);
+    context.AddMetadata("x-goog-api-client", clientInfo_);
 
     ReadRowsRequest rrreq;
     rrreq.set_read_stream(rs.streams(0).name());
@@ -114,10 +122,8 @@ public:
 
     std::unique_ptr<ClientReader<ReadRowsResponse> > reader(
         stub_->ReadRows(&context, rrreq));
-    std::string data;
     while (reader->Read(&rrres)) {
-      rrres.arrow_record_batch().SerializeToString(&data);
-      srbv.push_back(data);
+      srbv.push_back(to_raw(rrres.arrow_record_batch().serialized_record_batch()));
       rrreq.set_offset(rrreq.offset() + rrres.row_count());
     }
     Status status = reader->Finish();
@@ -129,29 +135,26 @@ public:
   }
 private:
   std::unique_ptr<BigQueryRead::Stub> stub_;
-  std::string client_;
+  std::string clientInfo_;
 };
 
 //' @noRd
 [[cpp11::register]]
-cpp11::list bqs_dl_arrow_batches(std::string parent, std::string pj_id, std::string ds_id, std::string tb_id, std::string client, std::string config) {
+cpp11::list bqs_dl_arrow_batches(std::string parent, std::string pj_id, std::string ds_id, std::string tb_id, std::string clientInfo, std::string config) {
   grpc::ChannelArguments channel_args;
   channel_args.SetServiceConfigJSON(readfile(config));
-  BigQueryReadClient bqr_client(
+  BigQueryReadClient client(
       grpc::CreateCustomChannel("bigquerystorage.googleapis.com:443",
                                 grpc::GoogleDefaultCredentials(),
                                 channel_args));
-  bqr_client.SetClient(client);
+  client.SetClientInfo(clientInfo);
 
-  ReadSession bqr_rs = bqr_client.CreateReadSession(parent, pj_id, ds_id, tb_id);
-  std::vector<std::string> bqr_res = bqr_client.ReadRows(bqr_rs);
+  ReadSession rs = client.CreateReadSession(parent, pj_id, ds_id, tb_id);
 
-  std::string schema;
-  bqr_rs.arrow_schema().SerializeToString(&schema);
+  cpp11::list res = client.ReadRows(rs);
+  cpp11::raws schema = to_raw(rs.arrow_schema().serialized_schema());
 
-  // transform to raws
-
-  cpp11::writable::list li({"schema"_nm = schema, "arrow_batches"_nm = bqr_res});
+  cpp11::writable::list li({"schema"_nm = schema, "arrow_batches"_nm = res});
 
   return li;
 }

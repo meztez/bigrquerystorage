@@ -1,5 +1,4 @@
 #' @useDynLib bigrquerystorage
-#' @importFrom Rcpp evalCpp
 NULL
 
 .onUnload <- function (libpath) {
