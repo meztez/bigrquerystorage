@@ -9,7 +9,6 @@ Maintainer: Bruno Tremblay <openr@neoxone.com>
 Description: Provides facilities to interact with BigQuery Storage API.
 License: file LICENSE
 Imports:
-    cpp11,
     arrow
 Encoding: UTF-8
 LazyData: true
