@@ -1,7 +1,7 @@
 #' Download table from BigQuery using BigQuery Storage API
 #' @param x BigQuery table reference `{project}.{dataset}.{table_name}`
 #' @param billing Billing project. Used as parent for `CreateReadSession` grpc method.
-#' @param as_df Transform to a data.frame after arrow processing.
+#' @param as_data_frame Transform to a data.frame after arrow processing.
 #' @param config Path to BigQuery Storage grpc service configuration file.
 #' @details
 #'
@@ -32,31 +32,27 @@
 bqs_table_download <- function(
   x,
   billing,
-  as_df = FALSE,
+  as_data_frame = TRUE,
   config = system.file("bqs_config/bigquerystorage_grpc_service_config.json",
                        package = "bigrquerystorage",
                        mustWork = TRUE)) {
+
   bq_table <- strsplit(x, ".", fixed = TRUE)[[1]]
+
   stopifnot(length(bq_table)==3)
+
   if (missing(billing)) {
     billing = bq_table[1]
   }
-  raw <- bqs_dl_arrow_batches(
-    billing,
-    bq_table[1],
-    bq_table[2],
-    bq_table[3],
-    client_info = bqs_ua(),
-    service_configuration = config)
-  arrow_reader <- RecordBatchStreamReader$create(raw$schema)
 
-  arrow_dt <- do.call(
-    Table$create,
-    lapply(
-      raw$arrow_batches[lengths(raw$arrow_batches) != 0],
-      record_batch,
-      schema = arrow_reader$schema))
-  if (as_df) {
-    as.data.frame(arrow_dt)
+  ipc_stream <- bqs_ipc_stream(billing, bq_table[1], bq_table[2], bq_table[3],
+                               client_info = bqs_ua(), service_configuration = config)
+
+  out <- RecordBatchStreamReader$create(ipc_stream)$read_table()
+
+  if (as_data_frame) {
+    out <- as.data.frame(out)
   }
+
+  out
 }
