@@ -51,7 +51,10 @@ devtools::install_github("meztez/bigrquerystorage")
 Or use this very experimental script for Debian/Ubuntu
 
 ``` sh
+mkdir bqs
+cd bqs
 wget https://raw.githubusercontent.com/meztez/bigrquerystorage/master/scripts/install_debian_ubuntu.sh
+chmod 755 ./install_debian_ubuntu.sh
 sudo ./install_debian_ubuntu.sh
 ```
 
