@@ -48,6 +48,13 @@ You can install the development version of bigrquerystorage from
 devtools::install_github("meztez/bigrquerystorage")
 ```
 
+Or use this very experimental script for Debian/Ubuntu
+
+``` sh
+wget https://raw.githubusercontent.com/meztez/bigrquerystorage/master/scripts/install_debian_ubuntu.sh
+sudo ./install_debian_ubuntu.sh
+```
+
 ## Example
 
 This is a basic example which shows you how to solve a common problem.
@@ -65,8 +72,8 @@ bqs_table_download("bigquery-public-data.usa_names.usa_1910_current", "labo-brun
 
 ### Compared to Python Client for BigQuery Storage API
 
-Currently about 25% Slower.  
-i.e. Python Client takes 60 seconds, this would take 75 seconds.
+Currently about 25% Slower if you consider conversion to data frame.
+About the same without the conversion.
 
 ### Compared to `bigrquery::bq_table_download`
 

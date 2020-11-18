@@ -86,9 +86,6 @@ bqs_table_download <- function(
 #' @import bigrquery
 #' @export
 overload_bq_table_download <- function(parent) {
-  if (!"package:bigrquery" %in% search()) {
-    stop("bigrquery library not loaded")
-  }
   assignInNamespace("bq_table_download",  function(
     x, max_results = Inf, page_size = 10000, start_index = 0L, max_connections = 6L,
     quiet = NA, bigint = c("integer", "integer64", "numeric", "character")) {
@@ -103,7 +100,9 @@ overload_bq_table_download <- function(parent) {
       )
       bigrquery:::convert_bigint(table_data, bigint)
   }, ns = "bigrquery")
-  env_unlock(environment(bq_table_download))
-  namespaceExport(environment(bq_table_download), "bq_table_download")
-  lockEnvironment(environment(bq_table_download), bindings = TRUE)
+  if ("package:bigrquery" %in% search()) {
+    env_unlock(environment(bq_table_download))
+    namespaceExport(environment(bq_table_download), "bq_table_download")
+    lockEnvironment(environment(bq_table_download), bindings = TRUE)
+  }
 }

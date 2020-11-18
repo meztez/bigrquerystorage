@@ -21,4 +21,7 @@ for (path in inst_path) {
     dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
   }
 }
-file.copy(fpath, short_path, overwrite = TRUE)
+file.copy(fpath, inst_path, overwrite = TRUE)
+
+system(sprintf("protoc -I=/usr/local/include/ -I=./inst/protos/ --cpp_out=./src %s", paste(inst_path, collapse = " ")))
+system(sprintf("protoc -I=/usr/local/include/ -I=./inst/protos/ --plugin=protoc-gen-grpc=`which grpc_cpp_plugin` --grpc_out=./src %s", inst_path[8]))
