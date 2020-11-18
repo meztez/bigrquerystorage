@@ -1,7 +1,7 @@
 Package: bigrquerystorage
 Type: Package
 Title: R Client for BigQuery Storage API
-Version: 0.0.9999
+Version: 0.1.0
 Authors@R: c(
   person("Bruno", "Tremblay", role = c("aut", "cre"), email = "openr@neoxone.com"),
   person(family = "Google LLC", role = c("cph", "fnd")))
@@ -9,15 +9,16 @@ Maintainer: Bruno Tremblay <openr@neoxone.com>
 Description: Provides facilities to interact with BigQuery Storage API.
 License: file LICENSE
 Imports:
-    arrow
+    arrow,
+    rlang,
+    bigrquery
 Encoding: UTF-8
 LazyData: true
 URL: https://github.com/meztez/bigrquerystorage
 BugReports: https://github.com/meztez/bigrquerystorage/issues
 LinkingTo: cpp11
 Suggests: 
-    testthat,
-    bigrquery
+    testthat
 SystemRequirements:
     C++11
     grpc

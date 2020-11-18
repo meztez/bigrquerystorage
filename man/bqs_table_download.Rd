@@ -6,20 +6,29 @@
 \usage{
 bqs_table_download(
   x,
-  billing,
+  parent,
   as_data_frame = TRUE,
-  config = system.file("bqs_config/bigquerystorage_grpc_service_config.json", package =
-    "bigrquerystorage", mustWork = TRUE)
+  access_token = "",
+  snapshot_time = 0L,
+  selected_fields = character(),
+  row_restriction = ""
 )
 }
 \arguments{
 \item{x}{BigQuery table reference `{project}.{dataset}.{table_name}`}
 
-\item{billing}{Billing project. Used as parent for `CreateReadSession` grpc method.}
+\item{parent}{Used as parent for `CreateReadSession`
+grpc method.}
 
 \item{as_data_frame}{Transform to a data.frame after arrow processing.}
 
-\item{config}{Path to BigQuery Storage grpc service configuration file.}
+\item{access_token}{Access token}
+
+\item{snapshot_time}{Snapshot time}
+
+\item{selected_fields}{A character vector of field to select from table.}
+
+\item{row_restriction}{Restriction to apply to the table.}
 }
 \description{
 Download table from BigQuery using BigQuery Storage API

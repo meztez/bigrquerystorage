@@ -2,14 +2,14 @@
 #' @noMd
 bqs_ua <- function() {
   paste0(
-      "bigrquerystorage",
-      utils::packageVersion("bigrquerystorage"),
-      "r/",
-      R.version$major,
-      ".",
-      R.version$minor,
-      R.version$platform,
-      " grpc/",
-      paste0(grpc_version(), collapse = "_")
- )
+    "bigrquerystorage",
+    utils::packageVersion("bigrquerystorage"),
+    "r/",
+    R.version$major,
+    ".",
+    R.version$minor,
+    R.version$platform,
+    " grpc/",
+    paste0(grpc_version(), collapse = "_")
+  )
 }

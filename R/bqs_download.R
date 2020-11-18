@@ -1,8 +1,12 @@
 #' Download table from BigQuery using BigQuery Storage API
 #' @param x BigQuery table reference `{project}.{dataset}.{table_name}`
-#' @param billing Billing project. Used as parent for `CreateReadSession` grpc method.
+#' @param parent Used as parent for `CreateReadSession`
+#' grpc method.
 #' @param as_data_frame Transform to a data.frame after arrow processing.
-#' @param config Path to BigQuery Storage grpc service configuration file.
+#' @param access_token Access token
+#' @param snapshot_time Snapshot time
+#' @param selected_fields A character vector of field to select from table.
+#' @param row_restriction Restriction to apply to the table.
 #' @details
 #'
 #' About Crendentials
@@ -28,25 +32,44 @@
 #' Functions provide.
 #' 3. If ADC can't use either of the above credentials, an error occurs.
 #' @export
-#' @importFrom arrow record_batch Table RecordBatchStreamReader
+#' @importFrom arrow RecordBatchStreamReader
 bqs_table_download <- function(
   x,
-  billing,
+  parent,
   as_data_frame = TRUE,
-  config = system.file("bqs_config/bigquerystorage_grpc_service_config.json",
-                       package = "bigrquerystorage",
-                       mustWork = TRUE)) {
+  access_token = "",
+  snapshot_time = 0L,
+  selected_fields = character(),
+  row_restriction = "") {
 
+  # Parameters validation
+  stopifnot(is.character(x))
   bq_table <- strsplit(x, ".", fixed = TRUE)[[1]]
+  stopifnot(length(bq_table) == 3)
+  timestamp_seconds <- as.integer(snapshot_time)
+  timestamp_nanos <- as.integer(as.numeric(snapshot_time-timestamp_seconds)*1000000000)
 
-  stopifnot(length(bq_table)==3)
-
-  if (missing(billing)) {
-    billing = bq_table[1]
+  if (missing(parent)) {
+    parent <- bq_table[1]
   }
 
-  ipc_stream <- bqs_ipc_stream(billing, bq_table[1], bq_table[2], bq_table[3],
-                               client_info = bqs_ua(), service_configuration = config)
+  ipc_stream <- bqs_ipc_stream(
+    project= bq_table[1],
+    dataset = bq_table[2],
+    table = bq_table[3],
+    parent = parent,
+    client_info = bqs_ua(),
+    service_configuration = system.file(
+      "bqs_config/bigquerystorage_grpc_service_config.json",
+      package = "bigrquerystorage",
+      mustWork = TRUE
+    ),
+    access_token = access_token,
+    timestamp_seconds = timestamp_seconds,
+    timestamp_nanos = timestamp_nanos,
+    selected_fields = selected_fields,
+    row_restriction = row_restriction
+  )
 
   out <- RecordBatchStreamReader$create(ipc_stream)$read_table()
 
@@ -55,4 +78,32 @@ bqs_table_download <- function(
   }
 
   out
+}
+
+#' Substitute bigrquery bq_table_download method. This is very experimental.
+#' @param parent Parent project used by the API for billing.
+#' @importFrom rlang env_unlock
+#' @import bigrquery
+#' @export
+overload_bq_table_download <- function(parent) {
+  if (!"package:bigrquery" %in% search()) {
+    stop("bigrquery library not loaded")
+  }
+  assignInNamespace("bq_table_download",  function(
+    x, max_results = Inf, page_size = 10000, start_index = 0L, max_connections = 6L,
+    quiet = NA, bigint = c("integer", "integer64", "numeric", "character")) {
+      x <- bigrquery::as_bq_table(x)
+      assertthat::assert_that(is.numeric(max_results), length(max_results) == 1)
+      assertthat::assert_that(is.numeric(start_index), length(start_index) == 1)
+      bigint <- match.arg(bigint)
+      table_data <- bigrquerystorage::bqs_table_download(
+        x = paste(x, collapse = "."),
+        parent = parent,
+        access_token = bigrquery:::.auth$cred$credentials$access_token,
+      )
+      bigrquery:::convert_bigint(table_data, bigint)
+  }, ns = "bigrquery")
+  env_unlock(environment(bq_table_download))
+  namespaceExport(environment(bq_table_download), "bq_table_download")
+  lockEnvironment(environment(bq_table_download), bindings = TRUE)
 }
