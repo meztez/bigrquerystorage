@@ -56,12 +56,8 @@ void bqs_init_logger() {
 
 // Set gRPC verbosity level
 [[cpp11::register]]
-void bqs_set_log_verbosity(bool verbose = false) {
-  if (verbose) {
-    gpr_set_log_verbosity(GPR_LOG_SEVERITY_DEBUG);
-  } else {
-    gpr_set_log_verbosity(GPR_LOG_SEVERITY_ERROR);
-  }
+void bqs_set_log_verbosity(int severity) {
+  gpr_set_log_verbosity(static_cast<gpr_log_severity>(severity));
 }
 
 //' Check gRPC version
@@ -115,17 +111,13 @@ public:
     if (timestamp_seconds > 0 || timestamp_nanos > 0) {
       read_session->mutable_table_modifiers()->mutable_snapshot_time()->set_seconds(timestamp_seconds);
       read_session->mutable_table_modifiers()->mutable_snapshot_time()->set_nanos(timestamp_nanos);
-    };
+    }
     if (!row_restriction.empty()) {
       read_session->mutable_read_options()->set_row_restriction(row_restriction);
-    };
-    if (selected_fields.size() > 0) {
-      for (const std::string& field : selected_fields) {
-        read_session->mutable_read_options()->add_selected_fields(field);
-      };
-    };
-    // Single stream for now;
-    method_request.set_max_stream_count(1);
+    }
+    for (int i = 0; i < selected_fields.size(); i++) {
+      read_session->mutable_read_options()->add_selected_fields(selected_fields[i]);
+    }
     method_request.set_parent("projects/" + parent);
     ClientContext context;
     context.AddMetadata("x-goog-request-params", "read_session.table=" + table_fullname);
@@ -142,7 +134,10 @@ public:
     }
     return method_response;
   }
-  void ReadRows(const std::string stream, cpp11::writable::raws* ipc_stream) {
+  void ReadRows(const std::string stream,
+                cpp11::writable::raws* ipc_stream,
+                std::int64_t& rows_count,
+                std::int64_t& pages_count) {
 
     ClientContext context;
     context.AddMetadata("x-goog-request-params", "read_stream=" + stream);
@@ -159,8 +154,10 @@ public:
     while (reader->Read(&method_response)) {
       to_raw(method_response.arrow_record_batch().serialized_record_batch(), ipc_stream);
       method_request.set_offset(method_request.offset() + method_response.row_count());
+      pages_count += 1;
       R_CheckUserInterrupt();
     }
+    rows_count += method_request.offset();
     Status status = reader->Finish();
     if (!status.ok()) {
       std::string err;
@@ -176,7 +173,7 @@ private:
 
 //' @noRd
 [[cpp11::register]]
-cpp11::raws bqs_ipc_stream(std::string project,
+cpp11::list bqs_ipc_stream(std::string project,
                            std::string dataset,
                            std::string table,
                            std::string parent,
@@ -195,8 +192,7 @@ cpp11::raws bqs_ipc_stream(std::string project,
     channel_credentials = grpc::CompositeChannelCredentials(
       grpc::SslCredentials(grpc::SslCredentialsOptions()),
       grpc::AccessTokenCredentials(access_token));
-  };
-
+  }
   grpc::ChannelArguments channel_arguments;
   channel_arguments.SetServiceConfigJSON(readfile(service_configuration));
 
@@ -207,7 +203,10 @@ cpp11::raws bqs_ipc_stream(std::string project,
 
   client.SetClientInfo(client_info);
 
+  cpp11::writable::raws schema;
   cpp11::writable::raws ipc_stream;
+  std::int64_t rows_count = 0;
+  std::int64_t pages_count = 0;
 
   // Retrieve ReadSession
   ReadSession read_session = client.CreateReadSession(project,
@@ -219,14 +218,21 @@ cpp11::raws bqs_ipc_stream(std::string project,
                                                       selected_fields,
                                                       row_restriction);
   // Add schema to IPC stream
-  to_raw(read_session.arrow_schema().serialized_schema(), &ipc_stream);
+  to_raw(read_session.arrow_schema().serialized_schema(), &schema);
 
   // Add batches to IPC stream
-  client.ReadRows(read_session.streams(0).name(), &ipc_stream);
+  for (int i = 0; i < read_session.streams_size(); i++) {
+    client.ReadRows(read_session.streams(i).name(), &ipc_stream, rows_count, pages_count);
+  }
+
+  gpr_log(GPR_ERROR, "Streamed %ld rows in %ld messages.", rows_count, pages_count);
 
   // Remove extra allocation
+  schema.resize(schema.size());
   ipc_stream.resize(ipc_stream.size());
 
+  cpp11::writable::list li({schema, ipc_stream});
+
   // Return stream
-  return ipc_stream;
+  return li;
 }

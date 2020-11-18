@@ -4,8 +4,8 @@ bqs_init_logger <- function() {
   invisible(.Call("_bigrquerystorage_bqs_init_logger", PACKAGE = "bigrquerystorage"))
 }
 
-bqs_set_log_verbosity <- function(verbose) {
-  invisible(.Call("_bigrquerystorage_bqs_set_log_verbosity", verbose, PACKAGE = "bigrquerystorage"))
+bqs_set_log_verbosity <- function(severity) {
+  invisible(.Call("_bigrquerystorage_bqs_set_log_verbosity", severity, PACKAGE = "bigrquerystorage"))
 }
 
 grpc_version <- function() {

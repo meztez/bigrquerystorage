@@ -32,7 +32,7 @@
 #' Functions provide.
 #' 3. If ADC can't use either of the above credentials, an error occurs.
 #' @export
-#' @importFrom arrow RecordBatchStreamReader
+#' @importFrom arrow RecordBatchStreamReader Table
 bqs_table_download <- function(
   x,
   parent,
@@ -44,7 +44,7 @@ bqs_table_download <- function(
 
   # Parameters validation
   stopifnot(is.character(x))
-  bq_table <- strsplit(x, ".", fixed = TRUE)[[1]]
+  bq_table <- strsplit(x, "\\.|:")[[1]]
   stopifnot(length(bq_table) == 3)
   timestamp_seconds <- as.integer(snapshot_time)
   timestamp_nanos <- as.integer(as.numeric(snapshot_time-timestamp_seconds)*1000000000)
@@ -53,7 +53,7 @@ bqs_table_download <- function(
     parent <- bq_table[1]
   }
 
-  ipc_stream <- bqs_ipc_stream(
+  raws <- bqs_ipc_stream(
     project= bq_table[1],
     dataset = bq_table[2],
     table = bq_table[3],
@@ -71,10 +71,17 @@ bqs_table_download <- function(
     row_restriction = row_restriction
   )
 
-  out <- RecordBatchStreamReader$create(ipc_stream)$read_table()
-
-  if (as_data_frame) {
-    out <- as.data.frame(out)
+  if (length(raws[[2]]) > 0) {
+    out <- RecordBatchStreamReader$create(unlist(raws))$read_table()
+    if (as_data_frame) {
+      out <- as.data.frame(out)
+    }
+  } else {
+    reader <- RecordBatchStreamReader$create(raws[[1]])
+    out <- Table$create(data.frame(), schema = reader$schema)
+    if (as_data_frame) {
+      out <- setNames(data.frame(matrix(ncol = reader$schema$num_fields, nrow = 0)), reader$schema$names)
+    }
   }
 
   out

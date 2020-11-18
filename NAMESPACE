@@ -2,5 +2,8 @@
 
 export(bqs_table_download)
 export(overload_bq_table_download)
+import(bigrquery)
 importFrom(arrow,RecordBatchStreamReader)
+importFrom(arrow,Table)
+importFrom(rlang,env_unlock)
 useDynLib(bigrquerystorage)

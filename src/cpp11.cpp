@@ -13,10 +13,10 @@ extern "C" SEXP _bigrquerystorage_bqs_init_logger() {
   END_CPP11
 }
 // bqs.cpp
-void bqs_set_log_verbosity(bool verbose);
-extern "C" SEXP _bigrquerystorage_bqs_set_log_verbosity(SEXP verbose) {
+void bqs_set_log_verbosity(int severity);
+extern "C" SEXP _bigrquerystorage_bqs_set_log_verbosity(SEXP severity) {
   BEGIN_CPP11
-    bqs_set_log_verbosity(cpp11::as_cpp<cpp11::decay_t<bool>>(verbose));
+    bqs_set_log_verbosity(cpp11::as_cpp<cpp11::decay_t<int>>(severity));
     return R_NilValue;
   END_CPP11
 }
@@ -28,7 +28,7 @@ extern "C" SEXP _bigrquerystorage_grpc_version() {
   END_CPP11
 }
 // bqs.cpp
-cpp11::raws bqs_ipc_stream(std::string project, std::string dataset, std::string table, std::string parent, std::string client_info, std::string service_configuration, std::string access_token, std::int64_t timestamp_seconds, std::int32_t timestamp_nanos, std::vector<std::string> selected_fields, std::string row_restriction);
+cpp11::list bqs_ipc_stream(std::string project, std::string dataset, std::string table, std::string parent, std::string client_info, std::string service_configuration, std::string access_token, std::int64_t timestamp_seconds, std::int32_t timestamp_nanos, std::vector<std::string> selected_fields, std::string row_restriction);
 extern "C" SEXP _bigrquerystorage_bqs_ipc_stream(SEXP project, SEXP dataset, SEXP table, SEXP parent, SEXP client_info, SEXP service_configuration, SEXP access_token, SEXP timestamp_seconds, SEXP timestamp_nanos, SEXP selected_fields, SEXP row_restriction) {
   BEGIN_CPP11
     return cpp11::as_sexp(bqs_ipc_stream(cpp11::as_cpp<cpp11::decay_t<std::string>>(project), cpp11::as_cpp<cpp11::decay_t<std::string>>(dataset), cpp11::as_cpp<cpp11::decay_t<std::string>>(table), cpp11::as_cpp<cpp11::decay_t<std::string>>(parent), cpp11::as_cpp<cpp11::decay_t<std::string>>(client_info), cpp11::as_cpp<cpp11::decay_t<std::string>>(service_configuration), cpp11::as_cpp<cpp11::decay_t<std::string>>(access_token), cpp11::as_cpp<cpp11::decay_t<std::int64_t>>(timestamp_seconds), cpp11::as_cpp<cpp11::decay_t<std::int32_t>>(timestamp_nanos), cpp11::as_cpp<cpp11::decay_t<std::vector<std::string>>>(selected_fields), cpp11::as_cpp<cpp11::decay_t<std::string>>(row_restriction)));
