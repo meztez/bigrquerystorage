@@ -1,10 +1,5 @@
 # /bin/bash
-Rscript -e "
-pkg <- installed.packages();
-req_pkg <- c('arrow',
-             'bigrquery',
-             'cpp11');
-install.packages(req_pkg[!req_pkg %in% pkg]);"
+Rscript -e "install.packages(c('arrow','bigrquery','cpp11'))"
 
 # install protoc and grpc
 apt-get install build-essential autoconf libtool pkg-config

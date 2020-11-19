@@ -22,7 +22,7 @@ The goal of bigrquerystorage is to provide access to the BigQuery Storage API fr
 
 The main motivation is to replace `bigrquery::bq_table_download` in some workload.
 
-Currently it supports v1 version with very basic table mass download capacity.
+Currently it supports v1 version (except AVRO format).
 
 ## Benefits
 
@@ -46,16 +46,14 @@ System requirements:
 You can install the development version of bigrquerystorage from [GitHub](https://github.com/meztez/bigrquerystorage) with:
 
 ``` r
-# install.packages("devtools")
-devtools::install_github("meztez/bigrquerystorage")
-```
-
-Or use this very experimental script for Debian/Ubuntu
-```sh
+mkdir bqs
+cd bqs
 wget https://raw.githubusercontent.com/meztez/bigrquerystorage/master/scripts/install_debian_ubuntu.sh
+chmod 755 ./install_debian_ubuntu.sh
 sudo ./install_debian_ubuntu.sh
 ```
 
+This will also install dependencies and build gRPC correcly.
 
 ## Example
 
@@ -65,8 +63,34 @@ a billing project as there is no free tier to the service.
 ```{r example, eval=FALSE}
 ## Auth is done automagically using Application Default Credentials
 library(bigrquerystorage)
-## basic example code
-bqs_table_download("bigquery-public-data.usa_names.usa_1910_current", "labo-brunotremblay-253317")
+
+# TODO(developer): Set the project_id variable.
+# project_id <- 'your-project-id'
+#
+# The read session is created in this project. This project can be
+# different from that which contains the table.
+
+rows <- bqs_table_download(
+  x = "bigquery-public-data:usa_names.usa_1910_current",
+  parent = project_id,
+  # snapshot_time = Sys.time(), # a POSIX time
+  selected_fields = c("name", "number", "state"),
+  row_restriction = 'state = "WA"',
+  # access_token = {your token}, # Alternative to ADC,
+  # as_data_frame = TRUE, # FALSE : arrow, TRUE : arrow->as.data.frame
+)
+
+sprintf("Got %d unique names in states: %s",
+        length(unique(rows$name)),
+        paste(unique(rows$state), collapse = " "))
+
+# Replace bigrquery::bq_download_table
+library(bigrquery)
+rows <- bigrquery::bq_table_download("bigquery-public-data.usa_names.usa_1910_current")
+# Downloading 6,122,890 rows in 613 pages.
+overload_bq_table_download(project_id)
+rows <- bigrquery::bq_table_download("bigquery-public-data.usa_names.usa_1910_current")
+# Streamed 6122890 rows in 5980 messages.
 ```
 
 ## Performance
@@ -79,11 +103,9 @@ About the same without the conversion.
 ### Compared to `bigrquery::bq_table_download`
 
 When `bigrquery::bq_table_download` does not hit a quota or a rate limit, 2 to 4 times faster.
-The bigger the table, the faster this will be compared to the standard API.
+The bigger the table, the faster this will be compared to the standard REST API.
 
 ## Stability
 
-This is an early release.  
-More feature will be added over time.  
-Windows support has not been tested yet.  
-It crashes when it runs out of memory.
+Windows is not supported at the moment.  
+Does not support AVRO output format.
