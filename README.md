@@ -69,13 +69,13 @@ library(bigrquerystorage)
 # different from that which contains the table.
 
 rows <- bqs_table_download(
-  x = "bigquery-public-data:usa_names.usa_1910_current",
-  parent = project_id,
-  # snapshot_time = Sys.time(), # a POSIX time
-  selected_fields = c("name", "number", "state"),
-  row_restriction = 'state = "WA"',
-  # access_token = {your token}, # Alternative to ADC,
-  # as_data_frame = TRUE, # FALSE : arrow, TRUE : arrow->as.data.frame
+  x = "bigquery-public-data:usa_names.usa_1910_current"
+  , parent = project_id
+  # , snapshot_time = Sys.time() # a POSIX time
+  , selected_fields = c("name", "number", "state"),
+  , row_restriction = 'state = "WA"'
+  # , access_token = {your token} # Alternative to ADC
+  # , as_data_frame = TRUE # FALSE : arrow, TRUE : arrow->as.data.frame
 )
 
 sprintf("Got %d unique names in states: %s",
