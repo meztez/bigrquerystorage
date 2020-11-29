@@ -1,6 +1,6 @@
 test_that("Test different method to see if they return correctly", {
 
-	skip_if_not(getOption("bigquerystorage.project", FALSE))
+	skip_if(getOption("bigquerystorage.project", FALSE) == FALSE)
 
 	con <- bigrquery::dbConnect(
 		bigrquery::bigquery(),
@@ -14,7 +14,7 @@ test_that("Test different method to see if they return correctly", {
 	expect_true(nrow(dt) == 50000)
 
 	# Full table fetch
-	dt <- DBI::dbReadTable(con, "bigquery-public-data.usa_names.usa_1910_current", quiet = TRUE, )
+	dt <- DBI::dbReadTable(con, "bigquery-public-data.usa_names.usa_1910_current")
 	expect_true(inherits(dt, "data.frame"))
 
 	# Compare with bigrquery method
