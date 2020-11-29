@@ -71,6 +71,7 @@ pkg_config <- detect_binary("pkg-config")
 
 # Use packages proto files and determine build order
 message(dir())
+
 base_proto_path <- "./inst/protos/"
 protos <- dir(base_proto_path, ".proto", recursive = TRUE)
 
