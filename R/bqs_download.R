@@ -1,12 +1,16 @@
 #' Download table from BigQuery using BigQuery Storage API
 #' @param x BigQuery table reference `{project}.{dataset}.{table_name}`
 #' @param parent Used as parent for `CreateReadSession`
-#' grpc method.
-#' @param as_data_frame Transform to a data.frame after arrow processing.
+#' grpc method. You can set option `bigquerystorage.project`.
+#' @param max_results Maximum number of results to retrieve. Use `Inf` or `-1L`
+#' retrieve all rows.
 #' @param access_token Access token
+#' @param root_certificate The file containing the PEM encoding of the
+#' server root certificates. Default to GRPC_DEFAULT_SSL_ROOTS_FILE_PATH.
 #' @param snapshot_time Snapshot time
 #' @param selected_fields A character vector of field to select from table.
 #' @param row_restriction Restriction to apply to the table.
+#'@param quiet Should information be printed to console.
 #' @details
 #'
 #' About Crendentials
@@ -35,29 +39,49 @@
 #' @importFrom arrow RecordBatchStreamReader Table
 bqs_table_download <- function(
   x,
-  parent,
-  as_data_frame = TRUE,
+  parent = getOption("bigquerystorage.project",""),
+  max_results = -1L,
   access_token = "",
+  root_certificate = Sys.getenv("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", grpc_mingw_root_pem_path_detect),
   snapshot_time = 0L,
   selected_fields = character(),
-  row_restriction = "") {
+  row_restriction = "",
+  quiet = NA) {
 
   # Parameters validation
-  stopifnot(is.character(x))
-  bq_table <- strsplit(x, "\\.|:")[[1]]
-  stopifnot(length(bq_table) == 3)
+  bqs_table_name <- unlist(strsplit(unlist(x), "\\.|:"))
+  stopifnot(length(bqs_table_name) == 3)
   timestamp_seconds <- as.integer(snapshot_time)
-  timestamp_nanos <- as.integer(as.numeric(snapshot_time-timestamp_seconds)*1000000000)
+  timestamp_nanos <- as.integer(as.numeric(snapshot_time - timestamp_seconds)*1000000000)
+  access_token <- as.character(access_token)
+  parent <- as.character(parent)
 
-  if (missing(parent)) {
-    parent <- bq_table[1]
+  if (max_results < 0 || max_results == Inf) {
+    max_results <- -1L
+  }
+
+  if (nchar(parent) == 0) {
+    parent <- bqs_table_name[1]
+  }
+
+  quiet <- if (is.na(quiet)) {
+    !interactive()
+  } else {
+    quiet
+  }
+
+  if (!quiet) {
+    bqs_set_log_verbosity(1L)
+  } else {
+    bqs_set_log_verbosity(3L)
   }
 
   raws <- bqs_ipc_stream(
-    project= bq_table[1],
-    dataset = bq_table[2],
-    table = bq_table[3],
+    project = bqs_table_name[1],
+    dataset = bqs_table_name[2],
+    table = bqs_table_name[3],
     parent = parent,
+    n = max_results,
     client_info = bqs_ua(),
     service_configuration = system.file(
       "bqs_config/bigquerystorage_grpc_service_config.json",
@@ -65,26 +89,25 @@ bqs_table_download <- function(
       mustWork = TRUE
     ),
     access_token = access_token,
+    root_certificate = root_certificate,
     timestamp_seconds = timestamp_seconds,
     timestamp_nanos = timestamp_nanos,
     selected_fields = selected_fields,
     row_restriction = row_restriction
   )
 
-  if (length(raws[[2]]) > 0) {
-    out <- RecordBatchStreamReader$create(unlist(raws))$read_table()
-    if (as_data_frame) {
-      out <- as.data.frame(out)
-    }
+  rdr <- RecordBatchStreamReader$create(unlist(raws))
+  if (length(raws[[2]]) == 0L) {
+    Table$create(
+      setNames(
+        data.frame(matrix(ncol = rdr$schema$num_fields, nrow = 0)),
+        rdr$schema$names
+        )
+    )
   } else {
-    reader <- RecordBatchStreamReader$create(raws[[1]])
-    out <- Table$create(data.frame(), schema = reader$schema)
-    if (as_data_frame) {
-      out <- setNames(data.frame(matrix(ncol = reader$schema$num_fields, nrow = 0)), reader$schema$names)
-    }
+    rdr$read_table()
   }
 
-  out
 }
 
 #' Substitute bigrquery bq_table_download method. This is very experimental.
@@ -93,19 +116,19 @@ bqs_table_download <- function(
 #' @import bigrquery
 #' @export
 overload_bq_table_download <- function(parent) {
-  assignInNamespace("bq_table_download",  function(
+  utils::assignInNamespace("bq_table_download",  function(
     x, max_results = Inf, page_size = 10000, start_index = 0L, max_connections = 6L,
     quiet = NA, bigint = c("integer", "integer64", "numeric", "character")) {
-      x <- bigrquery::as_bq_table(x)
-      assertthat::assert_that(is.numeric(max_results), length(max_results) == 1)
-      assertthat::assert_that(is.numeric(start_index), length(start_index) == 1)
-      bigint <- match.arg(bigint)
-      table_data <- bigrquerystorage::bqs_table_download(
-        x = paste(x, collapse = "."),
-        parent = parent,
-        access_token = bigrquery:::.auth$cred$credentials$access_token,
-      )
-      bigrquery:::convert_bigint(table_data, bigint)
+    x <- bigrquery::as_bq_table(x)
+    assertthat::assert_that(is.numeric(max_results), length(max_results) == 1)
+    assertthat::assert_that(is.numeric(start_index), length(start_index) == 1)
+    bigint <- match.arg(bigint)
+    table_data <- bigrquerystorage::bqs_table_download(
+      x = paste(x, collapse = "."),
+      parent = parent,
+      access_token = bigrquery:::.auth$cred$credentials$access_token,
+    )
+    bigrquery:::convert_bigint(as.data.frame(table_data), bigint)
   }, ns = "bigrquery")
   if ("package:bigrquery" %in% search()) {
     env_unlock(environment(bq_table_download))
@@ -113,3 +136,14 @@ overload_bq_table_download <- function(parent) {
     lockEnvironment(environment(bq_table_download), bindings = TRUE)
   }
 }
+
+grpc_mingw_root_pem_path_detect <-
+  if (Sys.info()[["sysname"]] == "Windows") {
+    file.path(Sys.getenv("RTOOLS40_HOME"),
+              if (Sys.info()[["machine"]] == "x86-64") {"mingw64"} else {"mingw32"},
+              "share",
+              "grpc",
+              "roots.pem")
+  } else {
+    ""
+  }

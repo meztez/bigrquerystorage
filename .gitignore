@@ -3,6 +3,7 @@
 .RData
 .Ruserdata
 scripts/googleapis/
+src/google/
 *.py
 *.o
 *.so

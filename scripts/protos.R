@@ -1,5 +1,5 @@
 #* Get latest version required proto from googleapis
-# git clone --depth 1 https://github.com/googleapis/googleapis ./scripts/googleapis")
+system("git clone --depth 1 https://github.com/googleapis/googleapis ./scripts/googleapis")
 
 fpath <- grep("bigquery/storage/v1/", dir("./scripts/googleapis", "storage.proto$", full.names = TRUE, recursive = TRUE), value = TRUE)
 
@@ -22,6 +22,3 @@ for (path in inst_path) {
   }
 }
 file.copy(fpath, inst_path, overwrite = TRUE)
-
-system(sprintf("protoc -I=/usr/local/include/ -I=./inst/protos/ --cpp_out=./src %s", paste(inst_path, collapse = " ")))
-system(sprintf("protoc -I=/usr/local/include/ -I=./inst/protos/ --plugin=protoc-gen-grpc=`which grpc_cpp_plugin` --grpc_out=./src %s", inst_path[8]))

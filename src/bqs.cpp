@@ -1,43 +1,15 @@
+#include <fstream>
+#include <string>
 #include <grpc/grpc.h>
-#include <grpcpp/channel.h>
-#include <grpcpp/client_context.h>
-#include <grpcpp/create_channel.h>
-#include <grpcpp/security/credentials.h>
-#include <grpc/impl/codegen/log.h>
-#include "google/cloud/bigquery/storage/v1/arrow.pb.h"
-#include "google/cloud/bigquery/storage/v1/avro.pb.h"
+#include <grpc/support/log.h>
+#include <grpcpp/grpcpp.h>
 #include "google/cloud/bigquery/storage/v1/stream.pb.h"
 #include "google/cloud/bigquery/storage/v1/storage.pb.h"
 #include "google/cloud/bigquery/storage/v1/storage.grpc.pb.h"
-#include <fstream>
-#include <string>
 #include <cpp11.hpp>
 #include <Rinternals.h>
 
-using grpc::Channel;
-using grpc::ClientContext;
-using grpc::ClientReader;
-using grpc::ClientReaderWriter;
-using grpc::ClientWriter;
-using grpc::Status;
-using grpc::ChannelArguments;
-using google::cloud::bigquery::storage::v1::ArrowRecordBatch;
-using google::cloud::bigquery::storage::v1::ArrowSchema;
-using google::cloud::bigquery::storage::v1::AvroRows;
-using google::cloud::bigquery::storage::v1::AvroSchema;
-using google::cloud::bigquery::storage::v1::CreateReadSessionRequest;
-using google::cloud::bigquery::storage::v1::DataFormat;
-using google::cloud::bigquery::storage::v1::ReadRowsRequest;
-using google::cloud::bigquery::storage::v1::ReadRowsResponse;
 using google::cloud::bigquery::storage::v1::ReadSession;
-using google::cloud::bigquery::storage::v1::ReadSession_TableModifiers;
-using google::cloud::bigquery::storage::v1::ReadSession_TableReadOptions;
-using google::cloud::bigquery::storage::v1::ReadStream;
-using google::cloud::bigquery::storage::v1::SplitReadStreamRequest;
-using google::cloud::bigquery::storage::v1::SplitReadStreamResponse;
-using google::cloud::bigquery::storage::v1::StreamStats;
-using google::cloud::bigquery::storage::v1::StreamStats_Progress;
-using google::cloud::bigquery::storage::v1::ThrottleState;
 using google::cloud::bigquery::storage::v1::BigQueryRead;
 
 // Define a default logger for gRPC
@@ -57,6 +29,11 @@ void bqs_init_logger() {
 // Set gRPC verbosity level
 [[cpp11::register]]
 void bqs_set_log_verbosity(int severity) {
+  //-1 UNSET
+  // 0 DEBUG
+  // 1 INFO
+  // 2 ERROR
+  // 3 QUIET
   gpr_set_log_verbosity(static_cast<gpr_log_severity>(severity));
 }
 
@@ -88,7 +65,7 @@ void to_raw(const std::string input, cpp11::writable::raws* output) {
 
 class BigQueryReadClient {
 public:
-  BigQueryReadClient(std::shared_ptr<Channel> channel)
+  BigQueryReadClient(std::shared_ptr<grpc::Channel> channel)
     : stub_(BigQueryRead::NewStub(channel)) {
   }
   void SetClientInfo(const std::string &client_info) {
@@ -103,11 +80,11 @@ public:
                                 const std::vector<std::string>& selected_fields,
                                 const std::string& row_restriction
   ) {
-    CreateReadSessionRequest method_request;
+    google::cloud::bigquery::storage::v1::CreateReadSessionRequest method_request;
     ReadSession *read_session = method_request.mutable_read_session();
     std::string table_fullname = "projects/" + project + "/datasets/" + dataset + "/tables/" + table;
     read_session->set_table(table_fullname);
-    read_session->set_data_format(DataFormat::ARROW);
+    read_session->set_data_format(google::cloud::bigquery::storage::v1::DataFormat::ARROW);
     if (timestamp_seconds > 0 || timestamp_nanos > 0) {
       read_session->mutable_table_modifiers()->mutable_snapshot_time()->set_seconds(timestamp_seconds);
       read_session->mutable_table_modifiers()->mutable_snapshot_time()->set_nanos(timestamp_nanos);
@@ -115,17 +92,17 @@ public:
     if (!row_restriction.empty()) {
       read_session->mutable_read_options()->set_row_restriction(row_restriction);
     }
-    for (int i = 0; i < selected_fields.size(); i++) {
+    for (int i = 0; i < int(selected_fields.size()); i++) {
       read_session->mutable_read_options()->add_selected_fields(selected_fields[i]);
     }
     method_request.set_parent("projects/" + parent);
-    ClientContext context;
+    grpc::ClientContext context;
     context.AddMetadata("x-goog-request-params", "read_session.table=" + table_fullname);
     context.AddMetadata("x-goog-api-client", client_info_);
     ReadSession method_response;
 
     // The actual RPC.
-    Status status = stub_->CreateReadSession(&context, method_request, &method_response);
+    grpc::Status status = stub_->CreateReadSession(&context, method_request, &method_response);
     if (!status.ok()) {
       std::string err;
       err += "gRPC method CreateReadSession error -> ";
@@ -136,35 +113,48 @@ public:
   }
   void ReadRows(const std::string stream,
                 cpp11::writable::raws* ipc_stream,
-                std::int64_t& rows_count,
-                std::int64_t& pages_count) {
+                std::int64_t& n,
+                long int& rows_count,
+                long int& pages_count) {
 
-    ClientContext context;
+    grpc::ClientContext context;
     context.AddMetadata("x-goog-request-params", "read_stream=" + stream);
     context.AddMetadata("x-goog-api-client", client_info_);
 
-    ReadRowsRequest method_request;
+    google::cloud::bigquery::storage::v1::ReadRowsRequest method_request;
     method_request.set_read_stream(stream);
     method_request.set_offset(0);
 
-    ReadRowsResponse method_response;
+    google::cloud::bigquery::storage::v1::ReadRowsResponse method_response;
 
-    std::unique_ptr<ClientReader<ReadRowsResponse> > reader(
+    std::unique_ptr<grpc::ClientReader<google::cloud::bigquery::storage::v1::ReadRowsResponse> > reader(
         stub_->ReadRows(&context, method_request));
-    while (reader->Read(&method_response)) {
-      to_raw(method_response.arrow_record_batch().serialized_record_batch(), ipc_stream);
-      method_request.set_offset(method_request.offset() + method_response.row_count());
-      pages_count += 1;
-      R_CheckUserInterrupt();
+    if (n >= 0) {
+      while (reader->Read(&method_response)) {
+        if (method_request.offset() >= n) {
+          break;
+        }
+        to_raw(method_response.arrow_record_batch().serialized_record_batch(), ipc_stream);
+        method_request.set_offset(method_request.offset() + method_response.row_count());
+        pages_count += 1;
+        R_CheckUserInterrupt();
+      }
+    } else {
+      while (reader->Read(&method_response)) {
+        to_raw(method_response.arrow_record_batch().serialized_record_batch(), ipc_stream);
+        method_request.set_offset(method_request.offset() + method_response.row_count());
+        pages_count += 1;
+        R_CheckUserInterrupt();
+      }
+      grpc::Status status = reader->Finish();
+      if (!status.ok()) {
+        std::string err;
+        err += "grpc method ReadRows error -> ";
+        err += status.error_message();
+        cpp11::stop(err.c_str());
+      }
     }
     rows_count += method_request.offset();
-    Status status = reader->Finish();
-    if (!status.ok()) {
-      std::string err;
-      err += "grpc method ReadRows error -> ";
-      err += status.error_message();
-      cpp11::stop(err.c_str());
-    }
   }
 private:
   std::unique_ptr<BigQueryRead::Stub> stub_;
@@ -177,9 +167,11 @@ cpp11::list bqs_ipc_stream(std::string project,
                            std::string dataset,
                            std::string table,
                            std::string parent,
+                           std::int64_t n,
                            std::string client_info,
                            std::string service_configuration,
                            std::string access_token,
+                           std::string root_certificate,
                            std::int64_t timestamp_seconds,
                            std::int32_t timestamp_nanos,
                            std::vector<std::string> selected_fields,
@@ -189,8 +181,12 @@ cpp11::list bqs_ipc_stream(std::string project,
   if (access_token.empty()) {
     channel_credentials = grpc::GoogleDefaultCredentials();
   } else {
+    grpc::SslCredentialsOptions ssl_options;
+    if (!root_certificate.empty()) {
+      ssl_options.pem_root_certs = readfile(root_certificate);
+    }
     channel_credentials = grpc::CompositeChannelCredentials(
-      grpc::SslCredentials(grpc::SslCredentialsOptions()),
+      grpc::SslCredentials(ssl_options),
       grpc::AccessTokenCredentials(access_token));
   }
   grpc::ChannelArguments channel_arguments;
@@ -205,8 +201,8 @@ cpp11::list bqs_ipc_stream(std::string project,
 
   cpp11::writable::raws schema;
   cpp11::writable::raws ipc_stream;
-  std::int64_t rows_count = 0;
-  std::int64_t pages_count = 0;
+  long int rows_count = 0;
+  long int pages_count = 0;
 
   // Retrieve ReadSession
   ReadSession read_session = client.CreateReadSession(project,
@@ -222,10 +218,10 @@ cpp11::list bqs_ipc_stream(std::string project,
 
   // Add batches to IPC stream
   for (int i = 0; i < read_session.streams_size(); i++) {
-    client.ReadRows(read_session.streams(i).name(), &ipc_stream, rows_count, pages_count);
+    client.ReadRows(read_session.streams(i).name(), &ipc_stream, n, rows_count, pages_count);
   }
 
-  gpr_log(GPR_ERROR, "Streamed %ld rows in %ld messages.", rows_count, pages_count);
+  gpr_log(GPR_INFO, "Streamed %ld rows in %ld messages.", rows_count, pages_count);
 
   // Remove extra allocation
   schema.resize(schema.size());

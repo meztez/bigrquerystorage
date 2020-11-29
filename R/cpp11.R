@@ -12,6 +12,6 @@ grpc_version <- function() {
   .Call("_bigrquerystorage_grpc_version", PACKAGE = "bigrquerystorage")
 }
 
-bqs_ipc_stream <- function(project, dataset, table, parent, client_info, service_configuration, access_token, timestamp_seconds, timestamp_nanos, selected_fields, row_restriction) {
-  .Call("_bigrquerystorage_bqs_ipc_stream", project, dataset, table, parent, client_info, service_configuration, access_token, timestamp_seconds, timestamp_nanos, selected_fields, row_restriction, PACKAGE = "bigrquerystorage")
+bqs_ipc_stream <- function(project, dataset, table, parent, n, client_info, service_configuration, access_token, root_certificate, timestamp_seconds, timestamp_nanos, selected_fields, row_restriction) {
+  .Call("_bigrquerystorage_bqs_ipc_stream", project, dataset, table, parent, n, client_info, service_configuration, access_token, root_certificate, timestamp_seconds, timestamp_nanos, selected_fields, row_restriction, PACKAGE = "bigrquerystorage")
 }

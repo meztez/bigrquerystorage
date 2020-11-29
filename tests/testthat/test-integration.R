@@ -1,67 +1,38 @@
-# library(bigrquerystorage)
-# system.time({
-# dt <- bqs_table_download(
-#     x = "bigquery-public-data.usa_names.usa_1910_current",
-#     billing = "labo-brunotremblay-253317")})
-#
-#
-# library(bigrquery)
-# system.time({
-# dt2 <- bq_table_download("bigquery-public-data.usa_names.usa_1910_current")
-# })
-# overload_bq_table_download("labo-brunotremblay-253317")
-# library(bigrquery)
-#
-# system.time({
-#   dt2 <- bq_table_download("bigquery-public-data.usa_names.usa_1910_current")
-# })
-#
-# library(bigrquerystorage)
-# overload_bq_table_download("labo-brunotremblay-253317")
-# system.time({
-# con <- bigrquery::dbConnect(
-#   bigrquery::bigquery(),
-#   project = "bigquery-public-data",
-#   dataset = "usa_names",
-#   billing = "labo-brunotremblay-253317",
-#   bigint = "numeric",
-#   quiet = FALSE
-# )
-# dt3 <- dbReadTable(con, "usa_1910_current")
-# })
-# all.equal(dt2, dt3)
+test_that("Test different method to see if they return correctly", {
 
-# library(bigrquery)
-# library(bigrquerystorage)
-#
-# # Test bigrquery speed
-# system.time({
-#   con <- bigrquery::dbConnect(
-#     bigrquery::bigquery(),
-#     project = "bigquery-public-data",
-#     dataset = "usa_names",
-#     billing = "labo-brunotremblay-253317",
-#     bigint = "numeric",
-#     quiet = FALSE
-#   )
-#   dta <- bigrquery::bq_table_download(bigrquery::as_bq_table("bigquery-public-data.usa_names.usa_1910_current"))
-# })
-#
-# # Downloading 6,122,890 rows in 613 pages.
-# # user  system elapsed
-# # 16.510   3.608  23.138
-#
-# # Test bigrquerystorage
-# system.time({
-#   dtb <- bigrquerystorage::bqs_table_download("bigquery-public-data.usa_names.usa_1910_current", "labo-brunotremblay-253317", FALSE)
-# })
-# # user  system elapsed
-# # 5.436   0.576  13.168
-#
-# # Compare table
-# all.equal(dta, dtb)
-# # [1] TRUE
+	skip_if_not(getOption("bigquerystorage.project", FALSE))
 
-test_that("Everything's good here", {
-  expect_true(TRUE)
+	con <- bigrquery::dbConnect(
+		bigrquery::bigquery(),
+		project = "bigquery-public-data",
+		dataset = "usa_names",
+		billing = getOption("bigquerystorage.project"))
+
+	# Basic reading table as data.frame
+	dt <- DBI::dbGetQuery(con, "SELECT * FROM `bigquery-public-data.usa_names.usa_1910_current` LIMIT 50000")
+	expect_true(inherits(dt, "data.frame"))
+	expect_true(nrow(dt) == 50000)
+
+	# Full table fetch
+	dt <- DBI::dbReadTable(con, "bigquery-public-data.usa_names.usa_1910_current", quiet = TRUE, )
+	expect_true(inherits(dt, "data.frame"))
+
+	# Compare with bigrquery method
+	dt <- bqs_table_download("bigquery-public-data.usa_names.usa_1910_current", max_results = 50000)
+	## IPC stream cannot be cut to exact size
+	dt <- as.data.frame(dt)[1:50000,]
+	dt2 <- bigrquery::bq_table_download("bigquery-public-data.usa_names.usa_1910_current", max_results = 50000)
+	expect_true(all.equal(dt, dt2))
+
+	# Check if a 0 rows table can be returned
+	dt <- DBI::dbGetQuery(con, "SELECT * FROM `bigquery-public-data.usa_names.usa_1910_current` LIMIT 0")
+	expect_true(inherits(dt, "data.frame"))
+	expect_true(nrow(dt) == 0)
+
+	# Check other features
+	dt <- bqs_table_download("bigquery-public-data:usa_names.usa_1910_current",
+													 selected_fields = c("name", "number", "state"),
+													 row_restriction = 'state = "WA"')
+	expect_length(names(dt), 3)
+	expect_identical(as.character(unique(dt$state)), "WA")
 })

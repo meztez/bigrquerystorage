@@ -6,29 +6,38 @@
 \usage{
 bqs_table_download(
   x,
-  parent,
-  as_data_frame = TRUE,
+  parent = getOption("bigquerystorage.project", ""),
+  max_results = -1L,
   access_token = "",
+  root_certificate = Sys.getenv("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
+    grpc_mingw_root_pem_path_detect),
   snapshot_time = 0L,
   selected_fields = character(),
-  row_restriction = ""
+  row_restriction = "",
+  quiet = NA
 )
 }
 \arguments{
 \item{x}{BigQuery table reference `{project}.{dataset}.{table_name}`}
 
 \item{parent}{Used as parent for `CreateReadSession`
-grpc method.}
+grpc method. You can set option `bigquerystorage.project`.}
 
-\item{as_data_frame}{Transform to a data.frame after arrow processing.}
+\item{max_results}{Maximum number of results to retrieve. Use `Inf` or `-1L`
+retrieve all rows.}
 
 \item{access_token}{Access token}
+
+\item{root_certificate}{The file containing the PEM encoding of the
+server root certificates. Default to GRPC_DEFAULT_SSL_ROOTS_FILE_PATH.}
 
 \item{snapshot_time}{Snapshot time}
 
 \item{selected_fields}{A character vector of field to select from table.}
 
 \item{row_restriction}{Restriction to apply to the table.}
+
+\item{quiet}{Should information be printed to console.}
 }
 \description{
 Download table from BigQuery using BigQuery Storage API

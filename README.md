@@ -21,8 +21,8 @@ BigQuery Storage API is not rate limited nor has per project quota. No
 need to manage `bigrquery::bq_table_download` page size anymore.
 
 BigQuery Storage API is based on gRPC. This particular implementation
-use a C++ generated client with the excellent `arrow` R package. It
-makes it 2 to 4 times faster than `bigrquery::bq_table_download` method.
+use a C++ generated client with `arrow` R package. It makes it 2 to 4
+times faster than `bigrquery::bq_table_download` method.
 
 More insidious; no more truncated results when
 `bigrquery::bq_table_download` page size produce `json` files greater
@@ -30,27 +30,32 @@ than 10MiB.
 
 ## Installation
 
-System requirements:  
-\- C++11  
-\- [gRPC C++](https://github.com/grpc/grpc/blob/master/BUILDING.md) I
-used [this
-procedure](https://github.com/grpc/grpc/blob/master/test/distrib/cpp/run_distrib_test_cmake_module_install_pkgconfig.sh)
-after cloning the repo.  
-\- [protoc
-C++](https://github.com/protocolbuffers/protobuf/tree/master/src)
-
-You can install the development version of bigrquerystorage from
-[GitHub](https://github.com/meztez/bigrquerystorage) with:
-
 ``` r
-mkdir bqs
-cd bqs
-wget https://raw.githubusercontent.com/meztez/bigrquerystorage/master/scripts/install_debian_ubuntu.sh
-chmod 755 ./install_debian_ubuntu.sh
-sudo ./install_debian_ubuntu.sh
+remotes::install_github("meztez/bigrquerystorage")
 ```
 
-This will also install dependencies and build gRPC correcly.
+### System requirements:
+
+  - [gRPC](https://github.com/grpc/grpc)
+  - [protoc](https://github.com/protocolbuffers/protobuf)
+
+#### Debian/Ubuntu from sources
+
+``` sh
+# install protoc and grpc
+apt-get install build-essential autoconf libtool pkg-config
+git clone -b v1.33.2 https://github.com/grpc/grpc
+cd grpc
+git submodule update --init
+./test/distrib/cpp/run_distrib_test_cmake_module_install_pkgconfig.sh
+cd ..
+rm -R grpc
+```
+
+#### Windows
+
+If it detects `Rtools40`, it should be able to install dependencies from
+CRAN or bintray.
 
 ## Example
 
@@ -59,7 +64,9 @@ BigQuery Storage API requires a billing project as there is no free tier
 to the service.
 
 ``` r
-## Auth is done automagically using Application Default Credentials
+## Auth is done automagically using Application Default Credentials.
+## Use the following command once to set it up :
+## gcloud auth application-default login --billing-project={project}
 library(bigrquerystorage)
 
 # TODO(developer): Set the project_id variable.
@@ -106,5 +113,6 @@ be compared to the standard REST API.
 
 ## Stability
 
-Windows is not supported at the moment.  
-Does not support AVRO output format.
+Does not support AVRO output format. Report any issues to the project
+[issue
+tracker](https://github.com/meztez/bigrquerystorage/issues/new/choose).
