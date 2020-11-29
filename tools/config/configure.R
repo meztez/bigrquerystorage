@@ -21,8 +21,7 @@ pacman_install <- function(pkg, rtools40, win) {
 	  	)
 	  )
 	}
-	r < -pacman()
-  if (r != 0) {
+  if (pacman() != 0) {
   	# cran mirrors does not have the package, check bintray (move it to top mirrors)
   	mirrors <- sprintf("%s/etc/pacman.d/mirrorlist.mingw%s", rtools40, win)
   	lines <- readLines(mirrors)
@@ -45,7 +44,7 @@ if (win) {
 		Sys.setenv(PATH = paste(BINPREF, Sys.getenv("PATH"), sep = ";"))
 		if (Sys.which("grpc_cpp_plugin") == "") {
 			# attempt to install grpc and protoc using msys2
-			try(pacman_install("grpc", RTOOLS40_ROOT, WIN), silent = TRUE)
+			pacman_install("grpc", RTOOLS40_ROOT, WIN)
 		}
 		message(" OK")
 	} else {
@@ -71,6 +70,7 @@ pkg_config <- detect_binary("pkg-config")
 
 
 # Use packages proto files and determine build order
+message(dir())
 base_proto_path <- "./inst/protos/"
 protos <- dir(base_proto_path, ".proto", recursive = TRUE)
 
