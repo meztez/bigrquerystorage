@@ -23,7 +23,7 @@ setMethod(
 		}
 
 		data <- bqs_table_download(res@bq_table,
-															 res@billing,
+															 tryCatch(res@billing, error = function(e) {getOption("bigquerystorage.project","")}),
 															 max_results = n,
 															 access_token = bigrquery:::.auth$cred$credentials$access_token,
 															 ...
