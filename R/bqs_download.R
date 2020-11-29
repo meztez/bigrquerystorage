@@ -73,7 +73,7 @@ bqs_table_download <- function(
   if (!quiet) {
     bqs_set_log_verbosity(1L)
   } else {
-    bqs_set_log_verbosity(3L)
+    bqs_set_log_verbosity(2L)
   }
 
   raws <- bqs_ipc_stream(
