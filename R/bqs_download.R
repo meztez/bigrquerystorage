@@ -139,8 +139,11 @@ overload_bq_table_download <- function(parent) {
 
 grpc_mingw_root_pem_path_detect <-
   if (Sys.info()[["sysname"]] == "Windows") {
-    file.path(Sys.getenv("RTOOLS40_HOME"),
-              if (Sys.info()[["machine"]] == "x86-64") {"mingw64"} else {"mingw32"},
+    RTOOLS40_ROOT <- gsub("\\\\", "/", Sys.getenv("RTOOLS40_HOME", "c:/rtools40"))
+    WIN <- if (Sys.info()[["machine"]] == "x86-64") {"64"} else {"32"}
+    MINGW_PREFIX <- paste0("mingw", WIN)
+    file.path(RTOOLS40_ROOT,
+              MINGW_PREFIX,
               "share",
               "grpc",
               "roots.pem")
