@@ -1,12 +1,13 @@
 #include <fstream>
 #include <string>
+#include <vector>
 #include <grpc/grpc.h>
 #include <grpc/support/log.h>
 #include <grpcpp/grpcpp.h>
 #include "google/cloud/bigquery/storage/v1/stream.pb.h"
 #include "google/cloud/bigquery/storage/v1/storage.pb.h"
 #include "google/cloud/bigquery/storage/v1/storage.grpc.pb.h"
-#include <cpp11.hpp>
+#include <Rcpp.h>
 #include <Rinternals.h>
 
 using google::cloud::bigquery::storage::v1::ReadSession;
@@ -14,20 +15,17 @@ using google::cloud::bigquery::storage::v1::BigQueryRead;
 
 // Define a default logger for gRPC
 void rgpr_default_log(gpr_log_func_args* args) {
-  args->severity >= GPR_LOG_SEVERITY_ERROR
-  ? REprintf(args->message) : Rprintf(args->message);
-  args->severity >= GPR_LOG_SEVERITY_ERROR
-    ? REprintf("\n") : Rprintf("\n");
+  Rcpp::Rcerr << args->message << std::endl;
 }
 
 // Set gRPC default logger
-[[cpp11::register]]
+// [[Rcpp::export]]
 void bqs_init_logger() {
   gpr_set_log_function(rgpr_default_log);
 }
 
 // Set gRPC verbosity level
-[[cpp11::register]]
+// [[Rcpp::export]]
 void bqs_set_log_verbosity(int severity) {
   //-1 UNSET
   // 0 DEBUG
@@ -37,8 +35,8 @@ void bqs_set_log_verbosity(int severity) {
   gpr_set_log_verbosity(static_cast<gpr_log_severity>(severity));
 }
 
-//' Check gRPC version
-[[cpp11::register]]
+// Check gRPC version
+// [[Rcpp::export]]
 std::string grpc_version() {
   std::string version;
   version += grpc_version_string();
@@ -56,11 +54,9 @@ std::string readfile(std::string filename)
   return content;
 }
 
-//' append std::string at the end of a cpp11::raws vector
-void to_raw(const std::string input, cpp11::writable::raws* output) {
-  for(unsigned long i=0; i<input.size(); i++) {
-    output->push_back(input.c_str()[i]);
-  }
+//' append std::string at the end of a std::vector<uint8_t> vector
+void to_raw(const std::string input, std::vector<uint8_t>* output) {
+  output->insert(output->end(), input.begin(), input.end());
 }
 
 class BigQueryReadClient {
@@ -107,12 +103,12 @@ public:
       std::string err;
       err += "gRPC method CreateReadSession error -> ";
       err += status.error_message();
-      cpp11::stop(err.c_str());
+      Rcpp::stop(err.c_str());
     }
     return method_response;
   }
   void ReadRows(const std::string stream,
-                cpp11::writable::raws* ipc_stream,
+                std::vector<uint8_t>* ipc_stream,
                 std::int64_t& n,
                 long int& rows_count,
                 long int& pages_count) {
@@ -151,7 +147,7 @@ public:
         std::string err;
         err += "grpc method ReadRows error -> ";
         err += status.error_message();
-        cpp11::stop(err.c_str());
+        Rcpp::stop(err.c_str());
       }
     }
     rows_count += method_request.offset();
@@ -162,20 +158,20 @@ private:
 };
 
 //' @noRd
-[[cpp11::register]]
-cpp11::list bqs_ipc_stream(std::string project,
-                           std::string dataset,
-                           std::string table,
-                           std::string parent,
-                           std::int64_t n,
-                           std::string client_info,
-                           std::string service_configuration,
-                           std::string access_token,
-                           std::string root_certificate,
-                           std::int64_t timestamp_seconds,
-                           std::int32_t timestamp_nanos,
-                           std::vector<std::string> selected_fields,
-                           std::string row_restriction) {
+// [[Rcpp::export]]
+Rcpp::List bqs_ipc_stream(std::string project,
+                          std::string dataset,
+                          std::string table,
+                          std::string parent,
+                          std::int64_t n,
+                          std::string client_info,
+                          std::string service_configuration,
+                          std::string access_token,
+                          std::string root_certificate,
+                          std::int64_t timestamp_seconds,
+                          std::int32_t timestamp_nanos,
+                          std::vector<std::string> selected_fields,
+                          std::string row_restriction) {
 
   std::shared_ptr<grpc::ChannelCredentials> channel_credentials;
   if (access_token.empty()) {
@@ -199,8 +195,8 @@ cpp11::list bqs_ipc_stream(std::string project,
 
   client.SetClientInfo(client_info);
 
-  cpp11::writable::raws schema;
-  cpp11::writable::raws ipc_stream;
+  std::vector<uint8_t> schema;
+  std::vector<uint8_t> ipc_stream;
   long int rows_count = 0;
   long int pages_count = 0;
 
@@ -223,11 +219,7 @@ cpp11::list bqs_ipc_stream(std::string project,
 
   gpr_log(GPR_INFO, "Streamed %ld rows in %ld messages.", rows_count, pages_count);
 
-  // Remove extra allocation
-  schema.resize(schema.size());
-  ipc_stream.resize(ipc_stream.size());
-
-  cpp11::writable::list li({schema, ipc_stream});
+  Rcpp::List li = Rcpp::List::create(schema, ipc_stream);
 
   // Return stream
   return li;

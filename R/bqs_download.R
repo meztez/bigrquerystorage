@@ -2,15 +2,18 @@
 #' @param x BigQuery table reference `{project}.{dataset}.{table_name}`
 #' @param parent Used as parent for `CreateReadSession`
 #' grpc method. You can set option `bigquerystorage.project`.
-#' @param max_results Maximum number of results to retrieve. Use `Inf` or `-1L`
-#' retrieve all rows.
-#' @param access_token Access token
-#' @param root_certificate The file containing the PEM encoding of the
-#' server root certificates. Default to GRPC_DEFAULT_SSL_ROOTS_FILE_PATH.
 #' @param snapshot_time Snapshot time
 #' @param selected_fields A character vector of field to select from table.
 #' @param row_restriction Restriction to apply to the table.
-#'@param quiet Should information be printed to console.
+#' @param max_results Maximum number of results to retrieve. Use `Inf` or `-1L`
+#' retrieve all rows.
+#' @param as_tibble Should data be returned as tibble. Default is to return
+#' as arrow Table from raw IPC stream.
+#' @param quiet Should information be printed to console.
+#' @param bigint The R type that BigQuery's 64-bit integer types should be mapped to.
+#'   The default is `"integer"` which returns R's `integer` type but results in `NA` for
+#'   values above/below +/- 2147483647. `"integer64"` returns a [bit64::integer64],
+#'   which allows the full range of 64 bit integers.
 #' @details
 #'
 #' About Crendentials
@@ -39,38 +42,52 @@
 #' @importFrom arrow RecordBatchStreamReader Table
 bqs_table_download <- function(
   x,
-  parent = getOption("bigquerystorage.project",""),
-  max_results = -1L,
-  access_token = "",
-  root_certificate = Sys.getenv("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", grpc_mingw_root_pem_path_detect),
-  snapshot_time = 0L,
+  parent = getOption("bigquerystorage.project", ""),
+  snapshot_time = NA,
   selected_fields = character(),
   row_restriction = "",
-  quiet = NA) {
+  max_results = Inf,
+  quiet = NA,
+  as_tibble = FALSE,
+  bigint = c("integer", "integer64", "numeric", "character")) {
 
   # Parameters validation
   bqs_table_name <- unlist(strsplit(unlist(x), "\\.|:"))
-  stopifnot(length(bqs_table_name) == 3)
+  assertthat::assert_that(length(bqs_table_name) == 3)
+  assertthat::assert_that(is.character(row_restriction))
+  assertthat::assert_that(is.character(selected_fields))
+  if (is.na(snapshot_time)) {
+    snapshot_time <- 0L
+  } else {
+    assertthat::assert_that(inherits(snapshot_time, "POSIXct"))
+  }
   timestamp_seconds <- as.integer(snapshot_time)
   timestamp_nanos <- as.integer(as.numeric(snapshot_time - timestamp_seconds)*1000000000)
-  access_token <- as.character(access_token)
+
   parent <- as.character(parent)
+  if (nchar(parent) == 0) { parent <- bqs_table_name[1] }
 
   if (max_results < 0 || max_results == Inf) {
     max_results <- -1L
-  }
-
-  if (nchar(parent) == 0) {
-    parent <- bqs_table_name[1]
-  }
-
-  quiet <- if (is.na(quiet)) {
-    !interactive()
+    trim_to_n <- FALSE
   } else {
-    quiet
+    trim_to_n <- TRUE
   }
 
-  if (!quiet) {
+  if (bigrquery::bq_has_token()) {
+    token <- bigrquery:::.auth$get_cred()$credentials$access_token
+  } else {
+    token <- ""
+  }
+
+  root_certificate = Sys.getenv("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", grpc_mingw_root_pem_path_detect())
+
+  bigint <- match.arg(bigint)
+
+  # Setup grpc execution environment
+  bqs_initiate()
+
+  if (!bigrquery:::bq_quiet(quiet)) {
     bqs_set_log_verbosity(1L)
   } else {
     bqs_set_log_verbosity(2L)
@@ -88,7 +105,7 @@ bqs_table_download <- function(
       package = "bigrquerystorage",
       mustWork = TRUE
     ),
-    access_token = access_token,
+    access_token = token,
     root_certificate = root_certificate,
     timestamp_seconds = timestamp_seconds,
     timestamp_nanos = timestamp_nanos,
@@ -97,16 +114,30 @@ bqs_table_download <- function(
   )
 
   rdr <- RecordBatchStreamReader$create(unlist(raws))
+  # There is currently no way to create an Arrow Table from a
+  # RecordBatchStreamReader when there is a schema but no batches.
   if (length(raws[[2]]) == 0L) {
-    Table$create(
-      setNames(
+    tb <- Table$create(
+      stats::setNames(
         data.frame(matrix(ncol = rdr$schema$num_fields, nrow = 0)),
         rdr$schema$names
-        )
+      )
     )
   } else {
-    rdr$read_table()
+    tb <- rdr$read_table()
   }
+
+  if (isTRUE(as_tibble)) {
+    tb <- bigrquery:::convert_bigint(as.data.frame(tb), bigint)
+  }
+
+  # Batches do not support a max_results so we get just enough results before
+  # exiting the streaming loop.
+  if (isTRUE(trim_to_n) && nrow(tb) > 0) {
+    tb <- tb[1:max_results, ]
+  }
+
+  return(tb)
 
 }
 
@@ -127,8 +158,9 @@ overload_bq_table_download <- function(parent) {
       x = paste(x, collapse = "."),
       parent = parent,
       access_token = bigrquery:::.auth$cred$credentials$access_token,
+      as_tibble = TRUE
     )
-    bigrquery:::convert_bigint(as.data.frame(table_data), bigint)
+    bigrquery:::convert_bigint(table_data, bigint)
   }, ns = "bigrquery")
   if ("package:bigrquery" %in% search()) {
     env_unlock(environment(bq_table_download))
@@ -137,7 +169,7 @@ overload_bq_table_download <- function(parent) {
   }
 }
 
-grpc_mingw_root_pem_path_detect <-
+grpc_mingw_root_pem_path_detect <- function() {
   if (Sys.info()[["sysname"]] == "Windows") {
     RTOOLS40_ROOT <- gsub("\\\\", "/", Sys.getenv("RTOOLS40_HOME", "c:/rtools40"))
     WIN <- if (Sys.info()[["machine"]] == "x86-64") {"64"} else {"32"}
@@ -150,3 +182,22 @@ grpc_mingw_root_pem_path_detect <-
   } else {
     ""
   }
+}
+
+# BigQuery storage --------------------------------------------------------
+#' @noRd
+bqs_initiate <- function(initiated = getOption("bigrquery.bqs_initiated", FALSE)) {
+  if (!initiated) {
+    if (!isTRUE(Sys.getenv("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", TRUE))) {
+      if (file.exists(grpc_mingw_root_pem_path_detect())) {
+        Sys.setenv(GRPC_DEFAULT_SSL_ROOTS_FILE_PATH = grpc_mingw_root_pem_path_detect())
+      }
+    }
+    bqs_init_logger()
+    # Issue with parallel arrow as.data.frame on Windows
+    if (.Platform$OS.type == "windows") {
+      options("arrow.use_threads" = FALSE)
+    }
+    options("bigrquery.bqs_initiated" = TRUE)
+  }
+}

@@ -25,12 +25,14 @@ setMethod(
 		data <- bqs_table_download(res@bq_table,
 															 tryCatch(res@billing, error = function(e) {getOption("bigquerystorage.project","")}),
 															 max_results = n,
-															 access_token = bigrquery:::.auth$cred$credentials$access_token,
+															 as_tibble = TRUE,
+															 quiet = res@quiet,
+															 bigint = res@bigint,
 															 ...
 		)
 		res@cursor$adv(n)
 
-		bigrquery:::convert_bigint(as.data.frame(data), res@bigint)
+		return(data)
 	})
 
 #' @rdname DBI
@@ -42,8 +44,9 @@ setMethod(
 		tb <- as_bq_table(conn, name)
 		data <- bqs_table_download(tb,
 											 conn@billing,
-											 access_token = bigrquery:::.auth$cred$credentials$access_token,
+											 as_tibble = TRUE,
+											 quiet = conn@quiet,
+											 bigint = conn@bigint,
 											 ...
 		)
-		as.data.frame(data)
 	})

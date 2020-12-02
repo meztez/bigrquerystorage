@@ -11,12 +11,13 @@ License: file LICENSE
 Imports:
     arrow,
     rlang,
-    bigrquery
+    bigrquery,
+    Rcpp
 Encoding: UTF-8
 LazyData: true
 URL: https://github.com/meztez/bigrquerystorage
 BugReports: https://github.com/meztez/bigrquerystorage/issues
-LinkingTo: cpp11
+LinkingTo: Rcpp
 Suggests: 
     testthat
 SystemRequirements:
