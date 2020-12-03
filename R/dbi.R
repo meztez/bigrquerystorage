@@ -18,18 +18,19 @@ setMethod(
 			n <- res@cursor$left()
 		}
 
-		if (res@cursor$cur() > 0L) {
-			stop("BigQueryReadClient implementation does not support reading from offset greater than 0.")
-		}
-
 		data <- bqs_table_download(res@bq_table,
 															 tryCatch(res@billing, error = function(e) {getOption("bigquerystorage.project","")}),
-															 max_results = n,
+															 max_results = n + res@cursor$cur(),
 															 as_tibble = TRUE,
 															 quiet = res@quiet,
 															 bigint = res@bigint,
 															 ...
 		)
+
+		if (res@cursor$cur() > 0L) {
+			data <- data[res@cursor$cur():nrow(data), ]
+		}
+
 		res@cursor$adv(n)
 
 		return(data)
@@ -43,10 +44,10 @@ setMethod(
 	function(conn, name, ...) {
 		tb <- as_bq_table(conn, name)
 		data <- bqs_table_download(tb,
-											 conn@billing,
-											 as_tibble = TRUE,
-											 quiet = conn@quiet,
-											 bigint = conn@bigint,
-											 ...
+											         conn@billing,
+											         as_tibble = TRUE,
+											         quiet = conn@quiet,
+											         bigint = conn@bigint,
+											         ...
 		)
 	})

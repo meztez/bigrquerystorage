@@ -155,12 +155,17 @@ overload_bq_table_download <- function(parent) {
     assertthat::assert_that(is.numeric(start_index), length(start_index) == 1)
     bigint <- match.arg(bigint)
     table_data <- bigrquerystorage::bqs_table_download(
-      x = paste(x, collapse = "."),
+      x = x,
       parent = parent,
-      access_token = bigrquery:::.auth$cred$credentials$access_token,
-      as_tibble = TRUE
+      max_results = max_results + start_index,
+      as_tibble = TRUE,
+      quiet = quiet,
+      bigint = bigint
     )
-    bigrquery:::convert_bigint(table_data, bigint)
+    if (start_index > 0L) {
+      table_data <- table_data[start_index:nrow(tb), ]
+    }
+    return(table_data)
   }, ns = "bigrquery")
   if ("package:bigrquery" %in% search()) {
     env_unlock(environment(bq_table_download))
