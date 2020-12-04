@@ -87,11 +87,7 @@ bqs_table_download <- function(
   # Setup grpc execution environment
   bqs_initiate()
 
-  if (!bigrquery:::bq_quiet(quiet)) {
-    bqs_set_log_verbosity(1L)
-  } else {
-    bqs_set_log_verbosity(2L)
-  }
+  quiet <- isTRUE(quiet)
 
   raws <- bqs_ipc_stream(
     project = bqs_table_name[1],
@@ -110,7 +106,8 @@ bqs_table_download <- function(
     timestamp_seconds = timestamp_seconds,
     timestamp_nanos = timestamp_nanos,
     selected_fields = selected_fields,
-    row_restriction = row_restriction
+    row_restriction = row_restriction,
+    quiet
   )
 
   rdr <- RecordBatchStreamReader$create(unlist(raws))

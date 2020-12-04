@@ -15,7 +15,7 @@ setMethod(
 		stopifnot(n == round(n), !is.na(n), n >= -1)
 
 		if (n == -1 || n == Inf) {
-			n <- res@cursor$left()
+			n <- Inf
 		}
 
 		data <- bqs_table_download(res@bq_table,
@@ -28,7 +28,7 @@ setMethod(
 		)
 
 		if (res@cursor$cur() > 0L) {
-			data <- data[res@cursor$cur():nrow(data), ]
+			data <- data[res@cursor$cur():(n + res@cursor$cur()), ]
 		}
 
 		res@cursor$adv(n)

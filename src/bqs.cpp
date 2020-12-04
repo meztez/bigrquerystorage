@@ -8,7 +8,7 @@
 #include "google/cloud/bigquery/storage/v1/storage.pb.h"
 #include "google/cloud/bigquery/storage/v1/storage.grpc.pb.h"
 #include <Rcpp.h>
-#include <Rinternals.h>
+#include <RProgress.h>
 
 using google::cloud::bigquery::storage::v1::ReadSession;
 using google::cloud::bigquery::storage::v1::BigQueryRead;
@@ -111,7 +111,8 @@ public:
                 std::vector<uint8_t>* ipc_stream,
                 std::int64_t& n,
                 long int& rows_count,
-                long int& pages_count) {
+                long int& pages_count,
+                bool quiet) {
 
     grpc::ClientContext context;
     context.AddMetadata("x-goog-request-params", "read_stream=" + stream);
@@ -125,6 +126,9 @@ public:
 
     std::unique_ptr<grpc::ClientReader<google::cloud::bigquery::storage::v1::ReadRowsResponse> > reader(
         stub_->ReadRows(&context, method_request));
+
+    RProgress::RProgress pb("Streaming [:bar] :percent");
+
     if (n >= 0) {
       while (reader->Read(&method_response)) {
         if (method_request.offset() >= n) {
@@ -133,14 +137,22 @@ public:
         to_raw(method_response.arrow_record_batch().serialized_record_batch(), ipc_stream);
         method_request.set_offset(method_request.offset() + method_response.row_count());
         pages_count += 1;
-        R_CheckUserInterrupt();
+        if (!quiet) {
+          pb.update(method_response.stats().progress().at_response_end() * 2);
+        } else {
+          Rcpp::checkUserInterrupt();
+        };
       }
     } else {
       while (reader->Read(&method_response)) {
         to_raw(method_response.arrow_record_batch().serialized_record_batch(), ipc_stream);
         method_request.set_offset(method_request.offset() + method_response.row_count());
         pages_count += 1;
-        R_CheckUserInterrupt();
+        if (!quiet) {
+          pb.update(method_response.stats().progress().at_response_end() * 2);
+        } else {
+          Rcpp::checkUserInterrupt();
+        };
       }
       grpc::Status status = reader->Finish();
       if (!status.ok()) {
@@ -159,19 +171,26 @@ private:
 
 //' @noRd
 // [[Rcpp::export]]
-Rcpp::List bqs_ipc_stream(std::string project,
-                          std::string dataset,
-                          std::string table,
-                          std::string parent,
-                          std::int64_t n,
-                          std::string client_info,
-                          std::string service_configuration,
-                          std::string access_token,
-                          std::string root_certificate,
-                          std::int64_t timestamp_seconds,
-                          std::int32_t timestamp_nanos,
-                          std::vector<std::string> selected_fields,
-                          std::string row_restriction) {
+SEXP bqs_ipc_stream(std::string project,
+                    std::string dataset,
+                    std::string table,
+                    std::string parent,
+                    std::int64_t n,
+                    std::string client_info,
+                    std::string service_configuration,
+                    std::string access_token,
+                    std::string root_certificate,
+                    std::int64_t timestamp_seconds,
+                    std::int32_t timestamp_nanos,
+                    std::vector<std::string> selected_fields,
+                    std::string row_restriction,
+                    bool quiet = false) {
+
+  if (quiet) {
+    bqs_set_log_verbosity(2);
+  } else {
+    bqs_set_log_verbosity(1);
+  }
 
   std::shared_ptr<grpc::ChannelCredentials> channel_credentials;
   if (access_token.empty()) {
@@ -214,13 +233,11 @@ Rcpp::List bqs_ipc_stream(std::string project,
 
   // Add batches to IPC stream
   for (int i = 0; i < read_session.streams_size(); i++) {
-    client.ReadRows(read_session.streams(i).name(), &ipc_stream, n, rows_count, pages_count);
+    client.ReadRows(read_session.streams(i).name(), &ipc_stream, n, rows_count, pages_count, quiet);
   }
 
   gpr_log(GPR_INFO, "Streamed %ld rows in %ld messages.", rows_count, pages_count);
 
-  Rcpp::List li = Rcpp::List::create(schema, ipc_stream);
-
   // Return stream
-  return li;
+  return Rcpp::List::create(schema, ipc_stream);
 }
