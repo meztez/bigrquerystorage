@@ -5,15 +5,6 @@
 
 using namespace Rcpp;
 
-// bqs_init_logger
-void bqs_init_logger();
-RcppExport SEXP _bigrquerystorage_bqs_init_logger() {
-BEGIN_RCPP
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    bqs_init_logger();
-    return R_NilValue;
-END_RCPP
-}
 // bqs_set_log_verbosity
 void bqs_set_log_verbosity(int severity);
 RcppExport SEXP _bigrquerystorage_bqs_set_log_verbosity(SEXP severitySEXP) {
@@ -21,6 +12,15 @@ BEGIN_RCPP
     Rcpp::RNGScope rcpp_rngScope_gen;
     Rcpp::traits::input_parameter< int >::type severity(severitySEXP);
     bqs_set_log_verbosity(severity);
+    return R_NilValue;
+END_RCPP
+}
+// bqs_init_logger
+void bqs_init_logger();
+RcppExport SEXP _bigrquerystorage_bqs_init_logger() {
+BEGIN_RCPP
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    bqs_init_logger();
     return R_NilValue;
 END_RCPP
 }
@@ -60,8 +60,8 @@ END_RCPP
 }
 
 static const R_CallMethodDef CallEntries[] = {
-    {"_bigrquerystorage_bqs_init_logger", (DL_FUNC) &_bigrquerystorage_bqs_init_logger, 0},
     {"_bigrquerystorage_bqs_set_log_verbosity", (DL_FUNC) &_bigrquerystorage_bqs_set_log_verbosity, 1},
+    {"_bigrquerystorage_bqs_init_logger", (DL_FUNC) &_bigrquerystorage_bqs_init_logger, 0},
     {"_bigrquerystorage_grpc_version", (DL_FUNC) &_bigrquerystorage_grpc_version, 0},
     {"_bigrquerystorage_bqs_ipc_stream", (DL_FUNC) &_bigrquerystorage_bqs_ipc_stream, 14},
     {NULL, NULL, 0}

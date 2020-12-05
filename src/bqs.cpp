@@ -18,12 +18,6 @@ void rgpr_default_log(gpr_log_func_args* args) {
   Rcpp::Rcerr << args->message << std::endl;
 }
 
-// Set gRPC default logger
-// [[Rcpp::export]]
-void bqs_init_logger() {
-  gpr_set_log_function(rgpr_default_log);
-}
-
 // Set gRPC verbosity level
 // [[Rcpp::export]]
 void bqs_set_log_verbosity(int severity) {
@@ -33,6 +27,13 @@ void bqs_set_log_verbosity(int severity) {
   // 2 ERROR
   // 3 QUIET
   gpr_set_log_verbosity(static_cast<gpr_log_severity>(severity));
+}
+
+// Set gRPC default logger
+// [[Rcpp::export]]
+void bqs_init_logger() {
+  gpr_set_log_function(rgpr_default_log);
+  bqs_set_log_verbosity(2);
 }
 
 // Check gRPC version
@@ -127,33 +128,22 @@ public:
     std::unique_ptr<grpc::ClientReader<google::cloud::bigquery::storage::v1::ReadRowsResponse> > reader(
         stub_->ReadRows(&context, method_request));
 
-    RProgress::RProgress pb("Streaming [:bar] :percent");
+    RProgress::RProgress pb("Streaming [:bar] :eta");
 
-    if (n >= 0) {
-      while (reader->Read(&method_response)) {
-        if (method_request.offset() >= n) {
-          break;
-        }
-        to_raw(method_response.arrow_record_batch().serialized_record_batch(), ipc_stream);
-        method_request.set_offset(method_request.offset() + method_response.row_count());
-        pages_count += 1;
-        if (!quiet) {
-          pb.update(method_response.stats().progress().at_response_end() * 2);
-        } else {
-          Rcpp::checkUserInterrupt();
-        };
+    while (reader->Read(&method_response)) {
+      if (n > 0 && method_request.offset() >= n) {
+        break;
       }
-    } else {
-      while (reader->Read(&method_response)) {
-        to_raw(method_response.arrow_record_batch().serialized_record_batch(), ipc_stream);
-        method_request.set_offset(method_request.offset() + method_response.row_count());
-        pages_count += 1;
-        if (!quiet) {
-          pb.update(method_response.stats().progress().at_response_end() * 2);
-        } else {
-          Rcpp::checkUserInterrupt();
-        };
+      to_raw(method_response.arrow_record_batch().serialized_record_batch(), ipc_stream);
+      method_request.set_offset(method_request.offset() + method_response.row_count());
+      pages_count += 1;
+      if (!quiet) {
+        pb.update(method_response.stats().progress().at_response_end() * 2);
+      } else {
+        Rcpp::checkUserInterrupt();
       }
+    }
+    if (n < 0) {
       grpc::Status status = reader->Finish();
       if (!status.ok()) {
         std::string err;
@@ -185,12 +175,6 @@ SEXP bqs_ipc_stream(std::string project,
                     std::vector<std::string> selected_fields,
                     std::string row_restriction,
                     bool quiet = false) {
-
-  if (quiet) {
-    bqs_set_log_verbosity(2);
-  } else {
-    bqs_set_log_verbosity(1);
-  }
 
   std::shared_ptr<grpc::ChannelCredentials> channel_credentials;
   if (access_token.empty()) {
@@ -236,7 +220,9 @@ SEXP bqs_ipc_stream(std::string project,
     client.ReadRows(read_session.streams(i).name(), &ipc_stream, n, rows_count, pages_count, quiet);
   }
 
-  gpr_log(GPR_INFO, "Streamed %ld rows in %ld messages.", rows_count, pages_count);
+  if (!quiet) {
+    REprintf("Streamed %ld rows in %ld messages.\n", rows_count, pages_count);
+  }
 
   // Return stream
   return Rcpp::List::create(schema, ipc_stream);

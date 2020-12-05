@@ -7,12 +7,12 @@ NULL
 #' append std::string at the end of a std::vector<uint8_t> vector
 NULL
 
-bqs_init_logger <- function() {
-    invisible(.Call('_bigrquerystorage_bqs_init_logger', PACKAGE = 'bigrquerystorage'))
-}
-
 bqs_set_log_verbosity <- function(severity) {
     invisible(.Call('_bigrquerystorage_bqs_set_log_verbosity', PACKAGE = 'bigrquerystorage', severity))
+}
+
+bqs_init_logger <- function() {
+    invisible(.Call('_bigrquerystorage_bqs_init_logger', PACKAGE = 'bigrquerystorage'))
 }
 
 grpc_version <- function() {

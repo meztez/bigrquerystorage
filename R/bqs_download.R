@@ -84,9 +84,6 @@ bqs_table_download <- function(
 
   bigint <- match.arg(bigint)
 
-  # Setup grpc execution environment
-  bqs_initiate()
-
   quiet <- isTRUE(quiet)
 
   raws <- bqs_ipc_stream(
@@ -188,18 +185,15 @@ grpc_mingw_root_pem_path_detect <- function() {
 
 # BigQuery storage --------------------------------------------------------
 #' @noRd
-bqs_initiate <- function(initiated = getOption("bigrquery.bqs_initiated", FALSE)) {
-  if (!initiated) {
-    if (!isTRUE(Sys.getenv("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", TRUE))) {
-      if (file.exists(grpc_mingw_root_pem_path_detect())) {
-        Sys.setenv(GRPC_DEFAULT_SSL_ROOTS_FILE_PATH = grpc_mingw_root_pem_path_detect())
-      }
+bqs_initiate <- function() {
+  if (!isTRUE(Sys.getenv("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", TRUE))) {
+    if (file.exists(grpc_mingw_root_pem_path_detect())) {
+      Sys.setenv(GRPC_DEFAULT_SSL_ROOTS_FILE_PATH = grpc_mingw_root_pem_path_detect())
     }
-    bqs_init_logger()
-    # Issue with parallel arrow as.data.frame on Windows
-    if (.Platform$OS.type == "windows") {
-      options("arrow.use_threads" = FALSE)
-    }
-    options("bigrquery.bqs_initiated" = TRUE)
+  }
+  bqs_init_logger()
+  # Issue with parallel arrow as.data.frame on Windows
+  if (.Platform$OS.type == "windows") {
+    options("arrow.use_threads" = FALSE)
   }
 }
