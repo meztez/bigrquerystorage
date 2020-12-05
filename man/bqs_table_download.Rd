@@ -7,14 +7,13 @@
 bqs_table_download(
   x,
   parent = getOption("bigquerystorage.project", ""),
-  max_results = -1L,
-  access_token = "",
-  root_certificate = Sys.getenv("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
-    grpc_mingw_root_pem_path_detect),
-  snapshot_time = 0L,
+  snapshot_time = NA,
   selected_fields = character(),
   row_restriction = "",
-  quiet = NA
+  max_results = Inf,
+  quiet = NA,
+  as_tibble = FALSE,
+  bigint = c("integer", "integer64", "numeric", "character")
 )
 }
 \arguments{
@@ -23,21 +22,24 @@ bqs_table_download(
 \item{parent}{Used as parent for `CreateReadSession`
 grpc method. You can set option `bigquerystorage.project`.}
 
-\item{max_results}{Maximum number of results to retrieve. Use `Inf` or `-1L`
-retrieve all rows.}
-
-\item{access_token}{Access token}
-
-\item{root_certificate}{The file containing the PEM encoding of the
-server root certificates. Default to GRPC_DEFAULT_SSL_ROOTS_FILE_PATH.}
-
 \item{snapshot_time}{Snapshot time}
 
 \item{selected_fields}{A character vector of field to select from table.}
 
 \item{row_restriction}{Restriction to apply to the table.}
 
+\item{max_results}{Maximum number of results to retrieve. Use `Inf` or `-1L`
+retrieve all rows.}
+
 \item{quiet}{Should information be printed to console.}
+
+\item{as_tibble}{Should data be returned as tibble. Default is to return
+as arrow Table from raw IPC stream.}
+
+\item{bigint}{The R type that BigQuery's 64-bit integer types should be mapped to.
+The default is `"integer"` which returns R's `integer` type but results in `NA` for
+values above/below +/- 2147483647. `"integer64"` returns a [bit64::integer64],
+which allows the full range of 64 bit integers.}
 }
 \description{
 Download table from BigQuery using BigQuery Storage API

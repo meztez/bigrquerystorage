@@ -46,7 +46,7 @@ std::string grpc_version() {
   return version;
 }
 
-//' Simple read file to read configuration from json
+// Simple read file to read configuration from json
 std::string readfile(std::string filename)
 {
   std::ifstream ifs(filename);
@@ -55,7 +55,7 @@ std::string readfile(std::string filename)
   return content;
 }
 
-//' append std::string at the end of a std::vector<uint8_t> vector
+// append std::string at the end of a std::vector<uint8_t> vector
 void to_raw(const std::string input, std::vector<uint8_t>* output) {
   output->insert(output->end(), input.begin(), input.end());
 }
@@ -128,7 +128,8 @@ public:
     std::unique_ptr<grpc::ClientReader<google::cloud::bigquery::storage::v1::ReadRowsResponse> > reader(
         stub_->ReadRows(&context, method_request));
 
-    RProgress::RProgress pb("Streaming [:bar] :eta");
+    RProgress::RProgress pb("\033[42m\033[30mReading (:current%)\033[39m\033[49m [:bar] ETA :eta");
+    pb.set_cursor_char(">");
 
     while (reader->Read(&method_response)) {
       if (n > 0 && method_request.offset() >= n) {

@@ -157,7 +157,7 @@ overload_bq_table_download <- function(parent) {
       bigint = bigint
     )
     if (start_index > 0L) {
-      table_data <- table_data[start_index:nrow(tb), ]
+      table_data <- table_data[start_index:nrow(table_data), ]
     }
     return(table_data)
   }, ns = "bigrquery")

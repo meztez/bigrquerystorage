@@ -11,18 +11,23 @@ License: file LICENSE
 Imports:
     arrow,
     rlang,
+    DBI,
     bigrquery,
+    assertthat,
+    progress,
+    Rcpp
+Suggests:
+    testthat,
+    bit64,
+    hms,
+    wk
+LinkingTo:
     progress,
     Rcpp
 Encoding: UTF-8
 LazyData: true
 URL: https://github.com/meztez/bigrquerystorage
 BugReports: https://github.com/meztez/bigrquerystorage/issues
-LinkingTo:
-    progress,
-    Rcpp
-Suggests: 
-    testthat
 SystemRequirements:
     grpc
     protobuf
