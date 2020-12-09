@@ -82,6 +82,7 @@ public:
 
 	void set_format(std::string format)    { this->format = format;         }
 	void set_total(double total)           { this->total = total;           }
+	void set_extra(int extra)              { this->extra = extra;           }
 	void set_width(int width)              { this->width = width;           }
 	void set_cursor_char(const char* cursor_char) {
 		this->cursor_char = cursor_char;
@@ -129,6 +130,7 @@ private:
 	std::string format;		// Format template
 	double total;			// Total number of ticks
 	double current;		// Current number of ticks
+	int extra; // Extra statistics to display
 	int count;                    // Total number of calls
 	int width;			// Width of progress bar
 	bool use_stderr;		// Whether to print to stderr
@@ -169,6 +171,11 @@ private:
 			elapsed_secs * (total / current - 1.0);
 		std::string eta = std::isinf(eta_secs) ? "?s" : vague_dt(eta_secs);
 		replace_all(str, ":eta", eta);
+
+		// extra
+		buffer << std::setw(3) << extra << "%";
+		replace_all(str, ":extra", buffer.str());
+		buffer.str(""); buffer.clear();
 
 		// bar
 		std::string str_no_bar = str;

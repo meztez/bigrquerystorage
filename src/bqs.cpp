@@ -129,7 +129,9 @@ public:
                 std::int64_t& n,
                 long int& rows_count,
                 long int& pages_count,
-                bool quiet) {
+                bool quiet,
+                RProgress::RProgress* pb,
+                bool last_stream) {
 
     grpc::ClientContext context;
     context.AddMetadata("x-goog-request-params", "read_stream=" + stream);
@@ -144,13 +146,6 @@ public:
     std::unique_ptr<grpc::ClientReader<google::cloud::bigquery::storage::v1::ReadRowsResponse> > reader(
         stub_->ReadRows(&context, method_request));
 
-    RProgress::RProgress pb(
-        "\033[42m\033[30mReading (:percent)\033[39m\033[49m [:bar] ETA :eta|:elapsed");
-    pb.set_cursor_char(">");
-    if (n > 0) {
-      pb.set_total(n);
-    }
-
     while (reader->Read(&method_response)) {
       to_raw(method_response.arrow_record_batch().serialized_record_batch(),
              ipc_stream);
@@ -158,14 +153,19 @@ public:
         method_request.offset() + method_response.row_count());
       pages_count += 1;
       if (!quiet) {
+        if (method_response.has_throttle_state()) {
+          pb->set_extra(method_response.throttle_state().throttle_percent());
+        }
         if (n > 0) {
           if (method_request.offset() + rows_count >= n) {
-            pb.update(1);
+            pb->update(1);
             break;
           }
-          pb.tick(method_response.row_count());
+          pb->tick(method_response.row_count());
         } else {
-          pb.update(method_response.stats().progress().at_response_end() * 2);
+          pb->tick(
+              (method_response.stats().progress().at_response_end()-
+               method_response.stats().progress().at_response_start()) * 200);
         }
       } else {
         Rcpp::checkUserInterrupt();
@@ -178,6 +178,10 @@ public:
         err += "grpc method ReadRows error -> ";
         err += status.error_message();
         Rcpp::stop(err.c_str());
+      } else {
+        if (last_stream) {
+          pb->update(1);
+        }
       }
     }
     rows_count += method_request.offset();
@@ -345,10 +349,20 @@ SEXP bqs_ipc_stream(SEXP client,
   // Add schema to IPC stream
   to_raw(read_session.arrow_schema().serialized_schema(), &schema);
 
+  RProgress::RProgress pb(
+      "\033[42m\033[30mReading (:percent)\033[39m\033[49m [:bar] ETA :eta|:elapsed :extra Throttled");
+  pb.set_cursor_char(">");
+  if (n > 0) {
+    pb.set_total(n);
+  } else {
+    pb.set_total(100 * read_session.streams_size());
+  }
+
   // Add batches to IPC stream
   for (int i = 0; i < read_session.streams_size(); i++) {
     client_ptr->ReadRows(read_session.streams(i).name(), &ipc_stream,
-                         n, rows_count, pages_count, quiet);
+                         n, rows_count, pages_count, quiet,
+                         &pb, i == read_session.streams_size() - 1);
   }
 
   if (!quiet) {
