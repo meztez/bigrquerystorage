@@ -175,7 +175,7 @@ private:
 		replace_all(str, ":eta", eta);
 
 		// extra
-		buffer << std::setw(4) << extra << "%";
+		buffer << std::setw(3) << extra << "%";
 		replace_all(str, ":extra", buffer.str());
 		buffer.str(""); buffer.clear();
 

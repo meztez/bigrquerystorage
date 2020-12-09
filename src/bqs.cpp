@@ -350,7 +350,7 @@ SEXP bqs_ipc_stream(SEXP client,
   to_raw(read_session.arrow_schema().serialized_schema(), &schema);
 
   RProgress::RProgress pb(
-      "\033[42m\033[30mReading (:percent)\033[39m\033[49m [:bar] ETA :eta|:elapsed :extra Throttled");
+      "\033[42m\033[30mStreaming (:percent)\033[39m\033[49m [:bar] eta[:eta|:elapsed] throt[:extra]");
   pb.set_cursor_char(">");
   if (n > 0) {
     pb.set_total(n);
