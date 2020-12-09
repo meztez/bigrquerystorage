@@ -13,8 +13,11 @@ grpc_version <- function() {
     .Call('_bigrquerystorage_grpc_version', PACKAGE = 'bigrquerystorage')
 }
 
-#' @noRd
-bqs_ipc_stream <- function(project, dataset, table, parent, n, client_info, service_configuration, access_token, root_certificate, timestamp_seconds, timestamp_nanos, selected_fields, row_restriction, quiet = FALSE) {
-    .Call('_bigrquerystorage_bqs_ipc_stream', PACKAGE = 'bigrquerystorage', project, dataset, table, parent, n, client_info, service_configuration, access_token, root_certificate, timestamp_seconds, timestamp_nanos, selected_fields, row_restriction, quiet)
+bqs_client <- function(client_info, service_configuration, refresh_token = "", access_token = "", root_certificate = "", target = "bigquerystorage.googleapis.com:443") {
+    .Call('_bigrquerystorage_bqs_client', PACKAGE = 'bigrquerystorage', client_info, service_configuration, refresh_token, access_token, root_certificate, target)
+}
+
+bqs_ipc_stream <- function(client, project, dataset, table, parent, n, selected_fields, row_restriction = "", timestamp_seconds = 0L, timestamp_nanos = 0L, quiet = FALSE) {
+    .Call('_bigrquerystorage_bqs_ipc_stream', PACKAGE = 'bigrquerystorage', client, project, dataset, table, parent, n, selected_fields, row_restriction, timestamp_seconds, timestamp_nanos, quiet)
 }
 

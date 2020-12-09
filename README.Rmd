@@ -46,7 +46,7 @@ remotes::install_github("meztez/bigrquerystorage")
 - [gRPC](https://github.com/grpc/grpc)
 - [protoc](https://github.com/protocolbuffers/protobuf)
 
-#### Debian/Ubuntu from sources
+#### Debian/Ubuntu
 
 ``` sh
 # install protoc and grpc
@@ -86,8 +86,7 @@ rows <- bqs_table_download(
   # , snapshot_time = Sys.time() # a POSIX time
   , selected_fields = c("name", "number", "state"),
   , row_restriction = 'state = "WA"'
-  # , access_token = {your token} # Alternative to ADC
-  # , as_data_frame = TRUE # FALSE : arrow, TRUE : arrow->as.data.frame
+  # , as_tibble = TRUE # FALSE : arrow, TRUE : arrow->as.data.frame
 )
 
 sprintf("Got %d unique names in states: %s",
@@ -107,13 +106,23 @@ rows <- bigrquery::bq_table_download("bigquery-public-data.usa_names.usa_1910_cu
 
 ### Compared to Python Client for BigQuery Storage API
 
-Currently about 25% Slower if you consider conversion to data frame.
-About the same without the conversion.
+About the same.
 
 ### Compared to `bigrquery::bq_table_download`
 
 When `bigrquery::bq_table_download` does not hit a quota or a rate limit, 2 to 4 times faster.
 The bigger the table, the faster this will be compared to the standard REST API.
+
+## Authentification
+
+Done using Google Application Default Credentials (ADC) or by recycling
+`bigrquery` authentification. Auth will be done automatically the first time
+a request is made.
+
+```{r auth, eval=FALSE}
+bqs_auth()
+bqs_deauth()
+```
 
 ## Stability
 

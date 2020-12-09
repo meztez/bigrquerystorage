@@ -14,30 +14,6 @@
 #'   The default is `"integer"` which returns R's `integer` type but results in `NA` for
 #'   values above/below +/- 2147483647. `"integer64"` returns a [bit64::integer64],
 #'   which allows the full range of 64 bit integers.
-#' @details
-#'
-#' About Crendentials
-#'
-#' If your application runs inside a Google Cloud environment that has
-#' a default service account, your application can retrieve the service
-#' account credentials to call Google Cloud APIs. Such environments
-#' include Compute Engine, Google Kubernetes Engine, App Engine,
-#' Cloud Run, and Cloud Functions. We recommend using this strategy
-#' because it is more convenient and secure than manually passing credentials.
-#'
-#' Additionally, we recommend you use Google Cloud Client Libraries for
-#' your application. Google Cloud Client Libraries use a library called
-#' Application Default Credentials (ADC) to automatically find your service
-#' account credentials. ADC looks for service account credentials
-#' in the following order:
-#'
-#' 1. If the environment variable GOOGLE_APPLICATION_CREDENTIALS is set,
-#' ADC uses the service account file that the variable points to.
-#' 2. If the environment variable GOOGLE_APPLICATION_CREDENTIALS isn't
-#' set, ADC uses the default service account that Compute Engine,
-#' Google Kubernetes Engine, App Engine, Cloud Run, and Cloud
-#' Functions provide.
-#' 3. If ADC can't use either of the above credentials, an error occurs.
 #' @export
 #' @importFrom arrow RecordBatchStreamReader Table
 bqs_table_download <- function(
@@ -74,36 +50,25 @@ bqs_table_download <- function(
     trim_to_n <- TRUE
   }
 
-  if (bigrquery::bq_has_token()) {
-    token <- bigrquery:::.auth$get_cred()$credentials$access_token
-  } else {
-    token <- ""
-  }
-
-  root_certificate = Sys.getenv("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", grpc_mingw_root_pem_path_detect())
-
   bigint <- match.arg(bigint)
 
-  quiet <- isTRUE(quiet)
+  quiet <- isTRUE(quiet) || !interactive()
+
+  if (is.null(.global$client)) {
+    bqs_auth()
+  }
 
   raws <- bqs_ipc_stream(
+    client = .global$client,
     project = bqs_table_name[1],
     dataset = bqs_table_name[2],
     table = bqs_table_name[3],
     parent = parent,
     n = max_results,
-    client_info = bqs_ua(),
-    service_configuration = system.file(
-      "bqs_config/bigquerystorage_grpc_service_config.json",
-      package = "bigrquerystorage",
-      mustWork = TRUE
-    ),
-    access_token = token,
-    root_certificate = root_certificate,
-    timestamp_seconds = timestamp_seconds,
-    timestamp_nanos = timestamp_nanos,
     selected_fields = selected_fields,
     row_restriction = row_restriction,
+    timestamp_seconds = timestamp_seconds,
+    timestamp_nanos = timestamp_nanos,
     quiet
   )
 
@@ -133,6 +98,80 @@ bqs_table_download <- function(
 
   return(tb)
 
+}
+
+#' Initialize client
+#' @export
+#' @details
+#' About Crendentials
+#'
+#' If your application runs inside a Google Cloud environment that has
+#' a default service account, your application can retrieve the service
+#' account credentials to call Google Cloud APIs. Such environments
+#' include Compute Engine, Google Kubernetes Engine, App Engine,
+#' Cloud Run, and Cloud Functions. We recommend using this strategy
+#' because it is more convenient and secure than manually passing credentials.
+#'
+#' Additionally, we recommend you use Google Cloud Client Libraries for
+#' your application. Google Cloud Client Libraries use a library called
+#' Application Default Credentials (ADC) to automatically find your service
+#' account credentials. ADC looks for service account credentials
+#' in the following order:
+#'
+#' 1. If the environment variable GOOGLE_APPLICATION_CREDENTIALS is set,
+#' ADC uses the service account file that the variable points to.
+#' 2. If the environment variable GOOGLE_APPLICATION_CREDENTIALS isn't
+#' set, ADC uses the default service account that Compute Engine,
+#' Google Kubernetes Engine, App Engine, Cloud Run, and Cloud
+#' Functions provide.
+#' 3. If ADC can't use either of the above credentials, an error occurs.
+bqs_auth <- function() {
+
+  # Recycling bigrquery credentials
+  if (bigrquery::bq_has_token()) {
+    if (!is.null(bigrquery:::.auth$cred$credentials$refresh_token)) {
+      refresh_token <- c(
+        type = "authorized_user",
+        client_secret = bigrquery:::.auth$cred$app$secret,
+        client_id = bigrquery:::.auth$cred$app$key,
+        refresh_token = bigrquery:::.auth$cred$credentials$refresh_token
+      )
+      refresh_token <- paste0("{", paste0(
+        '"', names(refresh_token), '":"', refresh_token, '"',
+        collapse = ","), "}")
+      access_token <- ""
+    } else {
+      access_token <- bigrquery:::.auth$get_cred()$credentials$access_token
+      refresh_token <- ""
+    }
+  } else {
+    access_token <- ""
+    refresh_token <- ""
+  }
+
+  root_certificate = Sys.getenv("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", grpc_mingw_root_pem_path_detect())
+
+  .global$client <- bqs_client(
+    client_info = bqs_ua(),
+    service_configuration = system.file(
+      "bqs_config/bigquerystorage_grpc_service_config.json",
+      package = "bigrquerystorage",
+      mustWork = TRUE
+    ),
+    refresh_token = refresh_token,
+    access_token = access_token,
+    root_certificate = root_certificate
+  )
+
+  return()
+
+}
+
+#' Destroy client
+#' @rdname bqs_auth
+#' @export
+bqs_deauth <- function() {
+  rm(client, envir = .global)
 }
 
 #' Substitute bigrquery bq_table_download method. This is very experimental.
