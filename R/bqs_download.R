@@ -69,7 +69,7 @@ bqs_table_download <- function(
     row_restriction = row_restriction,
     timestamp_seconds = timestamp_seconds,
     timestamp_nanos = timestamp_nanos,
-    quiet = quiet,
+    quiet = quiet
   )
 
   rdr <- RecordBatchStreamReader$create(unlist(raws))
