@@ -188,6 +188,8 @@ overload_bq_table_download <- function(parent) {
     assertthat::assert_that(is.numeric(max_results), length(max_results) == 1)
     assertthat::assert_that(is.numeric(start_index), length(start_index) == 1)
     bigint <- match.arg(bigint)
+    bqs_deauth()
+    bqs_auth()
     table_data <- bigrquerystorage::bqs_table_download(
       x = x,
       parent = parent,
