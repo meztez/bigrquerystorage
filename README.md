@@ -22,7 +22,8 @@ need to manage `bigrquery::bq_table_download` page size anymore.
 
 BigQuery Storage API is based on gRPC. This particular implementation
 use a C++ generated client with `arrow` R package. It makes it 2 to 4
-times faster than `bigrquery::bq_table_download` method.
+times faster than `bigrquery::bq_table_download` method on GCE virtual
+machines.
 
 More insidious; no more truncated results when
 `bigrquery::bq_table_download` page size produce `json` files greater
@@ -107,7 +108,8 @@ About the same.
 
 When `bigrquery::bq_table_download` does not hit a quota or a rate
 limit, 2 to 4 times faster. The bigger the table, the faster this will
-be compared to the standard REST API.
+be compared to the standard REST API. Best results is obtained on GCE
+virtual machines close to the data.
 
 ## Authentification
 

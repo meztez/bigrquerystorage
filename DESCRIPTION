@@ -1,7 +1,7 @@
 Package: bigrquerystorage
 Type: Package
 Title: R Client for BigQuery Storage API
-Version: 0.3.9000
+Version: 0.4.0
 Authors@R: c(
   person("Bruno", "Tremblay", role = c("aut", "cre"), email = "openr@neoxone.com"),
   person(family = "Google LLC", role = c("cph", "fnd")))
@@ -14,7 +14,6 @@ Imports:
     DBI,
     bigrquery,
     assertthat,
-    progress,
     Rcpp
 Suggests:
     testthat,
@@ -22,7 +21,6 @@ Suggests:
     hms,
     wk
 LinkingTo:
-    progress,
     Rcpp
 Encoding: UTF-8
 LazyData: true

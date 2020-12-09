@@ -8,7 +8,7 @@
 #include "google/cloud/bigquery/storage/v1/storage.pb.h"
 #include "google/cloud/bigquery/storage/v1/storage.grpc.pb.h"
 #include <Rcpp.h>
-#include <RProgress.h>
+#include "RProgress.h"
 
 using google::cloud::bigquery::storage::v1::ReadSession;
 using google::cloud::bigquery::storage::v1::BigQueryRead;
@@ -145,20 +145,28 @@ public:
         stub_->ReadRows(&context, method_request));
 
     RProgress::RProgress pb(
-        "\033[42m\033[30mReading (:current%)\033[39m\033[49m [:bar] ETA :eta|:elapsed");
+        "\033[42m\033[30mReading (:percent)\033[39m\033[49m [:bar] ETA :eta|:elapsed");
     pb.set_cursor_char(">");
+    if (n > 0) {
+      pb.set_total(n);
+    }
 
     while (reader->Read(&method_response)) {
-      if (n > 0 && method_request.offset() + rows_count >= n) {
-        break;
-      }
       to_raw(method_response.arrow_record_batch().serialized_record_batch(),
              ipc_stream);
       method_request.set_offset(
         method_request.offset() + method_response.row_count());
       pages_count += 1;
       if (!quiet) {
-        pb.update(method_response.stats().progress().at_response_end() * 2);
+        if (n > 0) {
+          if (method_request.offset() + rows_count >= n) {
+            pb.update(1);
+            break;
+          }
+          pb.tick(method_response.row_count());
+        } else {
+          pb.update(method_response.stats().progress().at_response_end() * 2);
+        }
       } else {
         Rcpp::checkUserInterrupt();
       }
@@ -231,7 +239,7 @@ std::shared_ptr<grpc::ChannelCredentials> bqs_credentials(
       );
     }
   }
-  return channel_cred;
+  return channel_cred == nullptr ? nullptr : channel_cred;
 }
 
 std::shared_ptr<grpc::ChannelCredentials> bqs_google_credentials() {
@@ -283,14 +291,17 @@ SEXP bqs_client(std::string client_info,
                 std::string root_certificate = "",
                 std::string target = "bigquerystorage.googleapis.com:443") {
 
-  std::shared_ptr<grpc::ChannelCredentials> cred = bqs_google_credentials();
-  if (!cred) {
+  std::shared_ptr<grpc::ChannelCredentials> cred;
+  if (!refresh_token.empty()) {
     cred = bqs_refresh_token_credentials(refresh_token,
                                          readfile(root_certificate));
   }
-  if (!cred) {
+  if (!cred && !access_token.empty()) {
     cred = bqs_access_token_credentials(access_token,
                                         readfile(root_certificate));
+  }
+  if (!cred) {
+    cred = bqs_google_credentials();
   }
   if (!cred) {
     Rcpp::stop("Could not create credentials.");

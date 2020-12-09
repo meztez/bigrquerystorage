@@ -163,7 +163,7 @@ bqs_auth <- function() {
     root_certificate = root_certificate
   )
 
-  return()
+  invisible()
 
 }
 
@@ -172,6 +172,7 @@ bqs_auth <- function() {
 #' @export
 bqs_deauth <- function() {
   rm(client, envir = .global)
+  invisible()
 }
 
 #' Substitute bigrquery bq_table_download method. This is very experimental.
