@@ -57,7 +57,7 @@ bqs_table_download <- function(
   bqs_auth()
 
   raws <- bqs_ipc_stream(
-    client = .global$client,
+    client = .global$client$ptr,
     project = bqs_table_name[1],
     dataset = bqs_table_name[2],
     table = bqs_table_name[3],
