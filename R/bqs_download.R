@@ -54,9 +54,7 @@ bqs_table_download <- function(
 
   quiet <- isTRUE(quiet) && !interactive()
 
-  if (is.null(.global$client)) {
-    bqs_auth()
-  }
+  bqs_auth()
 
   raws <- bqs_ipc_stream(
     client = .global$client,
@@ -127,6 +125,13 @@ bqs_table_download <- function(
 #' 3. If ADC can't use either of the above credentials, an error occurs.
 bqs_auth <- function() {
 
+  if (!is.null(.global$client) &&
+      (as.numeric(Sys.time()) - .global$client$creation < 30)) {
+    return(invisible())
+  } else {
+    bqs_deauth()
+  }
+
   # Recycling bigrquery credentials
   if (bigrquery::bq_has_token()) {
     if (!is.null(bigrquery:::.auth$cred$credentials$refresh_token)) {
@@ -151,7 +156,7 @@ bqs_auth <- function() {
 
   root_certificate = Sys.getenv("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", grpc_mingw_root_pem_path_detect())
 
-  .global$client <- bqs_client(
+  .global$client$ptr <- bqs_client(
     client_info = bqs_ua(),
     service_configuration = system.file(
       "bqs_config/bigquerystorage_grpc_service_config.json",
@@ -162,6 +167,8 @@ bqs_auth <- function() {
     access_token = access_token,
     root_certificate = root_certificate
   )
+
+  .global$client$creation <- as.numeric(Sys.time())
 
   invisible()
 
@@ -188,8 +195,6 @@ overload_bq_table_download <- function(parent) {
     assertthat::assert_that(is.numeric(max_results), length(max_results) == 1)
     assertthat::assert_that(is.numeric(start_index), length(start_index) == 1)
     bigint <- match.arg(bigint)
-    bqs_deauth()
-    bqs_auth()
     table_data <- bigrquerystorage::bqs_table_download(
       x = x,
       parent = parent,
