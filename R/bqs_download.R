@@ -178,7 +178,7 @@ bqs_auth <- function() {
 #' @rdname bqs_auth
 #' @export
 bqs_deauth <- function() {
-  rm(client, envir = .global)
+  .global$client <- NULL
   invisible()
 }
 
