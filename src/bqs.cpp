@@ -21,7 +21,7 @@ void bqs_default_log(gpr_log_func_args* args) {
 }
 
 // Set gRPC verbosity level
-// [[Rcpp::export]]
+// [[Rcpp::export(rng=false)]]
 void bqs_set_log_verbosity(int severity) {
   //-1 UNSET
   // 0 DEBUG
@@ -32,14 +32,14 @@ void bqs_set_log_verbosity(int severity) {
 }
 
 // Set gRPC default logger
-// [[Rcpp::export]]
+// [[Rcpp::export(rng=false)]]
 void bqs_init_logger() {
   gpr_set_log_function(bqs_default_log);
   bqs_set_log_verbosity(2);
 }
 
 // Check gRPC version
-// [[Rcpp::export]]
+// [[Rcpp::export(rng=false)]]
 std::string grpc_version() {
   std::string version;
   version += grpc_version_string();
@@ -287,7 +287,7 @@ SEXP bqs_read_client(std::shared_ptr<grpc::ChannelCredentials> cred,
 
 }
 
-// [[Rcpp::export]]
+// [[Rcpp::export(rng=false)]]
 SEXP bqs_client(std::string client_info,
                 std::string service_configuration,
                 std::string refresh_token = "",
@@ -316,7 +316,7 @@ SEXP bqs_client(std::string client_info,
 
 }
 
-// [[Rcpp::export]]
+// [[Rcpp::export(rng=false)]]
 SEXP bqs_ipc_stream(SEXP client,
                     std::string project,
                     std::string dataset,

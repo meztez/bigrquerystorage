@@ -9,7 +9,6 @@ using namespace Rcpp;
 void bqs_set_log_verbosity(int severity);
 RcppExport SEXP _bigrquerystorage_bqs_set_log_verbosity(SEXP severitySEXP) {
 BEGIN_RCPP
-    Rcpp::RNGScope rcpp_rngScope_gen;
     Rcpp::traits::input_parameter< int >::type severity(severitySEXP);
     bqs_set_log_verbosity(severity);
     return R_NilValue;
@@ -19,7 +18,6 @@ END_RCPP
 void bqs_init_logger();
 RcppExport SEXP _bigrquerystorage_bqs_init_logger() {
 BEGIN_RCPP
-    Rcpp::RNGScope rcpp_rngScope_gen;
     bqs_init_logger();
     return R_NilValue;
 END_RCPP
@@ -29,7 +27,6 @@ std::string grpc_version();
 RcppExport SEXP _bigrquerystorage_grpc_version() {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
     rcpp_result_gen = Rcpp::wrap(grpc_version());
     return rcpp_result_gen;
 END_RCPP
@@ -39,7 +36,6 @@ SEXP bqs_client(std::string client_info, std::string service_configuration, std:
 RcppExport SEXP _bigrquerystorage_bqs_client(SEXP client_infoSEXP, SEXP service_configurationSEXP, SEXP refresh_tokenSEXP, SEXP access_tokenSEXP, SEXP root_certificateSEXP, SEXP targetSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
     Rcpp::traits::input_parameter< std::string >::type client_info(client_infoSEXP);
     Rcpp::traits::input_parameter< std::string >::type service_configuration(service_configurationSEXP);
     Rcpp::traits::input_parameter< std::string >::type refresh_token(refresh_tokenSEXP);
@@ -55,7 +51,6 @@ SEXP bqs_ipc_stream(SEXP client, std::string project, std::string dataset, std::
 RcppExport SEXP _bigrquerystorage_bqs_ipc_stream(SEXP clientSEXP, SEXP projectSEXP, SEXP datasetSEXP, SEXP tableSEXP, SEXP parentSEXP, SEXP nSEXP, SEXP selected_fieldsSEXP, SEXP row_restrictionSEXP, SEXP timestamp_secondsSEXP, SEXP timestamp_nanosSEXP, SEXP quietSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
     Rcpp::traits::input_parameter< SEXP >::type client(clientSEXP);
     Rcpp::traits::input_parameter< std::string >::type project(projectSEXP);
     Rcpp::traits::input_parameter< std::string >::type dataset(datasetSEXP);
