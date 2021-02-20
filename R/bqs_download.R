@@ -52,7 +52,7 @@ bqs_table_download <- function(
 
   bigint <- match.arg(bigint)
 
-  quiet <- isTRUE(quiet) && !interactive()
+  quiet <- isTRUE(quiet)
 
   bqs_auth()
 
