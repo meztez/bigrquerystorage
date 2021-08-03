@@ -29,10 +29,10 @@ More insidious; no more truncated results when
 `bigrquery::bq_table_download` page size produce `json` files greater
 than 10MiB.
 
-## Installation
+## Installation (w64 support only)
 
 ``` r
-remotes::install_github("meztez/bigrquerystorage")
+remotes::install_github("meztez/bigrquerystorage", INSTALL_opts = "--no-multiarch")
 ```
 
 ### System requirements:
