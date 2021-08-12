@@ -27,7 +27,7 @@ machines.
 
 More insidious; no more truncated results when
 `bigrquery::bq_table_download` page size produce `json` files greater
-than 10MiB.
+than 10MiB. Update : This should be fixed in the lastest bigrquery package release. Have not tested.
 
 ## Installation (w64 support only)
 
