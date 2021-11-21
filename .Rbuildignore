@@ -1,6 +1,7 @@
 ^.*\.Rproj$
 ^\.Rproj\.user$
 ^scripts.*$
+^docs.*$
 ^.*\.py$
 ^.*\.sh$
 ^.*\.o$

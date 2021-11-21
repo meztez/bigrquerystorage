@@ -4,8 +4,10 @@
 # bigrquerystorage
 
 <!-- badges: start -->
-
 <!-- badges: end -->
+
+![Comparing bq_table_download from bigrquery to bgs_table_download from
+bigrquerystorage](./docs/bigrquerystorage.gif)
 
 The goal of bigrquerystorage is to provide access to the BigQuery
 Storage API from R.
@@ -27,18 +29,18 @@ machines.
 
 More insidious; no more truncated results when
 `bigrquery::bq_table_download` page size produce `json` files greater
-than 10MiB. Update : This should be fixed in the lastest bigrquery package release. Have not tested.
+than 10MiB.
 
-## Installation (w64 support only)
+## Installation
 
 ``` r
-remotes::install_github("meztez/bigrquerystorage", INSTALL_opts = "--no-multiarch")
+remotes::install_github("meztez/bigrquerystorage")
 ```
 
 ### System requirements:
 
-  - [gRPC](https://github.com/grpc/grpc)
-  - [protoc](https://github.com/protocolbuffers/protobuf)
+-   [gRPC](https://github.com/grpc/grpc)
+-   [protoc](https://github.com/protocolbuffers/protobuf)
 
 #### Debian/Ubuntu
 
@@ -74,7 +76,7 @@ library(bigrquerystorage)
 # project_id <- 'your-project-id'
 #
 # The read session is created in this project. This project can be
-# different from that which contains the table.
+# different from the one that contains the table.
 
 rows <- bqs_table_download(
   x = "bigquery-public-data:usa_names.usa_1910_current"
