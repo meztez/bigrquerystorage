@@ -7,7 +7,7 @@
 <!-- badges: end -->
 
 ![Comparing bq_table_download from bigrquery to bgs_table_download from
-bigrquerystorage](./docs/bigrquerystorage.gif)
+bigrquerystorage](./docs/bigrquerystorage.mp4)
 
 The goal of bigrquerystorage is to provide access to the BigQuery
 Storage API from R.
