@@ -46,7 +46,7 @@ remotes::install_github("meztez/bigrquerystorage")
 
 ``` sh
 # install protoc and grpc
-apt-get install build-essential autoconf libtool pkg-config
+apt-get install build-essential autoconf libtool pkg-config libcurl4-openssl-dev
 git clone -b v1.33.2 https://github.com/grpc/grpc
 cd grpc
 git submodule update --init
