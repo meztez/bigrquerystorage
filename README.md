@@ -34,6 +34,7 @@ than 10MiB.
 ## Installation
 
 ``` r
+Sys.setenv("NOT_CRAN"=TRUE) # To avoid long arrow compile time
 remotes::install_github("meztez/bigrquerystorage")
 ```
 
@@ -47,7 +48,7 @@ remotes::install_github("meztez/bigrquerystorage")
 ``` sh
 # install protoc and grpc
 apt-get install build-essential autoconf libtool pkg-config libcurl4-openssl-dev
-git clone -b v1.33.2 https://github.com/grpc/grpc
+git clone -b v1.44.0 https://github.com/grpc/grpc
 cd grpc
 git submodule update --init
 ./test/distrib/cpp/run_distrib_test_cmake_module_install_pkgconfig.sh
