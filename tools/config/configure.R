@@ -13,6 +13,7 @@ install_with_pacman <- function(pkg, rtools42, win) {
 	# try cran mirrors
 	pacman <- function() {
 		system(sprintf("%s/usr/bin/pacman -S msys2-keyring", rtools42))
+		system(sprintf("%s/usr/bin/pacman-key --refresh", rtools42))
 		system(sprintf("%s/usr/bin/pacman -Syu", rtools42))
 		system(
 			sprintf(
