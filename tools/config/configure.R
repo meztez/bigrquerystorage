@@ -61,13 +61,8 @@ detect_binary <- function(binary) {
 	message(sprintf("*** searching for %s ...", binary), appendLF = FALSE)
 	path <- Sys.which(binary)
 	if (path == "") {
-		if (binary == "pkg-config") {
-		  install_with_pacman("pkg-config", RTOOLS42_ROOT, WIN)
-		  path <- Sys.which(binary)
-		} else {
-          message(" Failed")
-		  stop("Could not find ", binary)
-		}
+        message(" Failed")
+	    stop("Could not find ", binary)
 	} else {
 		message(" OK")
 	}
