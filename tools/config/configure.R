@@ -12,11 +12,7 @@ install_with_pacman <- function(pkg, rtools42, win) {
 	arch <- switch(win, "64" = "x86_64", "32" = "i686")
 	# try cran mirrors
 	pacman <- function() {
-		system(sprintf("%s/usr/bin/curl -O http://repo.msys2.org/msys/x86_64/msys2-keyring-r21.b39fb11-1-any.pkg.tar.xz", rtools42))
-        system(sprintf("%s/usr/bin/curl -O http://repo.msys2.org/msys/x86_64/msys2-keyring-r21.b39fb11-1-any.pkg.tar.xz.sig", rtools42))
-        system(sprintf("%s/usr/bin/pacman-key --verify msys2-keyring-r21.b39fb11-1-any.pkg.tar.xz.sig", rtools42))
-        system(sprintf("%s/usr/bin/pacman -U msys2-keyring-r21.b39fb11-1-any.pkg.tar.xz", rtools42))
-		system(sprintf("%s/usr/bin/pacman-key --keyserver keyserver.ubuntu.com --refresh-keys", rtools42))
+		system(sprintf("%s/usr/bin/pacman -S msys2-keyring", rtools42))
 		system(sprintf("%s/usr/bin/pacman -Syu", rtools42))
 		system(
 			sprintf(
