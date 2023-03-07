@@ -58,7 +58,7 @@ rm -R grpc
 
 #### Windows
 
-If it detects `Rtools40`, it should be able to install dependencies from
+If it detects `Rtools42`, it should be able to install dependencies from
 CRAN or bintray.
 
 ## Example

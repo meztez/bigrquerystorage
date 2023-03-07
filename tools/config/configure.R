@@ -6,17 +6,17 @@
 win <- .Platform$OS.type == "windows"
 mac <- Sys.info()[["sysname"]] == "Darwin"
 
-# find RTOOLS40 for Windows, define pacman installation
+# find RTOOLS42 for Windows, define pacman installation
 
-install_with_pacman <- function(pkg, rtools40, win) {
+install_with_pacman <- function(pkg, rtools42, win) {
 	arch <- switch(win, "64" = "x86_64", "32" = "i686")
 	# try cran mirrors
 	pacman <- function() {
-		system(sprintf("%s/usr/bin/pacman -Syu", rtools40))
+		system(sprintf("%s/usr/bin/pacman -Syu", rtools42))
 		system(
 			sprintf(
 				"%s/usr/bin/pacman -S --noconfirm mingw-w64-%s-%s",
-				rtools40,
+				rtools42,
 				arch,
 				pkg
 			)
@@ -24,7 +24,7 @@ install_with_pacman <- function(pkg, rtools40, win) {
 	}
 	if (pacman() != 0) {
 		# cran mirrors does not have the package, check bintray (move it to top mirrors)
-		mirrors <- sprintf("%s/etc/pacman.d/mirrorlist.mingw%s", rtools40, win)
+		mirrors <- sprintf("%s/etc/pacman.d/mirrorlist.mingw%s", rtools42, win)
 		lines <- readLines(mirrors)
 		b <- grep("bintray", lines)
 		s <- grep("^Server", lines)[1] - 1L
@@ -36,16 +36,16 @@ install_with_pacman <- function(pkg, rtools40, win) {
 }
 
 if (win) {
-	message("*** searching for RTOOLS40 mingw binaries ...", appendLF = FALSE)
-	RTOOLS40_ROOT <- gsub("\\\\", "/", Sys.getenv("RTOOLS40_HOME", "c:/rtools40"))
+	message("*** searching for RTOOLS42 mingw binaries ...", appendLF = FALSE)
+	RTOOLS42_ROOT <- gsub("\\\\", "/", Sys.getenv("RTOOLS42_HOME", "c:/rtools42"))
 	WIN <- if (.Platform$r_arch == "x64") {"64"} else {"32"}
 	MINGW_PREFIX <- paste0("/mingw", WIN)
-	BINPREF <- Sys.getenv("BINPREF", paste0(RTOOLS40_ROOT, MINGW_PREFIX, "/bin/"))
+	BINPREF <- Sys.getenv("BINPREF", paste0(RTOOLS42_ROOT, MINGW_PREFIX, "/bin/"))
 	if (dir.exists(BINPREF)) {
 		Sys.setenv(PATH = paste(BINPREF, Sys.getenv("PATH"), sep = ";"))
 		if (Sys.which("grpc_cpp_plugin") == "") {
 			# attempt to install grpc and protoc using msys2
-			install_with_pacman("grpc", RTOOLS40_ROOT, WIN)
+			install_with_pacman("grpc", RTOOLS42_ROOT, WIN)
 		}
 		message(" OK")
 	} else {
