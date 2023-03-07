@@ -44,6 +44,7 @@ if (win) {
 	if (dir.exists(BINPREF)) {
 		Sys.setenv(PATH = paste(BINPREF, Sys.getenv("PATH"), sep = ";"))
 		if (Sys.which("grpc_cpp_plugin") == "") {
+			install_with_pacman("pkg-config", RTOOLS42_ROOT, WIN)
 			# attempt to install grpc and protoc using msys2
 			install_with_pacman("grpc", RTOOLS42_ROOT, WIN)
 		}
