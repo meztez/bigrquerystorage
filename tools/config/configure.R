@@ -44,7 +44,6 @@ if (win) {
 	if (dir.exists(BINPREF)) {
 		Sys.setenv(PATH = paste(BINPREF, Sys.getenv("PATH"), sep = ";"))
 		if (Sys.which("grpc_cpp_plugin") == "") {
-			install_with_pacman("pkg-config", RTOOLS42_ROOT, WIN)
 			# attempt to install grpc and protoc using msys2
 			install_with_pacman("grpc", RTOOLS42_ROOT, WIN)
 		}
@@ -61,8 +60,13 @@ detect_binary <- function(binary) {
 	message(sprintf("*** searching for %s ...", binary), appendLF = FALSE)
 	path <- Sys.which(binary)
 	if (path == "") {
-		message(" Failed")
-		stop("Could not find ", binary)
+		if (binary == "pkg-config") {
+		  install_with_pacman("pkg-config", RTOOLS42_ROOT, WIN)
+		  path <- Sys.which(binary)
+		} else {
+          message(" Failed")
+		  stop("Could not find ", binary)
+		}
 	} else {
 		message(" OK")
 	}
