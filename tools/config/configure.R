@@ -12,8 +12,6 @@ install_with_pacman <- function(pkg, rtools42, win) {
 	arch <- switch(win, "64" = "x86_64", "32" = "i686")
 	# try cran mirrors
 	pacman <- function() {
-		system(sprintf("%s/usr/bin/pacman -S msys2-keyring", rtools42))
-		system(sprintf("%s/usr/bin/pacman-key --refresh", rtools42))
 		system(sprintf("%s/usr/bin/pacman -Syu", rtools42))
 		system(
 			sprintf(
@@ -23,17 +21,6 @@ install_with_pacman <- function(pkg, rtools42, win) {
 				pkg
 			)
 		)
-	}
-	if (pacman() != 0) {
-		# cran mirrors does not have the package, check bintray (move it to top mirrors)
-		mirrors <- sprintf("%s/etc/pacman.d/mirrorlist.mingw%s", rtools42, win)
-		lines <- readLines(mirrors)
-		b <- grep("bintray", lines)
-		s <- grep("^Server", lines)[1] - 1L
-		linesx <- append(lines[-b], lines[b], s)
-		writeLines(linesx, mirrors)
-		pacman()
-		on.exit(writeLines(lines, mirrors), add = TRUE)
 	}
 }
 
@@ -63,7 +50,7 @@ detect_binary <- function(binary) {
 	path <- Sys.which(binary)
 	if (path == "") {
 		if (binary == "pkg-config") {
-		  install_with_pacman("pkg-config", RTOOLS42_ROOT, WIN)
+		  install_with_pacman("pkgconf", RTOOLS42_ROOT, WIN)
 		  path <- Sys.which(binary)
 		} else {
           message(" Failed")
