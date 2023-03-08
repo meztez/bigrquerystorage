@@ -53,7 +53,7 @@ remotes::install_github("meztez/bigrquerystorage")
 ``` sh
 # install protoc and grpc
 apt-get install build-essential autoconf libtool pkg-config
-git clone -b v1.33.2 https://github.com/grpc/grpc
+git clone -b v1.51.1 https://github.com/grpc/grpc
 cd grpc
 git submodule update --init
 ./test/distrib/cpp/run_distrib_test_cmake_module_install_pkgconfig.sh
@@ -64,6 +64,7 @@ rm -R grpc
 #### Windows
 
 If it detects `Rtools42`, it should be able to install dependencies from CRAN or bintray.
+Make sure that your PATH environment variable includes both `%R_HOME%/bin/x64` and `%RTOOLS42_HOME%/mingw64/bin`.
 
 ## Example
 

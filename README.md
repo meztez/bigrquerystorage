@@ -34,21 +34,20 @@ than 10MiB.
 ## Installation
 
 ``` r
-Sys.setenv("NOT_CRAN"=TRUE) # To avoid long arrow compile time
 remotes::install_github("meztez/bigrquerystorage")
 ```
 
 ### System requirements:
 
--   [gRPC](https://github.com/grpc/grpc)
--   [protoc](https://github.com/protocolbuffers/protobuf)
+- [gRPC](https://github.com/grpc/grpc)
+- [protoc](https://github.com/protocolbuffers/protobuf)
 
 #### Debian/Ubuntu
 
 ``` sh
 # install protoc and grpc
-apt-get install build-essential autoconf libtool pkg-config libcurl4-openssl-dev
-git clone -b v1.48.0 https://github.com/grpc/grpc
+apt-get install build-essential autoconf libtool pkg-config
+git clone -b v1.51.1 https://github.com/grpc/grpc
 cd grpc
 git submodule update --init
 ./test/distrib/cpp/run_distrib_test_cmake_module_install_pkgconfig.sh
@@ -59,7 +58,8 @@ rm -R grpc
 #### Windows
 
 If it detects `Rtools42`, it should be able to install dependencies from
-CRAN or bintray.
+CRAN or bintray. Make sure that your PATH environment variable includes
+both `%R_HOME%/bin/x64` and `%RTOOLS42_HOME%/mingw64/bin`.
 
 ## Example
 

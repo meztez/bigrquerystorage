@@ -29,5 +29,5 @@ BugReports: https://github.com/meztez/bigrquerystorage/issues
 SystemRequirements:
     grpc
     protobuf
-RoxygenNote: 7.1.1
+RoxygenNote: 7.2.3
 Biarch: TRUE
