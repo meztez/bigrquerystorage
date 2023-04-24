@@ -57,9 +57,9 @@ rm -R grpc
 
 #### Windows
 
-If it detects `Rtools42`, it should be able to install dependencies from
+If it detects `Rtools43`, it should be able to install dependencies from
 CRAN or bintray. Make sure that your PATH environment variable includes
-both `%R_HOME%/bin/x64` and `%RTOOLS42_HOME%/mingw64/bin`.
+both `%R_HOME%/bin/x64` and `%RTOOLS43_HOME%/mingw64/bin`.
 
 ## Example
 

@@ -6,17 +6,17 @@
 win <- .Platform$OS.type == "windows"
 mac <- Sys.info()[["sysname"]] == "Darwin"
 
-# find RTOOLS42 for Windows, define pacman installation
+# find RTOOLS43 for Windows, define pacman installation
 
-install_with_pacman <- function(pkg, rtools42, win) {
+install_with_pacman <- function(pkg, rtools43, win) {
 	arch <- switch(win, "64" = "x86_64", "32" = "i686")
 	# try cran mirrors
 	pacman <- function() {
-		system(sprintf("%s/usr/bin/pacman -Syu", rtools42))
+		system(sprintf("%s/usr/bin/pacman -Syu", rtools43))
 		system(
 			sprintf(
 				"%s/usr/bin/pacman -S --noconfirm mingw-w64-%s-%s",
-				rtools42,
+				rtools43,
 				arch,
 				pkg
 			)
@@ -25,16 +25,16 @@ install_with_pacman <- function(pkg, rtools42, win) {
 }
 
 if (win) {
-	message("*** searching for RTOOLS42 mingw binaries ...", appendLF = FALSE)
-	RTOOLS42_ROOT <- gsub("\\\\", "/", Sys.getenv("RTOOLS42_HOME", "c:/rtools42"))
+	message("*** searching for RTOOLS43 mingw binaries ...", appendLF = FALSE)
+	RTOOLS43_ROOT <- gsub("\\\\", "/", Sys.getenv("RTOOLS43_HOME", "c:/rtools43"))
 	WIN <- if (.Platform$r_arch == "x64") {"64"} else {"32"}
 	MINGW_PREFIX <- paste0("/mingw", WIN)
-	BINPREF <- Sys.getenv("BINPREF", paste0(RTOOLS42_ROOT, MINGW_PREFIX, "/bin/"))
+	BINPREF <- Sys.getenv("BINPREF", paste0(RTOOLS43_ROOT, MINGW_PREFIX, "/bin/"))
 	if (dir.exists(BINPREF)) {
 		Sys.setenv(PATH = paste(BINPREF, Sys.getenv("PATH"), sep = ";"))
 		if (Sys.which("grpc_cpp_plugin") == "") {
 			# attempt to install grpc and protoc using msys2
-			install_with_pacman("grpc", RTOOLS42_ROOT, WIN)
+			install_with_pacman("grpc", RTOOLS43_ROOT, WIN)
 		}
 		message(" OK")
 	} else {
@@ -50,7 +50,7 @@ detect_binary <- function(binary) {
 	path <- Sys.which(binary)
 	if (path == "") {
 		if (binary == "pkg-config") {
-		  install_with_pacman("pkgconf", RTOOLS42_ROOT, WIN)
+		  install_with_pacman("pkgconf", RTOOLS43_ROOT, WIN)
 		  path <- Sys.which(binary)
 		} else {
           message(" Failed")
