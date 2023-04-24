@@ -22,6 +22,9 @@ install_with_pacman <- function(pkg, rtools43, win) {
 			)
 		)
 	}
+	if (pacman() != 0) {
+	  stop("Cloud not install mingw-w64-", arch, "-", pkg, " with pacman")
+	}
 }
 
 if (win) {
@@ -34,7 +37,6 @@ if (win) {
 		Sys.setenv(PATH = paste(BINPREF, Sys.getenv("PATH"), sep = ";"))
 		if (Sys.which("grpc_cpp_plugin") == "") {
 			# attempt to install grpc and protoc using msys2
-			install_with_pacman("protobuf", RTOOLS43_ROOT, WIN)
 			install_with_pacman("grpc", RTOOLS43_ROOT, WIN)
 		}
 		message(" OK")
