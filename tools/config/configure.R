@@ -184,7 +184,7 @@ if (isTRUE(win)) {
 # compiler flags
 comp_flags <- "-I."
 if (win) {
-	comp_flags <- paste(comp_flags, "-D_WIN32_WINNT=0x600")
+	comp_flags <- paste(comp_flags, "-D_WIN32_WINNT=0x600","-DPROTOBUF_USE_DLLS")
 }
 
 # define variable for template

@@ -51,11 +51,11 @@ public:
            bool clear,
            double show_after) :
 
-	first(true), format(format), total(total), current(0), count(0),
+	first(true), format(format), total(total), current(0), extra(0), count(0),
 	width(width), cursor_char(cursor_char), complete_char(complete_char),
 	incomplete_char(incomplete_char), clear(clear), show_after(show_after),
-	last_draw(""), start(0), toupdate(false), complete(false), reverse(false),
-	extra(0) {
+	last_draw(""), start(0), toupdate(false),
+	complete(false), reverse(false) {
 
 		supported = is_supported();
 		use_stderr = default_stderr();
@@ -69,11 +69,11 @@ public:
            bool clear = true,
            double show_after = 0.2) :
 
-	first(true), format(format), total(total), current(0), count(0),
+	first(true), format(format), total(total), current(0), extra(0), count(0),
 	width(width), cursor_char(1, complete_char), complete_char(1, complete_char),
 	incomplete_char(1, incomplete_char), clear(clear), show_after(show_after),
-	last_draw(""), start(0), toupdate(false), complete(false), reverse(false),
-	extra(0) {
+	last_draw(""), start(0), toupdate(false),
+	complete(false), reverse(false) {
 
 		supported = is_supported();
 		use_stderr = default_stderr();
