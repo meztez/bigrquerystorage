@@ -1,4 +1,4 @@
-# Copyright 2017-2018  Kevin Ushey
+# Copyright 2017-2021  Kevin Ushey
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy of
 # this software and associated documentation files (the "Software"), to deal in
@@ -97,7 +97,10 @@ configure_file <- function(
     rhs = "@",
     verbose = configure_verbose())
 {
+    # read source file
     contents <- readLines(source, warn = FALSE)
+
+    # replace defined variables
     enumerate(config, function(key, val) {
         needle <- paste(lhs, key, rhs, sep = "")
         replacement <- val
@@ -105,8 +108,15 @@ configure_file <- function(
     })
 
     ensure_directory(dirname(target))
-    writeLines(contents, con = target)
 
+    # write configured file to target location
+    # prefer unix newlines for Makevars
+    mode <- if (target %in% "Makevars") "wb" else "w"
+    conn <- file(target, open = mode)
+    on.exit(close(conn), add = TRUE)
+    writeLines(contents, con = conn)
+
+    # copy over source permissions
     info <- file.info(source)
     Sys.chmod(target, mode = info$mode)
 
@@ -593,6 +603,16 @@ if (!interactive()) {
     # extract path to install script
     args <- commandArgs(TRUE)
     type <- args[[1]]
+
+    # preserve working directory
+    owd <- getwd()
+    on.exit(setwd(owd), add = TRUE)
+
+    # switch working directory to the calling scripts's directory as set
+    # by the shell, in case the R working directory was set to something else
+    basedir <- Sys.getenv("PWD", unset = NA)
+    if (!is.na(basedir))
+        setwd(basedir)
 
     # report start of execution
     package <- Sys.getenv("R_PACKAGE_NAME", unset = "<unknown>")
