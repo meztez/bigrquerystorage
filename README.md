@@ -47,10 +47,10 @@ remotes::install_github("meztez/bigrquerystorage")
 ``` sh
 # install protoc and grpc
 apt-get install build-essential autoconf libtool pkg-config
-git clone -b v1.51.1 https://github.com/grpc/grpc
+git clone -b v1.55.1 https://github.com/grpc/grpc
 cd grpc
 git submodule update --init
-./test/distrib/cpp/run_distrib_test_cmake_module_install_pkgconfig.sh
+./test/distrib/cpp/run_distrib_test_cmake_module_install.sh
 cd ..
 rm -R grpc
 ```
