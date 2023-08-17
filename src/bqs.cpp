@@ -273,6 +273,7 @@ SEXP bqs_read_client(std::shared_ptr<grpc::ChannelCredentials> cred,
                      std::string target) {
 
   grpc::ChannelArguments channel_arguments;
+  channel_arguments.SetMaxReceiveMessageSize(104857600);
   channel_arguments.SetServiceConfigJSON(service_configuration);
 
   BigQueryReadClient *client = new BigQueryReadClient(
