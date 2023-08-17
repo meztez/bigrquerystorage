@@ -180,7 +180,7 @@ if (mac) {
 if (isTRUE(win)) {
 	linker_libs <- paste(linker_libs, "-lcrypt32 -lws2_32 -limagehlp")
 } else {
-	linker_libs <- paste(linker_libs, "-lupb -lsystemd -lre2 -lcares -laddress_sorting")
+	linker_libs <- paste(linker_libs, "-lupb -lre2 -lcares -laddress_sorting")
 }
 
 # compiler flags
