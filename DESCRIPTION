@@ -23,7 +23,6 @@ Suggests:
 LinkingTo:
     Rcpp
 Encoding: UTF-8
-LazyData: true
 URL: https://github.com/meztez/bigrquerystorage
 BugReports: https://github.com/meztez/bigrquerystorage/issues
 SystemRequirements:
