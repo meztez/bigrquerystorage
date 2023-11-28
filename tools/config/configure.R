@@ -126,7 +126,7 @@ if (dir.exists(debian_local)) {
 message("*** compiling proto files ...")
 system(
 	sprintf(
-		"%s %s --cpp_out=./src %s",
+		"%s %s --cpp_out=./src --experimental_allow_proto3_optional %s",
 		protoc,
 		paste0("-I=", ipath, collapse = " "),
 		paste(protos, collapse = " ")))
