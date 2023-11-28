@@ -1,7 +1,7 @@
 Package: bigrquerystorage
 Type: Package
 Title: R Client for BigQuery Storage API
-Version: 1.55.1
+Version: 1.59.3
 Authors@R: c(
   person("Bruno", "Tremblay", role = c("aut", "cre"), email = "openr@neoxone.com"),
   person(family = "Google LLC", role = c("cph", "fnd")))
