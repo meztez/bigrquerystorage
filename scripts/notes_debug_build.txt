@@ -1,0 +1,8 @@
+When undefined symbol, use
+
+in lib install folder, can check install_manifest.txt
+
+cd /usr/local/lib
+fdfind '.*\.a$' -x bash -c "nm --defined-only {} 2>/dev/null | grep $symbol && echo {}"
+
+Sometimes linker order matters, libupb.a => -lupb
