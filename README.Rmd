@@ -16,6 +16,7 @@ knitr::opts_chunk$set(
 # bigrquerystorage
 
 <!-- badges: start -->
+[![R-CMD-check](https://github.com/meztez/bigrquerystorage/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/meztez/bigrquerystorage/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
 ![Comparing bq_table_download from bigrquery to bgs_table_download from bigrquerystorage](./docs/bigrquerystorage.gif)
@@ -44,7 +45,7 @@ page size produce `json` files greater than 10MiB.
 remotes::install_github("meztez/bigrquerystorage")
 ```
 
-### System requirements:  
+### System requirements:
 - [gRPC](https://github.com/grpc/grpc)
 - [protoc](https://github.com/protocolbuffers/protobuf)
 
