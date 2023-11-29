@@ -164,7 +164,7 @@ if (mac) {
 pkg_sources <- sort(dir("./src", ".cpp$|.c$"), decreasing = TRUE)
 
 # linker libraries
-linker_libs <- system(sprintf("%s --libs protobuf grpc++ openssl", pkg_config), intern = TRUE)
+linker_libs <- system(sprintf("%s --libs protobuf grpc++", pkg_config), intern = TRUE)
 
 # abseil no longer contains a dynamic_annotations library. brew install
 # separatly, from Abseil LTS 20200923, Patch 1
@@ -179,8 +179,6 @@ if (mac) {
 # some windows lib needs to be added manually for building with static openssl
 if (isTRUE(win)) {
 	linker_libs <- paste(linker_libs, "-lcrypt32 -lws2_32 -limagehlp")
-} else {
-	linker_libs <- paste(linker_libs, "-lupb_collections_lib -lupb_json_lib -lupb_textformat_lib -lupb -lutf8_range_lib -lre2 -lcares -laddress_sorting -lsystemd")
 }
 
 # compiler flags

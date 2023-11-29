@@ -1,0 +1,41 @@
+# -*- Dockerfile -*-
+
+FROM debian:12
+
+# -------------------------------------------------------------------------
+# This is going to use P3M on x86_64
+COPY tools/build/linux/rig.gpg /etc/apt/trusted.gpg.d/rig.gpg
+RUN echo "deb http://rig.r-pkg.org/deb rig main" > \
+        /etc/apt/sources.list.d/rig.list && \
+    export DEBIAN_FRONTEND=noninteractive && \
+    apt-get update -y && \
+    apt-get install -y r-rig && \
+    rig add release
+
+# -------------------------------------------------------------------------
+# FIXME: We don't need this once grpc is in the system requirements db
+RUN apt-get install -y libprotobuf-dev protobuf-compiler-grpc \
+                       libgrpc++-dev libc-ares-dev \
+                       libre2-dev pkg-config
+
+# -------------------------------------------------------------------------
+# Only copy DESCRIPTION, so Docker can cache the dependency install
+RUN mkdir /root/bigrquerystorage
+COPY DESCRIPTION /root/bigrquerystorage/
+WORKDIR /root/bigrquerystorage
+# No upgrade, to always install binary packages, in case P3M is behind
+RUN R -q -e 'pak::local_install_deps(upgrade = FALSE)'
+
+# -------------------------------------------------------------------------
+# Call R CMD build first, so we get rid of Makevars, .o, .so, etc.
+# Change file ownership, otherwise git complains
+# Clean up thoroughly, in case the cleanup script is not perfect.
+RUN apt-get install -y git
+COPY . /root/bigrquerystorage
+RUN chown root:root -R .
+RUN git clean -fdx .
+
+# -------------------------------------------------------------------------
+WORKDIR /root
+RUN R CMD build bigrquerystorage
+RUN R CMD INSTALL bigrquerystorage_*.tar.gz
