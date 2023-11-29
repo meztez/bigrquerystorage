@@ -9,3 +9,4 @@ src/google/
 *.so
 *.dll
 .httr-oauth
+/src/Makevars

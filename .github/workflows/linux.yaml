@@ -1,0 +1,67 @@
+# Test build on various Linux distros
+name: Linux build test
+
+on:
+  workflow_dispatch:
+    inputs:
+      ubuntu-2204:
+        description: "Ubuntu 22.04"
+        required: true
+        type: choice
+        options:
+        - 'yes'
+        - 'no'
+        default: 'yes'
+      debian-12:
+        description: "Debian 12"
+        required: true
+        type: choice
+        options:
+        - 'yes'
+        - 'no'
+        default: 'yes'
+      fedora-38:
+        description: "Fedora 38"
+        required: true
+        type: choice
+        options:
+        - 'yes'
+        - 'no'
+        default: 'yes'
+
+jobs:
+  ubuntu-2204:
+    if: ${{ github.event.inputs.ubuntu-2204 == '' || github.event.inputs.ubuntu-2204 == 'yes' }}
+    runs-on: ubuntu-latest
+    name: Ubuntu 22.04
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Build in Docker
+      run: |
+        docker build -f tools/build/linux/Dockerfile-ubuntu-22.04 -t bqs:ubuntu2204 .
+        docker run bqs:ubuntu2204 R -q -e 'library(bigrquerystorage)'
+
+  debian-12:
+    if: ${{ github.event.inputs.debian-12 == '' || github.event.inputs.debian-12 == 'yes' }}
+    runs-on: ubuntu-latest
+    name: Debian 12
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Build in Docker
+      run: |
+        docker build -f tools/build/linux/Dockerfile-debian-12 -t bqs:debian12 .
+        docker run bqs:debian12 R -q -e 'library(bigrquerystorage)'
+
+  fedora-38:
+    if: ${{ github.event.inputs.fedora-38 == '' || github.event.inputs.fedora-38 == 'yes' }}
+    runs-on: ubuntu-latest
+    name: Fedora 38
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Build in Docker
+      run: |
+        docker build -f tools/build/linux/Dockerfile-fedora-38 -t bqs:fedora-38 .
+        docker run bqs:fedora-38 R -q -e 'library(bigrquerystorage)'

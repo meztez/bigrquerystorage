@@ -1,0 +1,36 @@
+# -*- Dockerfile -*-
+
+FROM fedora:38
+
+# -------------------------------------------------------------------------
+RUN yum install -y \
+        https://github.com/r-lib/rig/releases/download/latest/r-rig-latest-1.$(arch).rpm && \
+    rig add devel
+
+# -------------------------------------------------------------------------
+# FIXME: We don't need this once grpc is in the system requirements db
+RUN dnf install -y protobuf-devel protobuf-compiler \
+                   grpc-devel c-ares-devel \
+                   re2-devel pkgconf
+
+# -------------------------------------------------------------------------
+# Only copy DESCRIPTION, so Docker can cache the dependency install
+RUN mkdir /root/bigrquerystorage
+COPY DESCRIPTION /root/bigrquerystorage/
+WORKDIR /root/bigrquerystorage
+# No upgrade, to always install binary packages, in case P3M is behind
+RUN R -q -e 'pak::local_install_deps(upgrade = FALSE)'
+
+# -------------------------------------------------------------------------
+# Call R CMD build first, so we get rid of Makevars, .o, .so, etc.
+# Change file ownership, otherwise git complains
+# Clean up thoroughly, in case the cleanup script is not perfect.
+RUN dnf install -y git
+COPY . /root/bigrquerystorage
+RUN chown root:root -R .
+RUN git clean -fdx .
+
+# -------------------------------------------------------------------------
+WORKDIR /root
+RUN R CMD build bigrquerystorage
+RUN R CMD INSTALL bigrquerystorage_*.tar.gz
