@@ -6,8 +6,12 @@
 <!-- badges: start -->
 <!-- badges: end -->
 
-![Comparing bq_table_download from bigrquery to bgs_table_download from
-bigrquerystorage](./docs/bigrquerystorage.gif)
+<figure>
+<img src="./docs/bigrquerystorage.gif"
+alt="Comparing bq_table_download from bigrquery to bgs_table_download from bigrquerystorage" />
+<figcaption aria-hidden="true">Comparing bq_table_download from
+bigrquery to bgs_table_download from bigrquerystorage</figcaption>
+</figure>
 
 The goal of bigrquerystorage is to provide access to the BigQuery
 Storage API from R.
@@ -42,17 +46,22 @@ remotes::install_github("meztez/bigrquerystorage")
 - [gRPC](https://github.com/grpc/grpc)
 - [protoc](https://github.com/protocolbuffers/protobuf)
 
-#### Debian/Ubuntu
+#### Debian 12 / Ubuntu 22.04
 
 ``` sh
 # install protoc and grpc
-apt-get install build-essential autoconf libtool pkg-config
-git clone -b v1.59.3 https://github.com/grpc/grpc
-cd grpc
-git submodule update --init
-./test/distrib/cpp/run_distrib_test_cmake_module_install.sh
-cd ..
-rm -R grpc
+apt-get install -y libprotobuf-dev protobuf-compiler-grpc \
+                   libgrpc++-dev libc-ares-dev libre2-dev \
+                   pkg-config
+```
+
+#### Fedora 38
+
+``` sh
+# install protoc and grpc
+dnf install -y protobuf-devel protobuf-compiler \
+               grpc-devel c-ares-devel \
+               re2-devel pkgconf
 ```
 
 #### Windows
