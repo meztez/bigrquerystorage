@@ -183,6 +183,7 @@ for (src_ in gle_cc) {
   src <- file.path("src", "google", src_)
   lns <- c(
     "# pragma GCC diagnostic ignored \"-Wdeprecated-declarations\"",
+    "# pragma GCC diagnostic ignored \"-Winconsistent-missing-override\"",
     readLines(src)
   )
   lns <- sub("^#pragma ", "# pragma ", lns)
