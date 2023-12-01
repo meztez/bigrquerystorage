@@ -2,6 +2,11 @@
 
 test_that("BigQuery json and BigQuery return the same results", {
 
+	tmp <- tempfile(pattern = ".json")
+	on.exit(unlink(tmp))
+	writeBin(base64enc::base64decode(Sys.getenv("GCP_SERVICE_ACCOUNT")), tmp)
+	bq_auth(path = tmp)
+
 	# Compare with bigrquery method
 	dt <- bqs_table_download("bigquery-public-data.usa_names.usa_1910_current", bq_test_project(), n_max = 50000, as_tibble = TRUE, quiet = TRUE)
 	dt2 <- bq_table_download("bigquery-public-data.usa_names.usa_1910_current", n_max = 50000, quiet = TRUE)
@@ -10,6 +15,11 @@ test_that("BigQuery json and BigQuery return the same results", {
 })
 
 test_that("Method dispatch to BigQuery Storage", {
+
+	tmp <- tempfile(pattern = ".json")
+	on.exit(unlink(tmp))
+	writeBin(base64enc::base64decode(Sys.getenv("GCP_SERVICE_ACCOUNT")), tmp)
+	bq_auth(path = tmp)
 
 	con <- bigrquery::dbConnect(
 		bigrquery::bigquery(),
@@ -32,6 +42,11 @@ test_that("Method dispatch to BigQuery Storage", {
 
 test_that("0 rows table can be returned", {
 
+	tmp <- tempfile(pattern = ".json")
+	on.exit(unlink(tmp))
+	writeBin(base64enc::base64decode(Sys.getenv("GCP_SERVICE_ACCOUNT")), tmp)
+	bq_auth(path = tmp)
+
 	con <- bigrquery::dbConnect(
 		bigrquery::bigquery(),
 		project = "bigquery-public-data",
@@ -47,6 +62,12 @@ test_that("0 rows table can be returned", {
 })
 
 test_that("Optional BigQuery Storage API parameters work", {
+
+	tmp <- tempfile(pattern = ".json")
+	on.exit(unlink(tmp))
+	writeBin(base64enc::base64decode(Sys.getenv("GCP_SERVICE_ACCOUNT")), tmp)
+	bq_auth(path = tmp)
+
 	# Check other features
 	dt <- bqs_table_download("bigquery-public-data:usa_names.usa_1910_current",
 													 bq_test_project(),
@@ -60,6 +81,12 @@ test_that("Optional BigQuery Storage API parameters work", {
 # types -------------------------------------------------------------------
 
 test_that("can read utf-8 strings", {
+
+	tmp <- tempfile(pattern = ".json")
+	on.exit(unlink(tmp))
+	writeBin(base64enc::base64decode(Sys.getenv("GCP_SERVICE_ACCOUNT")), tmp)
+	bq_auth(path = tmp)
+
 	sql <- "SELECT '\U0001f603' as x"
 	tb <- bq_project_query(bq_test_project(), sql, quiet = TRUE)
 	df <- bqs_table_download(tb, bq_test_project(), as_tibble = TRUE, quiet = TRUE)
@@ -72,6 +99,12 @@ test_that("can read utf-8 strings", {
 # https://cloud.google.com/bigquery/docs/reference/storage/#arrow_schema_details
 # DATETIME does not a have a timezone
 test_that("can convert date time types", {
+
+	tmp <- tempfile(pattern = ".json")
+	on.exit(unlink(tmp))
+	writeBin(base64enc::base64decode(Sys.getenv("GCP_SERVICE_ACCOUNT")), tmp)
+	bq_auth(path = tmp)
+
 	sql <- "SELECT
     datetime,
     CAST (datetime as DATE) as date,
@@ -95,6 +128,12 @@ test_that("can convert date time types", {
 })
 
 test_that("correctly parse logical values" ,{
+
+	tmp <- tempfile(pattern = ".json")
+	on.exit(unlink(tmp))
+	writeBin(base64enc::base64decode(Sys.getenv("GCP_SERVICE_ACCOUNT")), tmp)
+	bq_auth(path = tmp)
+
 	query <- "SELECT TRUE as x"
 	tb <- bq_project_query(bq_test_project(), query)
 	df <- bqs_table_download(tb, bq_test_project(), as_tibble = TRUE, quiet = TRUE)
@@ -103,6 +142,12 @@ test_that("correctly parse logical values" ,{
 })
 
 test_that("the return type of integer columns is set by the bigint argument", {
+
+	tmp <- tempfile(pattern = ".json")
+	on.exit(unlink(tmp))
+	writeBin(base64enc::base64decode(Sys.getenv("GCP_SERVICE_ACCOUNT")), tmp)
+	bq_auth(path = tmp)
+
 	x <- c("-2147483648", "-2147483647", "-1", "0", "1", "2147483647", "2147483648")
 	sql <- paste0("SELECT * FROM UNNEST ([", paste0(x, collapse = ","), "]) AS x");
 	qry <- bq_project_query(bq_test_project(), sql)
@@ -126,6 +171,12 @@ test_that("the return type of integer columns is set by the bigint argument", {
 # Geography is mapped to an utf8 string in input,
 # it would have to be converted to a geography by the user
 test_that("can convert geography type", {
+
+	tmp <- tempfile(pattern = ".json")
+	on.exit(unlink(tmp))
+	writeBin(base64enc::base64decode(Sys.getenv("GCP_SERVICE_ACCOUNT")), tmp)
+	bq_auth(path = tmp)
+
 	skip_if_not_installed("wk")
 	sql <- "SELECT ST_GEOGFROMTEXT('POINT (30 10)') as geography"
 	tb <- bq_project_query(bq_test_project(), sql, quiet = TRUE)
@@ -135,6 +186,12 @@ test_that("can convert geography type", {
 })
 
 test_that("can convert bytes type", {
+
+	tmp <- tempfile(pattern = ".json")
+	on.exit(unlink(tmp))
+	writeBin(base64enc::base64decode(Sys.getenv("GCP_SERVICE_ACCOUNT")), tmp)
+	bq_auth(path = tmp)
+
 	sql <- "SELECT ST_ASBINARY(ST_GEOGFROMTEXT('POINT (30 10)')) as bytes"
 	tb <- bq_project_query(bq_test_project(), sql, quiet = TRUE)
 	df <- bqs_table_download(tb, bq_test_project(), as_tibble = TRUE, quiet = TRUE)
