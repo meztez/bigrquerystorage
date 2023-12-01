@@ -160,6 +160,19 @@ if (file.exists(field_behavior)) {
   writeLines(linesx, field_behavior)
 }
 
+# fix pragmas
+gle_src <- dir(
+  file.path("src", "google"),
+  pattern = "[.]pb[.]h$",
+  recursive = TRUE
+)
+for (src_ in gle_src) {
+  src <- file.path("src", "google", src_)
+  lns <- readLines(src)
+  lns <- sub("^#pragma ", "# pragma ", lns)
+  writeLines(lns, src)
+}
+
 # Prepare makevars variables ----------------------------------------------
 
 # other package sources
