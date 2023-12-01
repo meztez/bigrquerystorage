@@ -10,3 +10,4 @@ src/google/
 *.dll
 .httr-oauth
 /src/Makevars
+/.deps

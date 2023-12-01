@@ -6,6 +6,62 @@
 win <- .Platform$OS.type == "windows"
 mac <- Sys.info()[["sysname"]] == "Darwin"
 
+sys <- function(cmd, intern = TRUE, ...) {
+  suppressWarnings(system(cmd, intern = intern, ...))
+}
+
+# System requirements -----------------------------------------------------
+
+done <- FALSE
+
+# flags specified explicitly
+cflags <- Sys.getenv("BQS_CFLAGS")
+ldflags <- Sys.getenv("BQS_LDFLAGS")
+done <- nzchar(cflags) || nzchar(ldflags)
+
+# working pkg-config finds the required libs
+if (!done && Sys.getenv("AUTOBREW_FORCE") == "" &&
+	nzchar(Sys.which("pkg-config"))) {
+  cflags <- sys("pkg-config --cflags --silence-errors grpc++ protobuf")
+  ldflags <- sys("pkg-config --cflags --libs grpc++ protobuf")
+  done <- nzchar(cflags) || nzchar(ldflags)
+}
+
+# autobrew on mac
+if (!done && mac && Sys.getenv("DISABLE_AUTOBREW") == "") {
+  deps <- c(
+    "grpc-static-1.59.3",
+    "re2-static-20231101",
+    "protobuf-static-25.1",
+    "openssl-static-3.1.1",
+    "jsoncpp-static-1.9.5",
+    "c-ares-static-1.22.1",
+    "abseil-static-20230802.1"
+  )
+  plfm <- if (R.Version()$arch == "aarch64") "arm64_big_sur" else "big_sur"
+
+  repo <- "https://github.com/gaborcsardi/homebrew-cran"
+  urls <- sprintf(
+	"%s/releases/download/%s/%s.%s.bottle.tar.gz",
+	repo, deps, deps, plfm
+  )
+  for (url in urls) {
+	tgt <- file.path(".deps", basename(url))
+	dir.create(dirname(tgt), showWarnings = FALSE, recursive = TRUE)
+	if (file.exists(tgt)) next
+	download.file(url, tgt, quiet = TRUE)
+	untar(tgt, exdir = ".deps")
+  }
+}
+
+# TODO: download static libs on windows
+
+# give up
+# TODO: better error message, suggest solutions
+if (!done) {
+  stop("Could not find system requirements. :(")
+}
+
 # Autogenerate sources from proto files -----------------------------------
 
 # binary locator, fail if not available
@@ -106,28 +162,18 @@ if (file.exists(field_behavior)) {
 
 # Prepare makevars variables ----------------------------------------------
 
-# locate pkg-config
-pkg_config <- detect_binary("pkg-config")
-
 # other package sources
 pkg_sources <- sort(dir("./src", ".cpp$|.c$"), decreasing = TRUE)
 
 # compiler flags
-comp_flags <- "-I."
+cxxflags <- "-I."
 
 # define variable for template
-define(CPPF = paste(
-  system(sprintf("%s --cflags grpc", pkg_config), intern = TRUE),
-  "-DSTRICT_R_HEADERS"
-))
-define(CXXF = comp_flags)
-define(CF = comp_flags)
-define(LIBS = linker_libs)
-define(TARGETS = paste(
-  c(
-    gsub(".proto$", ".pb.o", protos),
-    gsub(".proto$", ".grpc.pb.o", services),
-    gsub(".cpp$|.c$", ".o", pkg_sources)
-  ),
-  collapse = " "
-))
+define(CPPF = paste(cflags, "-DSTRING_R_HEADERS"))
+define(CXXF = cxxflags)
+define(LIBS = ldflags)
+define(TARGETS = paste(c(
+  gsub(".proto$", ".pb.o", protos),
+  gsub(".proto$", ".grpc.pb.o", services),
+  gsub(".cpp$|.c$", ".o", pkg_sources)
+), collapse = " "))
