@@ -173,6 +173,22 @@ for (src_ in gle_src) {
   writeLines(lns, src)
 }
 
+# fix deprecated declarations on Linux
+gle_cc <- dir(
+  file.path("src", "google"),
+  pattern = "([.]cc|[.]cpp)$",
+  recursive = TRUE
+)
+for (src_ in gle_cc) {
+  src <- file.path("src", "google", src_)
+  lns <- c(
+    "# pragma GCC diagnostic ignored \"-Wdeprecated-declarations\"",
+    readLines(src)
+  )
+  lns <- sub("^#pragma ", "# pragma ", lns)
+  writeLines(lns, src)
+}
+
 # Prepare makevars variables ----------------------------------------------
 
 # other package sources
