@@ -7,3 +7,4 @@
 ^.*\.o$
 ^\.httr-oauth$
 ^README\.Rmd$
+^\.github$
