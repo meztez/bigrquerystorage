@@ -52,6 +52,14 @@ jobs:
           http-user-agent: ${{ matrix.config.http-user-agent }}
           use-public-rspm: true
 
+      - name: "System packages on Linux"
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y \
+              libprotobuf-dev protobuf-compiler-grpc \
+              libgrpc++-dev libc-ares-dev libre2-dev \
+              pkg-config
+
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
           extra-packages: any::rcmdcheck
