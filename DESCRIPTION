@@ -7,7 +7,7 @@ Authors@R: c(
   person(family = "Google LLC", role = c("cph", "fnd")))
 Maintainer: Bruno Tremblay <openr@neoxone.com>
 Description: Provides facilities to interact with BigQuery Storage API.
-License: file LICENSE
+License: Apache License (>= 2)
 Imports:
     arrow,
     rlang,
