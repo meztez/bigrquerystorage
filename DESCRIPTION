@@ -15,10 +15,13 @@ Imports:
     DBI,
     bigrquery,
     assertthat,
-    Rcpp
+    Rcpp,
+    lifecycle,
+    bit64,
+    tibble,
+    base64enc
 Suggests:
     testthat,
-    bit64,
     hms,
     wk
 LinkingTo:

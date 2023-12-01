@@ -2,7 +2,9 @@ library(testthat)
 library(bigrquery)
 library(bigrquerystorage)
 
-if (bigrquery::bq_authable()) {
-  bq_auth()
+if (nzchar(Sys.getenv("BIGQUERY_TEST_PROJECT")) &&
+		nzchar(Sys.getenv("GCP_SERVICE_ACCOUNT"))) {
+
   test_check("bigrquerystorage")
+
 }

@@ -5,7 +5,7 @@
 #' @param snapshot_time Snapshot time
 #' @param selected_fields A character vector of field to select from table.
 #' @param row_restriction Restriction to apply to the table.
-#' @param max_results Maximum number of results to retrieve. Use `Inf` or `-1L`
+#' @param n_max Maximum number of results to retrieve. Use `Inf` or `-1L`
 #' retrieve all rows.
 #' @param as_tibble Should data be returned as tibble. Default is to return
 #' as arrow Table from raw IPC stream.
@@ -14,22 +14,26 @@
 #'   The default is `"integer"` which returns R's `integer` type but results in `NA` for
 #'   values above/below +/- 2147483647. `"integer64"` returns a [bit64::integer64],
 #'   which allows the full range of 64 bit integers.
+#' @param max_results Deprecated
 #' @export
 #' @importFrom arrow RecordBatchStreamReader Table
+#' @importFrom lifecycle deprecated deprecate_warn
+#' @importFrom tibble tibble
 bqs_table_download <- function(
   x,
   parent = getOption("bigquerystorage.project", ""),
   snapshot_time = NA,
   selected_fields = character(),
   row_restriction = "",
-  max_results = Inf,
+  n_max = Inf,
   quiet = NA,
   as_tibble = FALSE,
-  bigint = c("integer", "integer64", "numeric", "character")) {
+  bigint = c("integer", "integer64", "numeric", "character"),
+  max_results = lifecycle::deprecated()) {
 
   # Parameters validation
   bqs_table_name <- unlist(strsplit(unlist(x), "\\.|:"))
-  assertthat::assert_that(length(bqs_table_name) == 3)
+  assertthat::assert_that(length(bqs_table_name) >= 3)
   assertthat::assert_that(is.character(row_restriction))
   assertthat::assert_that(is.character(selected_fields))
   if (is.na(snapshot_time)) {
@@ -39,12 +43,17 @@ bqs_table_download <- function(
   }
   timestamp_seconds <- as.integer(snapshot_time)
   timestamp_nanos <- as.integer(as.numeric(snapshot_time - timestamp_seconds)*1000000000)
+  if (lifecycle::is_present(max_results)) {
+    lifecycle::deprecate_warn("1.99.0", "bqs_table_download(max_results)",
+                              "bqs_table_download(n_max)")
+    n_max <- max_results
+  }
 
   parent <- as.character(parent)
   if (nchar(parent) == 0) { parent <- bqs_table_name[1] }
 
-  if (max_results < 0 || max_results == Inf) {
-    max_results <- -1L
+  if (n_max < 0 || n_max == Inf) {
+    n_max <- -1L
     trim_to_n <- FALSE
   } else {
     trim_to_n <- TRUE
@@ -62,7 +71,7 @@ bqs_table_download <- function(
     dataset = bqs_table_name[2],
     table = bqs_table_name[3],
     parent = parent,
-    n = max_results,
+    n = n_max,
     selected_fields = selected_fields,
     row_restriction = row_restriction,
     timestamp_seconds = timestamp_seconds,
@@ -85,13 +94,18 @@ bqs_table_download <- function(
   }
 
   if (isTRUE(as_tibble)) {
-    tb <- asNamespace("bigrquery")$convert_bigint(as.data.frame(tb), bigint)
+    tb <- parse_postprocess(
+      tibble::tibble(
+        as.data.frame(tb)
+      ),
+      bigint
+    )
   }
 
-  # Batches do not support a max_results so we get just enough results before
+  # Batches do not support a n_max so we get just enough results before
   # exiting the streaming loop.
   if (isTRUE(trim_to_n) && nrow(tb) > 0) {
-    tb <- tb[1:max_results, ]
+    tb <- tb[1:n_max, ]
   }
 
   return(tb)
@@ -189,16 +203,22 @@ bqs_deauth <- function() {
 #' @export
 overload_bq_table_download <- function(parent) {
   utils::assignInNamespace("bq_table_download",  function(
-    x, max_results = Inf, page_size = 10000, start_index = 0L, max_connections = 6L,
-    quiet = NA, bigint = c("integer", "integer64", "numeric", "character")) {
+    x, n_max = Inf, page_size = NULL, start_index = 0L, max_connections = 6L,
+    quiet = NA, bigint = c("integer", "integer64", "numeric", "character"), max_results = deprecated()) {
+
     x <- bigrquery::as_bq_table(x)
-    assertthat::assert_that(is.numeric(max_results), length(max_results) == 1)
+    if (lifecycle::is_present(max_results)) {
+      lifecycle::deprecate_warn("1.4.0", "bq_table_download(max_results)",
+                                "bq_table_download(n_max)")
+      n_max <- max_results
+    }
+    assertthat::assert_that(is.numeric(n_max), length(n_max) == 1)
     assertthat::assert_that(is.numeric(start_index), length(start_index) == 1)
     bigint <- match.arg(bigint)
     table_data <- bigrquerystorage::bqs_table_download(
       x = x,
       parent = parent,
-      max_results = max_results + start_index,
+      n_max = n_max + start_index,
       as_tibble = TRUE,
       quiet = quiet,
       bigint = bigint
@@ -242,5 +262,34 @@ bqs_initiate <- function() {
   # Issue with parallel arrow as.data.frame on Windows
   if (.Platform$OS.type == "windows") {
     options("arrow.use_threads" = FALSE)
+  }
+}
+
+# utils ------------------------------------------------------------------
+`%||%` <- function (x, y) if (is.null(x)) y else x
+
+parse_postprocess <- function(df, bigint) {
+
+  if (bigint != "integer64") {
+    as_bigint <- switch(
+      bigint,
+      integer = as.integer,
+      numeric = as.numeric,
+      character = as.character
+    )
+    df <- col_apply(df, bit64::is.integer64, as_bigint)
+  }
+
+  df
+}
+
+col_apply <- function(x, p, f) {
+  if (is.list(x)) {
+    x[] <- lapply(x, col_apply, p = p, f = f)
+    x
+  } else if (p(x)) {
+    f(x)
+  } else {
+    x
   }
 }

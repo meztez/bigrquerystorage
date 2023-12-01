@@ -39,6 +39,8 @@ jobs:
 
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      BIGQUERY_TEST_PROJECT: ${{ secrets.BIGQUERY_TEST_PROJECT }}
+      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
       R_KEEP_PKG_SOURCE: yes
 
     steps:

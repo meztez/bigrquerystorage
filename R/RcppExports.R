@@ -2,22 +2,22 @@
 # Generator token: 10BE3573-1514-4C36-9D1C-5A225CD40393
 
 bqs_set_log_verbosity <- function(severity) {
-    invisible(.Call('_bigrquerystorage_bqs_set_log_verbosity', PACKAGE = 'bigrquerystorage', severity))
+    invisible(.Call(`_bigrquerystorage_bqs_set_log_verbosity`, severity))
 }
 
 bqs_init_logger <- function() {
-    invisible(.Call('_bigrquerystorage_bqs_init_logger', PACKAGE = 'bigrquerystorage'))
+    invisible(.Call(`_bigrquerystorage_bqs_init_logger`))
 }
 
 grpc_version <- function() {
-    .Call('_bigrquerystorage_grpc_version', PACKAGE = 'bigrquerystorage')
+    .Call(`_bigrquerystorage_grpc_version`)
 }
 
 bqs_client <- function(client_info, service_configuration, refresh_token = "", access_token = "", root_certificate = "", target = "bigquerystorage.googleapis.com:443") {
-    .Call('_bigrquerystorage_bqs_client', PACKAGE = 'bigrquerystorage', client_info, service_configuration, refresh_token, access_token, root_certificate, target)
+    .Call(`_bigrquerystorage_bqs_client`, client_info, service_configuration, refresh_token, access_token, root_certificate, target)
 }
 
 bqs_ipc_stream <- function(client, project, dataset, table, parent, n, selected_fields, row_restriction = "", timestamp_seconds = 0L, timestamp_nanos = 0L, quiet = FALSE) {
-    .Call('_bigrquerystorage_bqs_ipc_stream', PACKAGE = 'bigrquerystorage', client, project, dataset, table, parent, n, selected_fields, row_restriction, timestamp_seconds, timestamp_nanos, quiet)
+    .Call(`_bigrquerystorage_bqs_ipc_stream`, client, project, dataset, table, parent, n, selected_fields, row_restriction, timestamp_seconds, timestamp_nanos, quiet)
 }
 
