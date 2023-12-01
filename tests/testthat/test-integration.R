@@ -3,8 +3,8 @@
 test_that("BigQuery json and BigQuery return the same results", {
 
 	# Compare with bigrquery method
-	dt <- bqs_table_download("bigquery-public-data.usa_names.usa_1910_current", bq_test_project(), max_results = 50000, as_tibble = TRUE, quiet = TRUE)
-	dt2 <- bq_table_download("bigquery-public-data.usa_names.usa_1910_current", max_results = 50000)
+	dt <- bqs_table_download("bigquery-public-data.usa_names.usa_1910_current", bq_test_project(), n_max = 50000, as_tibble = TRUE, quiet = TRUE)
+	dt2 <- bq_table_download("bigquery-public-data.usa_names.usa_1910_current", n_max = 50000, quiet = TRUE)
 	expect_equal(dt, dt2)
 
 })
@@ -61,7 +61,7 @@ test_that("Optional BigQuery Storage API parameters work", {
 
 test_that("can read utf-8 strings", {
 	sql <- "SELECT '\U0001f603' as x"
-	tb <- bq_project_query(bq_test_project(), sql)
+	tb <- bq_project_query(bq_test_project(), sql, quiet = TRUE)
 	df <- bqs_table_download(tb, bq_test_project(), as_tibble = TRUE, quiet = TRUE)
 	x <- df$x[[1]]
 
@@ -82,10 +82,12 @@ test_that("can convert date time types", {
 
 	tb <- bq_project_query(bq_test_project(), sql, quiet = TRUE)
 	df <- bqs_table_download(tb, bq_test_project(), as_tibble = TRUE, quiet = TRUE)
+	df2 <- bq_table_download(tb, quiet = TRUE)
 
 	base <- ISOdatetime(2000, 1, 2, 3, 4, 5.67, tz = "UTC")
 	attr(df$datetime, "tzone") <- attr(base, "tzone")
 
+	expect_equal(df, df2, tolerance = 0.67)
 	expect_equal(df$datetime, base)
 	expect_equal(df$timestamp, base)
 	expect_equal(df$date, as.Date(base))

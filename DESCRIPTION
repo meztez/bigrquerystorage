@@ -15,7 +15,9 @@ Imports:
     DBI,
     bigrquery,
     assertthat,
-    Rcpp
+    Rcpp,
+    lifecycle,
+    bit64
 Suggests:
     testthat,
     bit64,

@@ -20,7 +20,7 @@ setMethod(
 
 		data <- bqs_table_download(res@bq_table,
 															 tryCatch(res@billing, error = function(e) {getOption("bigquerystorage.project","")}),
-															 max_results = n + res@cursor$cur(),
+															 n_max = n + res@cursor$cur(),
 															 as_tibble = TRUE,
 															 quiet = res@quiet,
 															 bigint = res@bigint,
