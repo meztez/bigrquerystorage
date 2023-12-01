@@ -12,3 +12,10 @@ NULL
 }
 
 .global <- new.env()
+
+# work around R CMD check false positives
+
+dummy <- function() {
+  Rcpp::compileAttributes
+  DBI::ANSI
+}
