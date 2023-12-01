@@ -181,10 +181,25 @@ pkg_sources <- sort(dir("./src", ".cpp$|.c$"), decreasing = TRUE)
 # compiler flags
 cxxflags <- "-I."
 
+fix_flags <- function(x) {
+  x <- gsub("-Wno-float-conversion ", "", x, fixed = TRUE)
+  x <- gsub("-Wno-implicit-float-conversion ", "", x, fixed = TRUE)
+  x <- gsub("-Wno-implicit-int-float-conversion ", "", x, fixed = TRUE)
+  x <- gsub("-Wno-unknown-warning-option ", "", x, fixed = TRUE)
+  x <- gsub("-Wno-unused-command-line-argument ", "", x, fixed = TRUE)
+
+  if (grepl("-DNOMINMAX ", x, fixed = TRUE)) {
+	x <- gsub("-DNOMINMAX ", "", x, fixed = TRUE)
+	x <- paste("-DNOMINMAX", x)
+  }
+
+  x
+}
+
 # define variable for template
-define(CPPF = paste(cflags, "-DSTRING_R_HEADERS"))
+define(CPPF = fix_flags(paste(cflags, "-DSTRING_R_HEADERS")))
 define(CXXF = cxxflags)
-define(LIBS = ldflags)
+define(LIBS = fix_flags(ldflags))
 define(TARGETS = paste(c(
   gsub(".proto$", ".pb.o", protos),
   gsub(".proto$", ".grpc.pb.o", services),
