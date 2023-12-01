@@ -22,7 +22,7 @@ jobs:
       fail-fast: false
       matrix:
         config:
-          # - {os: macos-latest,   r: 'release'}
+          - {os: macos-latest,   r: 'release'}
 
           # - {os: windows-latest, r: 'release'}
           # Use 3.6 to trigger usage of RTools35
@@ -59,6 +59,11 @@ jobs:
               libprotobuf-dev protobuf-compiler-grpc \
               libgrpc++-dev libc-ares-dev libre2-dev \
               pkg-config
+
+      - name: "System packages on macOS"
+        if: runner.os == 'macOS'
+        run: |
+          brew install grpc pkg-config
 
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
