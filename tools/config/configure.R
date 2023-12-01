@@ -169,7 +169,7 @@ gle_src <- dir(
 for (src_ in gle_src) {
   src <- file.path("src", "google", src_)
   lns <- readLines(src)
-  lns <- sub("^#pragma ", "# pragma ", lns)
+  lns <- sub("^\\s*#pragma ", "# pragma ", lns)
   writeLines(lns, src)
 }
 
