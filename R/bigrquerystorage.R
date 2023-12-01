@@ -1,3 +1,4 @@
+#' @import methods DBI
 #' @useDynLib bigrquerystorage
 NULL
 
@@ -17,5 +18,4 @@ NULL
 
 dummy <- function() {
   Rcpp::compileAttributes
-  DBI::ANSI
 }

@@ -10,6 +10,7 @@ Description: Provides facilities to interact with BigQuery Storage API.
 License: Apache License (>= 2)
 Imports:
     arrow,
+    methods,
     rlang,
     DBI,
     bigrquery,
