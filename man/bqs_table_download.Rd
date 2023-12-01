@@ -10,10 +10,11 @@ bqs_table_download(
   snapshot_time = NA,
   selected_fields = character(),
   row_restriction = "",
-  max_results = Inf,
+  n_max = Inf,
   quiet = NA,
   as_tibble = FALSE,
-  bigint = c("integer", "integer64", "numeric", "character")
+  bigint = c("integer", "integer64", "numeric", "character"),
+  max_results = lifecycle::deprecated()
 )
 }
 \arguments{
@@ -28,9 +29,6 @@ grpc method. You can set option `bigquerystorage.project`.}
 
 \item{row_restriction}{Restriction to apply to the table.}
 
-\item{max_results}{Maximum number of results to retrieve. Use `Inf` or `-1L`
-retrieve all rows.}
-
 \item{quiet}{Should information be printed to console.}
 
 \item{as_tibble}{Should data be returned as tibble. Default is to return
@@ -40,6 +38,9 @@ as arrow Table from raw IPC stream.}
 The default is `"integer"` which returns R's `integer` type but results in `NA` for
 values above/below +/- 2147483647. `"integer64"` returns a [bit64::integer64],
 which allows the full range of 64 bit integers.}
+
+\item{max_results}{Maximum number of results to retrieve. Use `Inf` or `-1L`
+retrieve all rows.}
 }
 \description{
 Download table from BigQuery using BigQuery Storage API

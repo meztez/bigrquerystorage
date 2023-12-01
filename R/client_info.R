@@ -1,5 +1,5 @@
 #' Loosely adapted from https://github.com/googleapis/python-api-core/blob/master/google/api_core/client_info.py
-#' @noMd
+#' @noRd
 bqs_ua <- function() {
   paste0(
     "bigrquerystorage",
