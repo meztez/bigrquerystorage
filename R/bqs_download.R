@@ -5,7 +5,7 @@
 #' @param snapshot_time Snapshot time
 #' @param selected_fields A character vector of field to select from table.
 #' @param row_restriction Restriction to apply to the table.
-#' @param max_results Maximum number of results to retrieve. Use `Inf` or `-1L`
+#' @param n_max Maximum number of results to retrieve. Use `Inf` or `-1L`
 #' retrieve all rows.
 #' @param as_tibble Should data be returned as tibble. Default is to return
 #' as arrow Table from raw IPC stream.
@@ -14,6 +14,7 @@
 #'   The default is `"integer"` which returns R's `integer` type but results in `NA` for
 #'   values above/below +/- 2147483647. `"integer64"` returns a [bit64::integer64],
 #'   which allows the full range of 64 bit integers.
+#' @param max_results Deprecated
 #' @export
 #' @importFrom arrow RecordBatchStreamReader Table
 #' @importFrom lifecycle deprecated deprecate_warn

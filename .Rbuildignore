@@ -8,5 +8,4 @@
 ^\.httr-oauth$
 ^README\.Rmd$
 ^\.github$
-^\.deps$
 ^LICENSE\.md$

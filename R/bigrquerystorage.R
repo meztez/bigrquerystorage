@@ -3,6 +3,7 @@
 #' @import methods DBI
 #' @importFrom Rcpp sourceCpp
 #' @importFrom bit64 is.integer64
+#' @importFrom base64enc base64decode
 #' @useDynLib bigrquerystorage, .registration = TRUE
 "_PACKAGE"
 

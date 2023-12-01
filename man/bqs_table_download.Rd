@@ -29,6 +29,9 @@ grpc method. You can set option `bigquerystorage.project`.}
 
 \item{row_restriction}{Restriction to apply to the table.}
 
+\item{n_max}{Maximum number of results to retrieve. Use `Inf` or `-1L`
+retrieve all rows.}
+
 \item{quiet}{Should information be printed to console.}
 
 \item{as_tibble}{Should data be returned as tibble. Default is to return
@@ -39,8 +42,7 @@ The default is `"integer"` which returns R's `integer` type but results in `NA` 
 values above/below +/- 2147483647. `"integer64"` returns a [bit64::integer64],
 which allows the full range of 64 bit integers.}
 
-\item{max_results}{Maximum number of results to retrieve. Use `Inf` or `-1L`
-retrieve all rows.}
+\item{max_results}{Deprecated}
 }
 \description{
 Download table from BigQuery using BigQuery Storage API
