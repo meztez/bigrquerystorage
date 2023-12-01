@@ -1,6 +1,8 @@
 library(testthat)
 library(bigrquery)
 library(bigrquerystorage)
-bq_auth()
 
-test_check("bigrquerystorage")
+if (bigrquery::bq_authable()) {
+  bq_auth()
+  test_check("bigrquerystorage")
+}
