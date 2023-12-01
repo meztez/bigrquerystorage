@@ -4,6 +4,8 @@
 # bigrquerystorage
 
 <!-- badges: start -->
+
+[![R-CMD-check](https://github.com/meztez/bigrquerystorage/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/meztez/bigrquerystorage/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
 <figure>
