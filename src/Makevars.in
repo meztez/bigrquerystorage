@@ -6,8 +6,3 @@ CXX_STD = CXX17
 
 # Obtain the object files
 OBJECTS=@TARGETS@
-
-strippedLib: $(SHLIB)
-	if test -e "/usr/bin/strip"; then /usr/bin/strip --strip-unneeded $(SHLIB); fi
-
-.phony: strippedLib

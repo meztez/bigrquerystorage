@@ -64,6 +64,12 @@ dnf install -y protobuf-devel protobuf-compiler \
                re2-devel pkgconf
 ```
 
+#### macOS
+
+``` sh
+brew install grpc pkg-config
+```
+
 #### Windows
 
 If it detects `Rtools43`, it should be able to install dependencies from
