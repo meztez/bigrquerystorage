@@ -160,6 +160,36 @@ if (file.exists(field_behavior)) {
   writeLines(linesx, field_behavior)
 }
 
+# fix pragmas
+gle_src <- dir(
+  file.path("src", "google"),
+  pattern = "[.]pb[.]h$",
+  recursive = TRUE
+)
+for (src_ in gle_src) {
+  src <- file.path("src", "google", src_)
+  lns <- readLines(src)
+  lns <- sub("^\\s*#pragma ", "# pragma ", lns)
+  writeLines(lns, src)
+}
+
+# fix deprecated declarations on Linux
+gle_cc <- dir(
+  file.path("src", "google"),
+  pattern = "([.]cc|[.]cpp)$",
+  recursive = TRUE
+)
+for (src_ in gle_cc) {
+  src <- file.path("src", "google", src_)
+  lns <- c(
+    "# pragma GCC diagnostic ignored \"-Wdeprecated-declarations\"",
+    "# pragma GCC diagnostic ignored \"-Winconsistent-missing-override\"",
+    readLines(src)
+  )
+  lns <- sub("^#pragma ", "# pragma ", lns)
+  writeLines(lns, src)
+}
+
 # Prepare makevars variables ----------------------------------------------
 
 # other package sources
@@ -168,10 +198,25 @@ pkg_sources <- sort(dir("./src", ".cpp$|.c$"), decreasing = TRUE)
 # compiler flags
 cxxflags <- "-I."
 
+fix_flags <- function(x) {
+  x <- gsub("-Wno-float-conversion ", "", x, fixed = TRUE)
+  x <- gsub("-Wno-implicit-float-conversion ", "", x, fixed = TRUE)
+  x <- gsub("-Wno-implicit-int-float-conversion ", "", x, fixed = TRUE)
+  x <- gsub("-Wno-unknown-warning-option ", "", x, fixed = TRUE)
+  x <- gsub("-Wno-unused-command-line-argument ", "", x, fixed = TRUE)
+
+  if (grepl("-DNOMINMAX ", x, fixed = TRUE)) {
+	x <- gsub("-DNOMINMAX ", "", x, fixed = TRUE)
+	x <- paste("-DNOMINMAX", x)
+  }
+
+  x
+}
+
 # define variable for template
-define(CPPF = paste(cflags, "-DSTRING_R_HEADERS"))
+define(CPPF = fix_flags(paste(cflags, "-DSTRING_R_HEADERS")))
 define(CXXF = cxxflags)
-define(LIBS = ldflags)
+define(LIBS = fix_flags(ldflags))
 define(TARGETS = paste(c(
   gsub(".proto$", ".pb.o", protos),
   gsub(".proto$", ".grpc.pb.o", services),

@@ -85,7 +85,7 @@ bqs_table_download <- function(
   }
 
   if (isTRUE(as_tibble)) {
-    tb <- bigrquery:::convert_bigint(as.data.frame(tb), bigint)
+    tb <- asNamespace("bigrquery")$convert_bigint(as.data.frame(tb), bigint)
   }
 
   # Batches do not support a max_results so we get just enough results before
@@ -134,19 +134,19 @@ bqs_auth <- function() {
 
   # Recycling bigrquery credentials
   if (bigrquery::bq_has_token()) {
-    if (!is.null(bigrquery:::.auth$cred$credentials$refresh_token)) {
+    if (!is.null(asNamespace("bigrquery")$.auth$cred$credentials$refresh_token)) {
       refresh_token <- c(
         type = "authorized_user",
-        client_secret = bigrquery:::.auth$cred$app$secret,
-        client_id = bigrquery:::.auth$cred$app$key,
-        refresh_token = bigrquery:::.auth$cred$credentials$refresh_token
+        client_secret = asNamespace("bigrquery")$.auth$cred$app$secret,
+        client_id = asNamespace("bigrquery")$.auth$cred$app$key,
+        refresh_token = asNamespace("bigrquery")$.auth$cred$credentials$refresh_token
       )
       refresh_token <- paste0("{", paste0(
         '"', names(refresh_token), '":"', refresh_token, '"',
         collapse = ","), "}")
       access_token <- ""
     } else {
-      access_token <- bigrquery:::.auth$get_cred()$credentials$access_token
+      access_token <- asNamespace("bigrquery")$.auth$get_cred()$credentials$access_token
       refresh_token <- ""
     }
   } else {

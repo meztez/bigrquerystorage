@@ -1,3 +1,4 @@
+#' @import methods DBI
 #' @useDynLib bigrquerystorage
 NULL
 
@@ -12,3 +13,9 @@ NULL
 }
 
 .global <- new.env()
+
+# work around R CMD check false positives
+
+dummy <- function() {
+  Rcpp::compileAttributes
+}
