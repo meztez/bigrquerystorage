@@ -2,56 +2,44 @@
 # Use 'define()' to define configuration variables.
 # Use 'configure_file()' to substitute configuration values.
 
+source("tools/config/functions.R")
+
 # Check OS ----------------------------------------------------------------
 win <- .Platform$OS.type == "windows"
 mac <- Sys.info()[["sysname"]] == "Darwin"
 
 sys <- function(cmd, intern = TRUE, ...) {
-  suppressWarnings(system(cmd, intern = intern, ...))
+  as_string(suppressWarnings(system(cmd, intern = intern, ...)))
 }
 
 # System requirements -----------------------------------------------------
 
 done <- FALSE
+config_from <- NULL
 
 # flags specified explicitly
 cflags <- Sys.getenv("BQS_CFLAGS")
 ldflags <- Sys.getenv("BQS_LDFLAGS")
 done <- nzchar(cflags) || nzchar(ldflags)
+if (done) config_from <- "explicit"
 
 # working pkg-config finds the required libs
 if (!done && Sys.getenv("AUTOBREW_FORCE") == "" &&
 	nzchar(Sys.which("pkg-config"))) {
   cflags <- sys("pkg-config --cflags --silence-errors grpc++ protobuf")
-  ldflags <- sys("pkg-config --cflags --libs grpc++ protobuf")
+  ldflags <- sys("pkg-config --libs --silence-errors grpc++ protobuf")
   done <- nzchar(cflags) || nzchar(ldflags)
+  if (done) config_from <- "pkg-config"
 }
 
 # autobrew on mac
 if (!done && mac && Sys.getenv("DISABLE_AUTOBREW") == "") {
-  deps <- c(
-    "grpc-static-1.59.3",
-    "re2-static-20231101",
-    "protobuf-static-25.1",
-    "openssl-static-3.1.1",
-    "jsoncpp-static-1.9.5",
-    "c-ares-static-1.22.1",
-    "abseil-static-20230802.1"
-  )
-  plfm <- if (R.Version()$arch == "aarch64") "arm64_big_sur" else "big_sur"
-
-  repo <- "https://github.com/gaborcsardi/homebrew-cran"
-  urls <- sprintf(
-	"%s/releases/download/%s/%s.%s.bottle.tar.gz",
-	repo, deps, deps, plfm
-  )
-  for (url in urls) {
-	tgt <- file.path(".deps", basename(url))
-	dir.create(dirname(tgt), showWarnings = FALSE, recursive = TRUE)
-	if (file.exists(tgt)) next
-	download.file(url, tgt, quiet = TRUE)
-	untar(tgt, exdir = ".deps")
-  }
+  download_autobrew()
+  flags <- configure_autobrew()
+  cflags <- as_string(flags$cflags)
+  ldflags <- as_string(flags$ldflags)
+  done <- nzchar(cflags) || nzchar(ldflags)
+  if (done) config_from <- "autobrew"
 }
 
 # TODO: download static libs on windows
@@ -69,15 +57,10 @@ detect_binary <- function(binary) {
   message(sprintf("*** searching for %s ...", binary), appendLF = FALSE)
   path <- Sys.which(binary)
   if (path == "") {
-    if (binary == "pkg-config") {
-      install_with_pacman("pkgconf", RTOOLS43_ROOT, WIN)
-      path <- Sys.which(binary)
-    } else {
-      message(" Failed")
-      stop("Could not find ", binary)
-    }
+    message(" Failed")
+    stop("Could not find ", binary)
   } else {
-    message(" OK")
+    message(" OK: ", path)
   }
   path
 }
@@ -126,7 +109,10 @@ compile_order <- function(pbpath, bpath) {
 protos <- compile_order(services, base_proto_path)
 
 # protos include path (to locate google/protobuf/*.proto)
-ipath <- base_proto_path
+ipath <- c(
+  base_proto_path,
+  if (config_from == "autobrew") autobrew_proto_include_path
+)
 
 # compile proto files to generate basic grpc client
 message("*** compiling proto files ...")
@@ -196,7 +182,7 @@ for (src_ in gle_cc) {
 pkg_sources <- sort(dir("./src", ".cpp$|.c$"), decreasing = TRUE)
 
 # compiler flags
-cxxflags <- "-I."
+cxxflags <- if (mac) "-std=gnu++17" else ""
 
 fix_flags <- function(x) {
   x <- gsub("-Wno-float-conversion ", "", x, fixed = TRUE)
@@ -214,7 +200,7 @@ fix_flags <- function(x) {
 }
 
 # define variable for template
-define(CPPF = fix_flags(paste(cflags, "-DSTRING_R_HEADERS")))
+define(CPPF = fix_flags(paste(cflags, "-DSTRING_R_HEADERS", "-I.")))
 define(CXXF = cxxflags)
 define(LIBS = fix_flags(ldflags))
 define(TARGETS = paste(c(

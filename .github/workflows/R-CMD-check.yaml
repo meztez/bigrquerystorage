@@ -22,7 +22,12 @@ jobs:
       fail-fast: false
       matrix:
         config:
-          - {os: macos-13,   r: 'release'}
+          - { os: macos-11,       r: 'release' }
+          - { os: macos-12,       r: 'release' }
+          - { os: macos-13,       r: 'release' }
+          - { os: macos-11,       r: 'release', deps: true }
+          - { os: macos-12,       r: 'release', deps: true }
+          - { os: macos-13,       r: 'release', deps: true }
 
           # - {os: windows-latest, r: 'release'}
           # Use 3.6 to trigger usage of RTools35
@@ -31,11 +36,11 @@ jobs:
           # - {os: windows-latest, r: '4.1'}
 
           # - {os: ubuntu-latest,   r: 'devel', http-user-agent: 'release'}
-          - {os: ubuntu-latest,   r: 'release'}
-          - {os: ubuntu-latest,   r: 'oldrel-1'}
-          - {os: ubuntu-latest,   r: 'oldrel-2'}
-          - {os: ubuntu-latest,   r: 'oldrel-3'}
-          - {os: ubuntu-latest,   r: 'oldrel-4'}
+          - { os: ubuntu-latest,  r: 'release'  }
+          - { os: ubuntu-latest,  r: 'oldrel-1' }
+          - { os: ubuntu-latest,  r: 'oldrel-2' }
+          - { os: ubuntu-latest,  r: 'oldrel-3' }
+          - { os: ubuntu-latest,  r: 'oldrel-4' }
 
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
@@ -63,7 +68,7 @@ jobs:
               pkg-config
 
       - name: "System packages on macOS"
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && matrix.config.deps
         run: |
           brew install grpc pkg-config
 

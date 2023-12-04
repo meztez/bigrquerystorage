@@ -9,3 +9,5 @@
 ^README\.Rmd$
 ^\.github$
 ^LICENSE\.md$
+^[.]deps$
+^[.]deps-arm64$
