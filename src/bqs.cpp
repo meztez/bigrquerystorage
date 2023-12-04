@@ -6,6 +6,7 @@
 #include <grpcpp/grpcpp.h>
 #include "google/cloud/bigquery/storage/v1/stream.pb.h"
 #include "google/cloud/bigquery/storage/v1/storage.pb.h"
+# pragma GCC diagnostic ignored "-Winconsistent-missing-override"
 #include "google/cloud/bigquery/storage/v1/storage.grpc.pb.h"
 #include <Rcpp.h>
 #include "RProgress.h"
