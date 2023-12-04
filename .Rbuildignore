@@ -9,3 +9,4 @@
 ^README\.Rmd$
 ^\.github$
 ^LICENSE\.md$
+^[.]deps$
