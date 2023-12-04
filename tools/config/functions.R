@@ -3,7 +3,7 @@ as_string <- function(x) {
 }
 
 # autobrew
-autobrew_path <- ".deps"
+autobrew_path <- if (R.Version()$arch == "aarch64") ".deps-arm64" else ".deps"
 autobrew_proto_include_path <- file.path(
   autobrew_path,
   "protobuf-static",
