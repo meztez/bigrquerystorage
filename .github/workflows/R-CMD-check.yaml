@@ -22,7 +22,8 @@ jobs:
       fail-fast: false
       matrix:
         config:
-          - { os: macos-11,       r: 'release' }
+          # this is too slow
+          # - { os: macos-11,       r: 'release' }
           - { os: macos-12,       r: 'release' }
           - { os: macos-13,       r: 'release' }
           - { os: macos-11,       r: 'release', deps: true }
@@ -35,7 +36,7 @@ jobs:
           # use 4.1 to check with rtools40's older compiler
           # - {os: windows-latest, r: '4.1'}
 
-          # - {os: ubuntu-latest,   r: 'devel', http-user-agent: 'release'}
+          - { os: ubuntu-latest,  r: 'devel', http-user-agent: 'release'}
           - { os: ubuntu-latest,  r: 'release'  }
           - { os: ubuntu-latest,  r: 'oldrel-1' }
           - { os: ubuntu-latest,  r: 'oldrel-2' }
