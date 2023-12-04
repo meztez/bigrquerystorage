@@ -182,7 +182,7 @@ for (src_ in gle_cc) {
 pkg_sources <- sort(dir("./src", ".cpp$|.c$"), decreasing = TRUE)
 
 # compiler flags
-cxxflags <- ""
+cxxflags <- if (mac) "-std=gnu++17" else ""
 
 fix_flags <- function(x) {
   x <- gsub("-Wno-float-conversion ", "", x, fixed = TRUE)
