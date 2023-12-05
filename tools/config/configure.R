@@ -205,6 +205,22 @@ fix_flags <- function(x) {
   x
 }
 
+# On Windows, we need to replace CRLF line endings with LF,
+# otherwise `R CMD check` will complain. We also make sure that they
+# end with a newline, again to fix `R CMD check`.
+if (win) {
+  src <- file.path("src", "google", dir(
+    file.path("src", "google"),
+    pattern = "[.]pb[.](h|cc)$",
+    recursive = TRUE
+  ))
+  for (fn in src) {
+    lns <- readLines(fn)
+    bts <- charToRaw(paste0(c(lns, ""), collapse = "\n"))
+    writeBin(bts, fn)
+  }
+}
+
 # define variable for template
 define(CPPF = fix_flags(paste(cflags, "-DSTRING_R_HEADERS", "-I.")))
 define(CXXF = cxxflags)
