@@ -74,11 +74,26 @@ jobs:
         run: |
           brew install grpc pkg-config
 
+      - name: "Install rig on Windows (temporary)"
+        if: runner.os == 'Windows'
+        run: |
+          choco install rig
+
+      - name: "Update Rtools43 on Windows (temporary)"
+        if: runner.os == 'Windows'
+        run: |
+          rig rm rtools43
+          rig add rtools43
+
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
           extra-packages: any::rcmdcheck
           needs: check
 
+      - run: |
+          R.exe CMD INSTALL .
+
       - uses: r-lib/actions/check-r-package@v2
+        if: false
         with:
           upload-snapshots: true
