@@ -8,17 +8,6 @@ source("tools/config/functions.R")
 win <- .Platform$OS.type == "windows"
 mac <- Sys.info()[["sysname"]] == "Darwin"
 
-print(dir("C:/rtools43/x86_64-w64-mingw32.static.posix/bin"))
-print(Sys.getenv("PATH"))
-print(Sys.which("pkgconf"))
-print(Sys.which("pkgconf.exe"))
-system("pkgconf --version")
-system("pkg-config --version")
-system("sh -c 'pkgconf --version'")
-system("sh -c 'pkg-config --version'")
-writeLines(readLines("C:/rtools43/x86_64-w64-mingw32.static.posix/.version"))
-writeLines(readLines("C:/rtools43/x86_64-w64-mingw32.static.posix/installed.list"))
-
 # System requirements -----------------------------------------------------
 
 done <- FALSE
