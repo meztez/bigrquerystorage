@@ -68,15 +68,20 @@ dnf install -y protobuf-devel protobuf-compiler \
 
 #### macOS
 
+If you use Homebrew you may install the `grpc` package, plus
+`pkg-config`. If you don’t do that, the package will download static
+builds of the system dependencies during installation. This works with
+macOS Big Sur, or later, on Intel and Arm64 machines.
+
 ``` sh
 brew install grpc pkg-config
 ```
 
 #### Windows
 
-If it detects `Rtools43`, it should be able to install dependencies from
-CRAN or bintray. Make sure that your PATH environment variable includes
-both `%R_HOME%/bin/x64` and `%RTOOLS43_HOME%/mingw64/bin`.
+The package will automatically download a static build of the system
+requirements during installation. This works on R 4.3.x or later
+currently.
 
 ## Example
 
