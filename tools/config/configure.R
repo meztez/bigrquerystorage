@@ -8,10 +8,6 @@ source("tools/config/functions.R")
 win <- .Platform$OS.type == "windows"
 mac <- Sys.info()[["sysname"]] == "Darwin"
 
-sys <- function(cmd, intern = TRUE, ...) {
-  as_string(suppressWarnings(system(cmd, intern = intern, ...)))
-}
-
 # System requirements -----------------------------------------------------
 
 done <- FALSE
@@ -42,7 +38,14 @@ if (!done && mac && Sys.getenv("DISABLE_AUTOBREW") == "") {
   if (done) config_from <- "autobrew"
 }
 
-# TODO: download static libs on windows
+if (win) {
+  download_win()
+  flags <- configure_win()
+  cflags <- as_string(flags$cflags)
+  ldflags <- as_string(flags$ldflags)
+  done <- nzchar(cflags) || nzchar(ldflags)
+  if (done) config_from <- "winlib"
+}
 
 # give up
 # TODO: better error message, suggest solutions
@@ -111,7 +114,8 @@ protos <- compile_order(services, base_proto_path)
 # protos include path (to locate google/protobuf/*.proto)
 ipath <- c(
   base_proto_path,
-  if (config_from == "autobrew") autobrew_proto_include_path
+  if (config_from == "autobrew") autobrew_proto_include_path,
+  if (config_from == "winlib") winlib_proto_include_path
 )
 
 # compile proto files to generate basic grpc client
@@ -169,7 +173,9 @@ for (src_ in gle_cc) {
   src <- file.path("src", "google", src_)
   lns <- c(
     "# pragma GCC diagnostic ignored \"-Wdeprecated-declarations\"",
-    "# pragma GCC diagnostic ignored \"-Winconsistent-missing-override\"",
+    if (!win) {
+      "# pragma GCC diagnostic ignored \"-Winconsistent-missing-override\""
+    },
     readLines(src)
   )
   lns <- sub("^#pragma ", "# pragma ", lns)
