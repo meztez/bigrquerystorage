@@ -82,6 +82,8 @@ jobs:
       - name: "Update Rtools43 on Windows (temporary)"
         if: runner.os == 'Windows'
         run: |
+          mv c:\rtools43 c:\rtools43-old
+          mkdir c:\rtools43
           rig rm rtools43
           rig add rtools43
 
