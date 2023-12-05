@@ -91,7 +91,7 @@ configure_autobrew <- function() {
     "INSTALL_RECEIPT.json"
   )
   # we only need to replace @@HOMEBREW_CELLAR@@
-  cellar <- file.path(getwd(), path)
+  cellar <- file.path(normalizePath(path))
   for (js in rcpt) {
     lns <- readLines(js, warn = FALSE)
     from <- grep("changed_files", lns)[1] + 1L
