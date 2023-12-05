@@ -1,5 +1,5 @@
 #' Download table from BigQuery using BigQuery Storage API
-#' @param x BigQuery table reference `{project}.{dataset}.{table_name}`
+#' @param x BigQuery table reference `\{project\}.\{dataset\}.\{table_name\}`
 #' @param parent Used as parent for `CreateReadSession`
 #' grpc method. You can set option `bigquerystorage.project`.
 #' @param snapshot_time Snapshot time

@@ -18,7 +18,7 @@ bqs_table_download(
 )
 }
 \arguments{
-\item{x}{BigQuery table reference `{project}.{dataset}.{table_name}`}
+\item{x}{BigQuery table reference `\{project\}.\{dataset\}.\{table_name\}`}
 
 \item{parent}{Used as parent for `CreateReadSession`
 grpc method. You can set option `bigquerystorage.project`.}
