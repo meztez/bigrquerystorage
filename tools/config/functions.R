@@ -151,7 +151,11 @@ download_win <- function() {
 
 configure_win <- function() {
   Sys.setenv("PKG_CONFIG_PATH" = normalizePath(winlib_pkg_config_path))
+  print(Sys.getenv("PATH"))
   add_to_path(winlib_bin)
+  print(Sys.getenv("PATH"))
+  print(Sys.which("pkg-config"))
+  print(Sys.which("pkgconf"))
   list(
     cflags = sys(
       "pkgconf --cflags --silence-errors grpc++ protobuf"
