@@ -22,15 +22,17 @@ jobs:
       fail-fast: false
       matrix:
         config:
-          # this is too slow
-          # - { os: macos-11,       r: 'release' }
+          - { os: macos-11,       r: 'release' }
           - { os: macos-12,       r: 'release' }
           - { os: macos-13,       r: 'release' }
-          - { os: macos-11,       r: 'release', deps: true }
+          # this is too slow
+          # - { os: macos-11,       r: 'release', deps: true }
           - { os: macos-12,       r: 'release', deps: true }
           - { os: macos-13,       r: 'release', deps: true }
 
-          # - {os: windows-latest, r: 'release'}
+          - { os: windows-latest, r: 'release' }
+          - { os: windows-latest, r: 'devel'   }
+
           # Use 3.6 to trigger usage of RTools35
           # - {os: windows-latest, r: '3.6'}
           # use 4.1 to check with rtools40's older compiler
@@ -72,6 +74,19 @@ jobs:
         if: runner.os == 'macOS' && matrix.config.deps
         run: |
           brew install grpc pkg-config
+
+      - name: "Install rig on Windows (temporary)"
+        if: runner.os == 'Windows'
+        run: |
+          choco install rig
+
+      - name: "Update Rtools43 on Windows (temporary)"
+        if: runner.os == 'Windows'
+        run: |
+          mv c:\rtools43 c:\rtools43-old
+          mkdir c:\rtools43
+          rig rm rtools43
+          rig add rtools43
 
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:

@@ -1,9 +1,41 @@
+# -------------------------------------------------------------------------
+
 as_string <- function(x) {
   paste(x, collapse = "")
 }
 
+sys <- function(cmd, intern = TRUE, ...) {
+  as_string(suppressWarnings(system(cmd, intern = intern, ...)))
+}
+
+add_to_path <- function(path) {
+  paths <- strsplit(
+    Sys.getenv("PATH"),
+    .Platform$path.sep,
+    fixed = TRUE
+  )[[1]]
+  paths <- c(normalizePath(path), paths)
+  Sys.setenv(PATH = paste(paths, collapse = .Platform$path.sep))
+}
+
+# -------------------------------------------------------------------------
+
 # autobrew
-autobrew_path <- if (R.Version()$arch == "aarch64") ".deps-arm64" else ".deps"
+rtmp <- Sys.getenv("RUNNER_TEMP")
+arch <- R.Version()$arch
+autobrew_path <- if (rtmp != "") {
+  if (.Platform$OS.type == "windows") {
+    file.path(rtmp, "deps-win")
+  } else {
+    file.path(rtmp, if (arch == "aarch64") "deps" else "deps-arm64")
+  }
+} else {
+  if (.Platform$OS.type == "windows") {
+    ".deps-win"
+  } else {
+    if (arch == "aarch64") ".deps" else ".deps-arm64"
+  }
+}
 autobrew_proto_include_path <- file.path(
   autobrew_path,
   "protobuf-static",
@@ -59,7 +91,7 @@ configure_autobrew <- function() {
     "INSTALL_RECEIPT.json"
   )
   # we only need to replace @@HOMEBREW_CELLAR@@
-  cellar <- file.path(getwd(), path)
+  cellar <- file.path(normalizePath(path))
   for (js in rcpt) {
     lns <- readLines(js, warn = FALSE)
     from <- grep("changed_files", lns)[1] + 1L
@@ -98,19 +130,48 @@ configure_autobrew <- function() {
   for (b1 in bindirs) {
     file.copy(file.path(b1, dir(b1)), bindir)
   }
-  paths <- strsplit(
-    Sys.getenv("PATH"),
-    .Platform$path.sep,
-    fixed = TRUE
-  )[[1]]
-  paths <- c(normalizePath(bindir), paths)
-  Sys.setenv(PATH = paste(paths, collapse = .Platform$path.sep))
+  add_to_path(bindir)
 
   list(
     cflags = sys(
       "pkg-config --cflags --silence-errors grpc++ protobuf"),
     ldflags = sys(
       "pkg-config --libs --static --silence-errors grpc++ protobuf"
+    )
+  )
+}
+
+# -------------------------------------------------------------------------
+
+winlib_path <- autobrew_path
+winlib_root <- file.path(winlib_path, "x86_64-w64-mingw32.static.posix")
+winlib_proto_include_path <- file.path(winlib_root, "include")
+winlib_pkg_config_path <- file.path(winlib_root, "lib", "pkgconfig")
+winlib_bin <- file.path(winlib_root, "bin")
+winlib_pem <- file.path(winlib_root, "share", "grpc", "roots.pem")
+
+download_win <- function() {
+  url <- "https://github.com/gaborcsardi/r-dev-web/releases/download/grpc-1.59.3/grpc-1.59.3.tar.gz"
+  dir.create(winlib_path, recursive = TRUE, showWarnings = FALSE)
+  tgt <- file.path(winlib_path, basename(url))
+  if (!file.exists(tgt)) {
+    download.file(url, tgt, quiet = TRUE)
+    untar(tgt, exdir = winlib_path, tar = "internal")
+  }
+  if (!file.copy(winlib_pem, "inst", overwrite = TRUE)) {
+    warning("Could not copy grpc root certs from ", winlib_pem)
+  }
+}
+
+configure_win <- function() {
+  Sys.setenv("PKG_CONFIG_PATH" = normalizePath(winlib_pkg_config_path))
+  add_to_path(winlib_bin)
+  list(
+    cflags = sys(
+      "pkgconf --cflags --silence-errors grpc++ protobuf"
+    ),
+    ldflags = sys(
+      "pkgconf --libs --silence-errors --static grpc++ protobuf"
     )
   )
 }

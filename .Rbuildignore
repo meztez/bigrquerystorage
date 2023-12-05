@@ -11,3 +11,5 @@
 ^LICENSE\.md$
 ^[.]deps$
 ^[.]deps-arm64$
+^[.]deps-win$
+^inst/roots[.]pem$
