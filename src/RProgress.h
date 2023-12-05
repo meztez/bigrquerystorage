@@ -54,8 +54,7 @@ public:
 	first(true), format(format), total(total), current(0), extra(0), count(0),
 	width(width), cursor_char(cursor_char), complete_char(complete_char),
 	incomplete_char(incomplete_char), clear(clear), show_after(show_after),
-	last_draw(""), start(0), toupdate(false),
-	complete(false), reverse(false) {
+	last_draw(""), start(0), toupdate(false), complete(false), reverse(false) {
 
 		supported = is_supported();
 		use_stderr = default_stderr();
@@ -72,8 +71,7 @@ public:
 	first(true), format(format), total(total), current(0), extra(0), count(0),
 	width(width), cursor_char(1, complete_char), complete_char(1, complete_char),
 	incomplete_char(1, incomplete_char), clear(clear), show_after(show_after),
-	last_draw(""), start(0), toupdate(false),
-	complete(false), reverse(false) {
+	last_draw(""), start(0), toupdate(false), complete(false), reverse(false) {
 
 		supported = is_supported();
 		use_stderr = default_stderr();
@@ -211,7 +209,6 @@ private:
 			if (last_draw.length() > str.length()) { clear_line(use_stderr, width); }
 			cursor_to_start(use_stderr);
 			if (use_stderr) {
-				// use a format to avoid special treatment for in string %
 				REprintf("%s", str.c_str());
 			} else {
 				Rprintf("%s", str.c_str());
@@ -255,9 +252,9 @@ private:
 		spaces[width + 1] = '\0';
 
 		if (use_stderr) {
-			REprintf(spaces);
+			REprintf("%s", spaces);
 		} else {
-			Rprintf(spaces);
+			Rprintf("%s", spaces);
 		}
 		free(spaces);
 	}
