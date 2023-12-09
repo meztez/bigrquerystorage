@@ -29,8 +29,8 @@ LinkingTo:
 Encoding: UTF-8
 URL: https://github.com/meztez/bigrquerystorage
 BugReports: https://github.com/meztez/bigrquerystorage/issues
-SystemRequirements:
-    grpc
-    protobuf
+SystemRequirements: grpc/protobuf headers and compilers. For example 
+		libprotobuf-dev libgrpc++-dev protobuf-compiler-grpc (Debian) or
+		protobuf-devel grpc-devel grpc-plugins (Fedora/RHEL)
 RoxygenNote: 7.2.3
 Biarch: TRUE

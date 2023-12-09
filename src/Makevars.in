@@ -1,7 +1,11 @@
-# Default make file;
-PKG_CPPFLAGS = @CPPF@
-PKG_CXXFLAGS = @CXXF@
-PKG_LIBS = @LIBS@
+PKG_CPPFLAGS=-I. @cflags@
+PKG_CXXFLAGS=$(CXX_VISIBILITY)
+PKG_LIBS=@libs@
 
-# Obtain the object files
-OBJECTS=@TARGETS@
+OBJECTS=google/api/field_behavior.pb.o google/api/http.pb.o google/api/launch_stage.pb.o \
+	google/api/resource.pb.o google/cloud/bigquery/storage/v1/arrow.pb.o \
+	google/cloud/bigquery/storage/v1/avro.pb.o google/cloud/bigquery/storage/v1/table.pb.o \
+	google/api/annotations.pb.o google/api/client.pb.o google/cloud/bigquery/storage/v1/protobuf.pb.o \
+	google/cloud/bigquery/storage/v1/stream.pb.o google/rpc/status.pb.o \
+	google/cloud/bigquery/storage/v1/storage.pb.o google/cloud/bigquery/storage/v1/storage.grpc.pb.o \
+	bqs.o RcppExports.o

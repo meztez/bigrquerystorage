@@ -1,3 +1,139 @@
-#!/usr/bin/env sh
-: "${R_HOME=`R RHOME`}"
-"${R_HOME}/bin/Rscript" tools/config.R configure "$@"
+# Anticonf (tm) script by Jeroen Ooms (2023)
+# This script will query 'pkg-config' for the required cflags and ldflags.
+# If pkg-config is unavailable or does not find the library, try setting
+# INCLUDE_DIR and LIB_DIR manually via e.g:
+# R CMD INSTALL --configure-vars='INCLUDE_DIR=/.../include LIB_DIR=/.../lib'
+
+# Library settings
+PKG_CONFIG_NAME="protobuf grpc++"
+PKG_DEB_NAME="libgrpc-dev"
+PKG_RPM_NAME="grpc-devel"
+PKG_BREW_NAME="grpc"
+PKG_TEST_HEADER="<grpc/grpc.h>"
+PKG_LIBS="-lgrpc++ -lgrpc -lprotobuf"
+PKG_CFLAGS=""
+#CI=1
+
+# Hardcode some targets
+PROTO_FILES="google/api/field_behavior.proto google/api/http.proto google/api/launch_stage.proto google/api/resource.proto google/cloud/bigquery/storage/v1/arrow.proto google/cloud/bigquery/storage/v1/avro.proto google/cloud/bigquery/storage/v1/table.proto google/api/annotations.proto google/api/client.proto google/cloud/bigquery/storage/v1/protobuf.proto google/cloud/bigquery/storage/v1/stream.proto google/rpc/status.proto google/cloud/bigquery/storage/v1/storage.proto"
+GRPC_FILES="google/cloud/bigquery/storage/v1/storage.proto"
+
+# Use pkg-config if available
+if [ `command -v pkg-config` ]; then
+  PKGCONFIG_CFLAGS=`pkg-config --cflags --silence-errors ${PKG_CONFIG_NAME}`
+  PKGCONFIG_LIBS=`pkg-config --libs ${PKG_CONFIG_NAME}`
+  PKGCONFIG_PROTOBUF_VERSION=`pkg-config --modversion --silence-errors protobuf`
+fi
+
+# Note that cflags may be empty in case of success
+if [ "$INCLUDE_DIR" ] || [ "$LIB_DIR" ]; then
+  echo "Found INCLUDE_DIR and/or LIB_DIR!"
+  PKG_CFLAGS="-I$INCLUDE_DIR $PKG_CFLAGS"
+  PKG_LIBS="-L$LIB_DIR $PKG_LIBS"
+elif [ "$PKGCONFIG_CFLAGS" ] || [ "$PKGCONFIG_LIBS" ]; then
+  echo "Found pkg-config cflags and libs!"
+  PKG_CFLAGS=`echo $PKGCONFIG_CFLAGS | sed 's/-Wno[a-z-]*//g' |  tr ' ' '\n' | sort -u | xargs`
+  PKG_LIBS=${PKGCONFIG_LIBS}
+elif [ `uname` = "Darwin" ]; then
+  test ! "$CI" && brew --version 2>/dev/null
+  if [ $? -eq 0 ]; then
+    BREWDIR=`brew --prefix`
+    PATH="$BREWDIR/bin:$PATH"
+    PKG_CFLAGS="-I$BREWDIR/include"
+    PKG_LIBS="-L$BREWDIR/lib $PKG_LIBS"
+  else
+    curl -sfL "https://autobrew.github.io/scripts/grpc" > autobrew
+    . ./autobrew
+  fi
+fi
+
+# For debugging
+echo "Using PKG_CFLAGS=$PKG_CFLAGS"
+echo "Using PKG_LIBS=$PKG_LIBS"
+
+# Use CXX17 if available (preferred for recent libprotobuf)
+CXX17=`${R_HOME}/bin/R CMD config CXX17` || unset CXX17
+
+if [ "$CXX17" ]; then
+CXX="$CXX17 `${R_HOME}/bin/R CMD config CXX17STD`"
+CXXFLAGS=`${R_HOME}/bin/R CMD config CXX17FLAGS`
+echo "Found C++17 compiler: $CXX $CXXFLAGS"
+else
+CXX=`${R_HOME}/bin/R CMD config CXX`
+CXXFLAGS=`${R_HOME}/bin/R CMD config CXXFLAGS`
+echo "Using default C++ compiler: $CXX $CXXFLAGS"
+fi
+
+# Test configuration
+CPPFLAGS=`${R_HOME}/bin/R CMD config CPPFLAGS`
+echo "#include $PKG_TEST_HEADER" | ${CXX} -E ${CPPFLAGS} ${PKG_CFLAGS} ${CXXFLAGS} -xc++ - >/dev/null 2>configure.log
+
+# Customize the error
+if [ $? -ne 0 ]; then
+  echo "------------------------------[ ANTICONF ]-----------------------------"
+  echo "Configuration failed to find $PKG_CONFIG_NAME. Try installing:"
+  echo " * deb: $PKG_DEB_NAME (Debian, Ubuntu, etc)"
+  echo " * rpm: $PKG_RPM_NAME (Fedora, EPEL)"
+  echo " * brew: $PKG_BREW_NAME (OSX)"
+  echo "If $PKG_CONFIG_NAME is already installed, check that 'pkg-config' is in your"
+  echo "PATH and PKG_CONFIG_PATH contains a $PKG_CONFIG_NAME.pc file. If pkg-config"
+  echo "is unavailable you can set INCLUDE_DIR and LIB_DIR manually via:"
+  echo "R CMD INSTALL --configure-vars='INCLUDE_DIR=... LIB_DIR=...'"
+  echo "----------------------------[ ERROR MESSAGE ]----------------------------"
+  cat configure.log
+  echo "------------------------------------------------------------------------"
+  exit 1
+fi
+
+# Write to Makevars
+sed -e "s|@cflags@|$PKG_CFLAGS|" -e "s|@libs@|$PKG_LIBS|" src/Makevars.in > src/Makevars
+
+# Look for 'protoc' compiler
+if [ `command -v protoc` ]; then
+  PROTOC_VERSION=`protoc --version`
+  echo "Using ${PROTOC_VERSION} from `command -v protoc`"
+else
+  echo "Failed to run protoc."
+  echo "Please install the 'protobuf-compiler' package for your system."
+  exit 1
+fi
+
+# Look for grpc plugin
+if [ `command -v grpc_cpp_plugin` ]; then
+  echo "Using `command -v grpc_cpp_plugin`"
+else
+  echo "Failed to locate grpc_cpp_plugin. Please install the grpc protoc plugin:"
+  echo "Debian/Ubuntu: apt-get install protobuf-compiler-grpc"
+  echo "Fedora/RHEL: yum install grpc-plugins"
+  exit 1
+fi
+
+# Try to check if protoc version matches libproto
+case $PROTOC_VERSION in
+  *"$PKGCONFIG_PROTOBUF_VERSION"*)
+    ;;
+  *)
+    echo "Heads up: protoc version $PROTOC_VERSION might not match libproto version $PKGCONFIG_PROTOBUF_VERSION.";
+    ;;
+esac
+
+# Compile proto files
+srcdir="$PWD/src"
+cd ./inst/protos
+protoc --experimental_allow_proto3_optional --cpp_out=${srcdir} ${PROTO_FILES}
+protoc --plugin=protoc-gen-grpc=$(which grpc_cpp_plugin) --grpc_out=${srcdir} google/cloud/bigquery/storage/v1/storage.proto
+if [ $? -ne 0 ]; then
+  echo "Error: failed to compile proto files."
+  exit 1
+fi
+cd ../..
+
+# Suppress warnings about pragmas and deprecations in autogenerated code
+find ./src/google -type f  -name '*.pb.*' -exec sed -i.bak 's/PROTOBUF_DEPRECATED//g' {} \;
+find ./src/google -type f  -name '*.pb.h' -exec sed -i.bak 's/#pragma/# pragma/g' {} \;
+
+# Fix a conflicting name with some macro
+sed -i.bak "s/OPTION/OPTIONFIX/g" src/google/api/field_behavior.pb.h
+
+# Success
+exit 0
