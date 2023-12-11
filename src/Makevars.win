@@ -1,6 +1,7 @@
 RWINLIB = ../windows/grpc
 PKG_CPPFLAGS=-I. -I$(RWINLIB)/include
 
+ifeq (,$(findstring gcc 10.,$(R_COMPILED_BY)))
 ABSL_LIBS=-labsl_raw_hash_set -labsl_hash -labsl_city -labsl_low_level_hash -labsl_random_internal_pool_urbg \
 	-labsl_random_internal_randen -labsl_random_internal_randen_hwaes -labsl_random_internal_randen_hwaes_impl \
 	-labsl_random_internal_randen_slow -labsl_random_internal_platform -labsl_random_internal_seed_material \
@@ -9,6 +10,12 @@ ABSL_LIBS=-labsl_raw_hash_set -labsl_hash -labsl_city -labsl_low_level_hash -lab
 	-labsl_synchronization -labsl_stacktrace -labsl_symbolize -labsl_malloc_internal -labsl_time  -labsl_strings \
 	-labsl_strings_internal -labsl_base -labsl_spinlock_wait -labsl_int128 -labsl_throw_delegate -labsl_time_zone \
 	-labsl_raw_logging_internal
+else
+ABSL_LIBS=-labsl_status -labsl_cord -labsl_bad_optional_access -labsl_str_format_internal -labsl_synchronization \
+	-labsl_stacktrace -labsl_symbolize  -labsl_malloc_internal -labsl_time -labsl_strings -labsl_strings_internal -labsl_base \
+	-labsl_spinlock_wait -labsl_int128 -labsl_throw_delegate -labsl_time_zone  -labsl_raw_logging_internal
+endif
+
 
 PKG_LIBS=-L$(RWINLIB)/lib \
 	-lgrpc++ -lgrpc -laddress_sorting -lre2 -lupb -lcares -lz -lgpr -lssl -lcrypto -lprotobuf \
