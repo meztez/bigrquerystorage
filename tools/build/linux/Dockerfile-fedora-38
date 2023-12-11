@@ -8,18 +8,16 @@ RUN yum install -y \
     rig add devel
 
 # -------------------------------------------------------------------------
-# FIXME: We don't need this once grpc is in the system requirements db
-RUN dnf install -y protobuf-devel protobuf-compiler \
-                   grpc-devel c-ares-devel \
-                   re2-devel pkgconf
-
-# -------------------------------------------------------------------------
 # Only copy DESCRIPTION, so Docker can cache the dependency install
 RUN mkdir /root/bigrquerystorage
 COPY DESCRIPTION /root/bigrquerystorage/
 WORKDIR /root/bigrquerystorage
 # No upgrade, to always install binary packages, in case P3M is behind
 RUN R -q -e 'pak::local_install_deps(upgrade = FALSE)'
+
+# -------------------------------------------------------------------------
+# FIXME: We don't need this once grpc is in the system requirements db
+RUN dnf install -y grpc-devel pkgconf
 
 # -------------------------------------------------------------------------
 # Call R CMD build first, so we get rid of Makevars, .o, .so, etc.

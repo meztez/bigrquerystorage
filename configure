@@ -6,9 +6,9 @@
 
 # Library settings
 PKG_CONFIG_NAME="protobuf grpc++"
-PKG_DEB_NAME="libgrpc-dev"
-PKG_RPM_NAME="grpc-devel"
-PKG_BREW_NAME="grpc"
+PKG_DEB_NAME="libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc pkg-config"
+PKG_RPM_NAME="grpc-devel pkgconf"
+PKG_BREW_NAME="grpc pkg-config"
 PKG_TEST_HEADER="<grpc/grpc.h>"
 PKG_LIBS="-lgrpc++ -lgrpc -lprotobuf"
 PKG_CFLAGS=""
