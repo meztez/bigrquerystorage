@@ -53,8 +53,7 @@ remotes::install_github("meztez/bigrquerystorage")
 
 ```sh
 # install protoc and grpc
-apt-get install -y libprotobuf-dev protobuf-compiler-grpc \
-                   libgrpc++-dev libc-ares-dev libre2-dev \
+apt-get install -y libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc \
                    pkg-config
 ```
 
