@@ -59,10 +59,8 @@ apt-get install -y libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc \
 #### Fedora 38
 
 ``` sh
-# install protoc and grpc
-dnf install -y protobuf-devel protobuf-compiler \
-               grpc-devel c-ares-devel \
-               re2-devel pkgconf
+# install grpc, protoc is automatically installed
+dnf install -y grpc-devel pkgconf
 ```
 
 #### macOS
