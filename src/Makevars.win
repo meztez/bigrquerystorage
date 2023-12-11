@@ -37,6 +37,7 @@ protos: winlibs
 
 winlibs:
 	"${R_HOME}/bin${R_ARCH_BIN}/Rscript.exe" "../tools/winlibs.R"
+	cp -f ${RWINLIB}/share/grpc/roots.pem ../inst
 
 clean:
 	rm -Rf $(OBJECTS) $(SHLIB) google
