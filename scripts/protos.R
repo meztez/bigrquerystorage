@@ -1,4 +1,5 @@
 #* Get latest version required proto from googleapis
+unlink("./scripts/googleapis", recursive = TRUE)
 system("git clone --depth 1 https://github.com/googleapis/googleapis ./scripts/googleapis")
 
 fpath <- grep("bigquery/storage/v1/", dir("./scripts/googleapis", "storage.proto$", full.names = TRUE, recursive = TRUE), value = TRUE)
@@ -15,7 +16,7 @@ import_path <- function(fpath) {
 }
 
 fpath <- c(fpath, import_path(fpath))
-inst_path <- gsub(".*scripts/googleapis/", "./inst/protos/", fpath)
+inst_path <- gsub(".*scripts/googleapis/", "./src/protos/", fpath)
 for (path in inst_path) {
   if (!dir.exists(dirname(path))) {
     dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
