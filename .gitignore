@@ -14,3 +14,5 @@ src/google/
 /.deps-arm64
 /.deps-win
 /inst/roots.pem
+configure.log
+autobrew

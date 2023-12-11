@@ -6,7 +6,6 @@
 # usethis::use_github_action("check-standard") will install it.
 on:
   push:
-    branches: [main, master]
   pull_request:
     branches: [main, master]
 
@@ -16,28 +15,19 @@ jobs:
   R-CMD-check:
     runs-on: ${{ matrix.config.os }}
 
-    name: ${{ matrix.config.os }} (${{ matrix.config.r }})
+    name: ${{ matrix.config.os }} (${{ matrix.config.r }}) ${{ matrix.config.deps }}
 
     strategy:
       fail-fast: false
       matrix:
         config:
+          # macos-11 is no longer supported by homebrew:
           - { os: macos-11,       r: 'release' }
           - { os: macos-12,       r: 'release' }
           - { os: macos-13,       r: 'release' }
-          # this is too slow
-          # - { os: macos-11,       r: 'release', deps: true }
-          - { os: macos-12,       r: 'release', deps: true }
-          - { os: macos-13,       r: 'release', deps: true }
-
+          - { os: macos-13,       r: 'release', deps: 'homebrew' }
           - { os: windows-latest, r: 'release' }
           - { os: windows-latest, r: 'devel'   }
-
-          # Use 3.6 to trigger usage of RTools35
-          # - {os: windows-latest, r: '3.6'}
-          # use 4.1 to check with rtools40's older compiler
-          # - {os: windows-latest, r: '4.1'}
-
           - { os: ubuntu-latest,  r: 'devel', http-user-agent: 'release'}
           - { os: ubuntu-latest,  r: 'release'  }
           - { os: ubuntu-latest,  r: 'oldrel-1' }
@@ -64,29 +54,11 @@ jobs:
 
       - name: "System packages on Linux"
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get install -y \
-              libprotobuf-dev protobuf-compiler-grpc \
-              libgrpc++-dev libc-ares-dev libre2-dev \
-              pkg-config
+        run: sudo apt-get install -y libprotobuf-dev protobuf-compiler-grpc libgrpc++-dev
 
       - name: "System packages on macOS"
         if: runner.os == 'macOS' && matrix.config.deps
-        run: |
-          brew install grpc pkg-config
-
-      - name: "Install rig on Windows (temporary)"
-        if: runner.os == 'Windows'
-        run: |
-          choco install rig
-
-      - name: "Update Rtools43 on Windows (temporary)"
-        if: runner.os == 'Windows'
-        run: |
-          mv c:\rtools43 c:\rtools43-old
-          mkdir c:\rtools43
-          rig rm rtools43
-          rig add rtools43
+        run: brew install grpc --fetch-HEAD
 
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
