@@ -30,7 +30,7 @@ OBJECTS=bqs.o RcppExports.o $(PROTO_FILES:.proto=.pb.o) $(GRPC_FILES:.proto=.grp
 all: clean winlibs protos
 
 protos: winlibs
-	(cd ../inst/protos; PATH="../${BINDIR}:${PATH}";\
+	(cd ../src/protos; PATH="../${BINDIR}:${PATH}";\
 	protoc --experimental_allow_proto3_optional --cpp_out=../../src $(PROTO_FILES);\
 	protoc --plugin=protoc-gen-grpc=$$(which grpc_cpp_plugin.exe) --grpc_out=../../src $(GRPC_FILES))
 	sed -i "s/OPTION/OPTIONFIX/g" google/api/field_behavior.pb.h
