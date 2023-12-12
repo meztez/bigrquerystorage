@@ -3,7 +3,8 @@
 FROM alpine:3.19
 
 # -------------------------------------------------------------------------
-RUN apk add R R-dev g++ gcc make openssl openssl-dev git
+RUN apk add R R-dev g++ gcc make openssl openssl-dev git cmake bash \
+            linux-headers
 RUN R -q -e 'source("https://pak.r-lib.org/install.R"); library(pak)'
 
 # -------------------------------------------------------------------------
@@ -11,8 +12,9 @@ RUN R -q -e 'source("https://pak.r-lib.org/install.R"); library(pak)'
 RUN mkdir /root/bigrquerystorage
 COPY DESCRIPTION /root/bigrquerystorage/
 WORKDIR /root/bigrquerystorage
+RUN mkdir -p ~/.R && echo "LDFLAGS+=-fPIC" >> ~/.R/Makevars
 RUN R -q -e 'pak::local_install_deps(upgrade = FALSE)'
-RUN apk del openssl-dev
+RUN apk del openssl-dev cmake linux-headers
 
 # -------------------------------------------------------------------------
 # FIXME: We don't need this once grpc is in the system requirements db
