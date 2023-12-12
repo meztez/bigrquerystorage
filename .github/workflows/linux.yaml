@@ -4,64 +4,44 @@ name: Linux build test
 on:
   workflow_dispatch:
     inputs:
-      ubuntu-2204:
-        description: "Ubuntu 22.04"
-        required: true
-        type: choice
-        options:
-        - 'yes'
-        - 'no'
-        default: 'yes'
-      debian-12:
-        description: "Debian 12"
-        required: true
-        type: choice
-        options:
-        - 'yes'
-        - 'no'
-        default: 'yes'
-      fedora-38:
-        description: "Fedora 38"
-        required: true
-        type: choice
-        options:
-        - 'yes'
-        - 'no'
-        default: 'yes'
+      distros:
+        description: |
+          Distros, default is all, possible values: alpine-3.16,
+          alpine-3.17, alpine-3.18, alpine-3.19, alpine-edge, debian-10,
+          debian-11, debian-12, debian-unstable, fedora-36, fedora-37,
+          fedora-38, rocky-9, ubuntu-22.04.
+        required: false
+        defaule: 'all'
+        type: strinf
 
 jobs:
-  ubuntu-2204:
-    if: ${{ github.event.inputs.ubuntu-2204 == '' || github.event.inputs.ubuntu-2204 == 'yes' }}
-    runs-on: ubuntu-latest
-    name: Ubuntu 22.04
+  setup-matrix:
+    runs-on: ubuntu-Latest
+    outputs:
+      distros: ${{ steps.setup-matrix.outputs.distros }}
     steps:
-    - name: Checkout
-      uses: actions/checkout@v3
-    - name: Build in Docker
+    - uses: actions/checkout@v3
+    - name: Set up matrix of builds
+      id: setup-matrix
       run: |
-        docker build -f tools/build/linux/Dockerfile-ubuntu-22.04 -t bqs:ubuntu2204 .
-        docker run bqs:ubuntu2204 R -q -e 'library(bigrquerystorage)'
+        distros=$(python tools/build/linux/get-distros.py "${{ github.event.inputs.distros }}")
+        echo "distros=$distros" >> $GITHUB_OUTPUT
 
-  debian-12:
-    if: ${{ github.event.inputs.debian-12 == '' || github.event.inputs.debian-12 == 'yes' }}
-    runs-on: ubuntu-latest
-    name: Debian 12
+  build:
+    needs: setup-matrix
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: ${{ fromJson(needs.setup-matrix.outputs.distros) }}
+    runs-on: ubuntu-Latest
+    name: ${{ matrix.distro }}
     steps:
-    - name: Checkout
-      uses: actions/checkout@v3
-    - name: Build in Docker
-      run: |
-        docker build -f tools/build/linux/Dockerfile-debian-12 -t bqs:debian12 .
-        docker run bqs:debian12 R -q -e 'library(bigrquerystorage)'
+    - uses: actions/checkout@v3
 
-  fedora-38:
-    if: ${{ github.event.inputs.fedora-38 == '' || github.event.inputs.fedora-38 == 'yes' }}
-    runs-on: ubuntu-latest
-    name: Fedora 38
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v3
-    - name: Build in Docker
+    - name: Build package
       run: |
-        docker build -f tools/build/linux/Dockerfile-fedora-38 -t bqs:fedora-38 .
-        docker run bqs:fedora-38 R -q -e 'library(bigrquerystorage)'
+        docker build -f tools/build/linux/Dockerfile-${{ matrix.distro }} -t bqs:${{ matrix.distro }} .
+
+    - name: Test loading package
+      run: |
+        docker run bqs:${{ matrix.distro }} R -q -e 'library(bigrquerystorage)'

@@ -1,0 +1,32 @@
+# -*- Dockerfile -*-
+
+FROM alpine:edge
+
+# -------------------------------------------------------------------------
+RUN apk add R R-dev g++ gcc make openssl openssl-dev git
+RUN R -q -e 'source("https://pak.r-lib.org/install.R")'
+
+# -------------------------------------------------------------------------
+# Only copy DESCRIPTION, so Docker can cache the dependency install
+RUN mkdir /root/bigrquerystorage
+COPY DESCRIPTION /root/bigrquerystorage/
+WORKDIR /root/bigrquerystorage
+RUN R -q -e 'pak::local_install_deps(upgrade = FALSE)'
+RUN apk del openssl-dev
+
+# -------------------------------------------------------------------------
+# FIXME: We don't need this once grpc is in the system requirements db
+RUN apk add grpc-dev protobuf-dev re2-dev c-ares-dev
+
+# -------------------------------------------------------------------------
+# Call R CMD build first, so we get rid of Makevars, .o, .so, etc.
+# Change file ownership, otherwise git complains
+# Clean up thoroughly, in case the cleanup script is not perfect.
+COPY . /root/bigrquerystorage
+RUN chown root:root -R .
+RUN git clean -fdx .
+
+# -------------------------------------------------------------------------
+WORKDIR /root
+RUN R CMD build bigrquerystorage
+RUN R CMD INSTALL bigrquerystorage_*.tar.gz
