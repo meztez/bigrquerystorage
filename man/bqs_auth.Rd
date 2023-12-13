@@ -12,9 +12,11 @@ bqs_deauth()
 \description{
 Initialize client
 
-Destroy client
+Close client
 }
 \details{
+Will attempt to reuse \code{bigrquery} credentials.
+
 About Crendentials
 
 If your application runs inside a Google Cloud environment that has
@@ -29,12 +31,13 @@ your application. Google Cloud Client Libraries use a library called
 Application Default Credentials (ADC) to automatically find your service
 account credentials. ADC looks for service account credentials
 in the following order:
-
-1. If the environment variable GOOGLE_APPLICATION_CREDENTIALS is set,
+\enumerate{
+\item If the environment variable GOOGLE_APPLICATION_CREDENTIALS is set,
 ADC uses the service account file that the variable points to.
-2. If the environment variable GOOGLE_APPLICATION_CREDENTIALS isn't
+\item If the environment variable GOOGLE_APPLICATION_CREDENTIALS isn't
 set, ADC uses the default service account that Compute Engine,
 Google Kubernetes Engine, App Engine, Cloud Run, and Cloud
 Functions provide.
-3. If ADC can't use either of the above credentials, an error occurs.
+\item If ADC can't use either of the above credentials, an error occurs.
+}
 }

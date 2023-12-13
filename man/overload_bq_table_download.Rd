@@ -2,7 +2,7 @@
 % Please edit documentation in R/bqs_download.R
 \name{overload_bq_table_download}
 \alias{overload_bq_table_download}
-\title{Substitute bigrquery bq_table_download method. This is very experimental.}
+\title{Overload \code{bigrquery::bq_table_download}}
 \usage{
 overload_bq_table_download(parent)
 }
@@ -10,5 +10,6 @@ overload_bq_table_download(parent)
 \item{parent}{Parent project used by the API for billing.}
 }
 \description{
-Substitute bigrquery bq_table_download method. This is very experimental.
+\ifelse{html}{\href{https://lifecycle.r-lib.org/articles/stages.html#experimental}{\figure{lifecycle-experimental.svg}{options: alt='[Experimental]'}}}{\strong{[Experimental]}}
+Replace bigrquery bq_table_download method in bigrquery namespace.
 }

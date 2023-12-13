@@ -35,6 +35,6 @@ given verbatim, e.g. \code{SQL('"my_schema"."table_name"')}
 }}
 }
 \description{
-Implementations of pure virtual functions defined in the `DBI` package.
+Implementations of pure virtual functions defined in the \code{DBI} package.
 }
 \keyword{internal}

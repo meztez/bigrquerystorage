@@ -1,40 +1,46 @@
 #' Download table from BigQuery using BigQuery Storage API
-#' @param x BigQuery table reference `\{project\}.\{dataset\}.\{table_name\}`
-#' @param parent Used as parent for `CreateReadSession`
-#' grpc method. You can set option `bigquerystorage.project`.
-#' @param snapshot_time Snapshot time
-#' @param selected_fields A character vector of field to select from table.
-#' @param row_restriction Restriction to apply to the table.
+#' @param x BigQuery table reference `{project}.{dataset}.{table_name}`
+#' @param parent Used as parent for `CreateReadSession`.
+#' grpc method. Default is to use option `bigquerystorage.project` value.
+#' @param snapshot_time Table modifier `snapshot time` as `POSIXct`.
+#' @param selected_fields Table read option `selected_fields`. A character vector of field to select from table.
+#' @param row_restriction Table read option `row_restriction`. A character. SQL text filtering statement.
+#' @param sample_percentage Table read option `sample_percentage`. A numeric `0 <= sample_percentage <= 100`. Not compatible with `row_restriction`.
 #' @param n_max Maximum number of results to retrieve. Use `Inf` or `-1L`
 #' retrieve all rows.
+#' @param quiet Should information be printed to console.
 #' @param as_tibble Should data be returned as tibble. Default is to return
 #' as arrow Table from raw IPC stream.
-#' @param quiet Should information be printed to console.
 #' @param bigint The R type that BigQuery's 64-bit integer types should be mapped to.
 #'   The default is `"integer"` which returns R's `integer` type but results in `NA` for
 #'   values above/below +/- 2147483647. `"integer64"` returns a [bit64::integer64],
 #'   which allows the full range of 64 bit integers.
 #' @param max_results Deprecated
+#' @details
+#' More details about table modifiers and table options are available from the
+#' API Reference documentation. (See [TableModifiers](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#tablemodifiers) and
+#' [TableReadOptions](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#tablereadoptions))
 #' @export
 #' @importFrom arrow RecordBatchStreamReader Table
 #' @importFrom lifecycle deprecated deprecate_warn
 #' @importFrom tibble tibble
+#' @importFrom rlang is_missing
 bqs_table_download <- function(
-  x,
-  parent = getOption("bigquerystorage.project", ""),
-  snapshot_time = NA,
-  selected_fields = character(),
-  row_restriction = "",
-  n_max = Inf,
-  quiet = NA,
-  as_tibble = FALSE,
-  bigint = c("integer", "integer64", "numeric", "character"),
-  max_results = lifecycle::deprecated()) {
-
+    x,
+    parent = getOption("bigquerystorage.project", ""),
+    snapshot_time = NA,
+    selected_fields = character(),
+    row_restriction = "",
+    sample_percentage,
+    n_max = Inf,
+    quiet = NA,
+    as_tibble = FALSE,
+    bigint = c("integer", "integer64", "numeric", "character"),
+    max_results = lifecycle::deprecated()) {
   # Parameters validation
   bqs_table_name <- unlist(strsplit(unlist(x), "\\.|:"))
   assertthat::assert_that(length(bqs_table_name) >= 3)
-  assertthat::assert_that(is.character(row_restriction))
+  assertthat::assert_that(is.character(row_restriction), length(row_restriction) == 1)
   assertthat::assert_that(is.character(selected_fields))
   if (is.na(snapshot_time)) {
     snapshot_time <- 0L
@@ -42,15 +48,31 @@ bqs_table_download <- function(
     assertthat::assert_that(inherits(snapshot_time, "POSIXct"))
   }
   timestamp_seconds <- as.integer(snapshot_time)
-  timestamp_nanos <- as.integer(as.numeric(snapshot_time - timestamp_seconds)*1000000000)
+  timestamp_nanos <- as.integer(as.numeric(snapshot_time - timestamp_seconds) * 1000000000)
   if (lifecycle::is_present(max_results)) {
-    lifecycle::deprecate_warn("1.99.0", "bqs_table_download(max_results)",
-                              "bqs_table_download(n_max)")
+    lifecycle::deprecate_warn(
+      "1.99.0", "bqs_table_download(max_results)",
+      "bqs_table_download(n_max)"
+    )
     n_max <- max_results
+  }
+  if (!rlang::is_missing(sample_percentage)) {
+    assertthat::assert_that(
+      is.numeric(sample_percentage),
+      sample_percentage >= 0,
+      sample_percentage <= 100
+    )
+    if (nchar(row_restriction)) {
+      stop("Parameters `row_restriction` and `sample_percentage` cannot be use in the same query.")
+    }
+  } else {
+    sample_percentage <- -1L
   }
 
   parent <- as.character(parent)
-  if (nchar(parent) == 0) { parent <- bqs_table_name[1] }
+  if (!nchar(parent)) {
+    parent <- bqs_table_name[1]
+  }
 
   if (n_max < 0 || n_max == Inf) {
     n_max <- -1L
@@ -74,6 +96,7 @@ bqs_table_download <- function(
     n = n_max,
     selected_fields = selected_fields,
     row_restriction = row_restriction,
+    sample_percentage = sample_percentage,
     timestamp_seconds = timestamp_seconds,
     timestamp_nanos = timestamp_nanos,
     quiet = quiet
@@ -109,12 +132,13 @@ bqs_table_download <- function(
   }
 
   return(tb)
-
 }
 
 #' Initialize client
 #' @export
 #' @details
+#' Will attempt to reuse `bigrquery` credentials.
+#'
 #' About Crendentials
 #'
 #' If your application runs inside a Google Cloud environment that has
@@ -138,9 +162,8 @@ bqs_table_download <- function(
 #' Functions provide.
 #' 3. If ADC can't use either of the above credentials, an error occurs.
 bqs_auth <- function() {
-
   if (!is.null(.global$client) &&
-      (as.numeric(Sys.time()) - .global$client$creation < 30)) {
+    (as.numeric(Sys.time()) - .global$client$creation < 30)) {
     return(invisible())
   } else {
     bqs_deauth()
@@ -148,19 +171,22 @@ bqs_auth <- function() {
 
   # Recycling bigrquery credentials
   if (bigrquery::bq_has_token()) {
-    if (!is.null(asNamespace("bigrquery")$.auth$cred$credentials$refresh_token)) {
+    .authcred <- asNamespace("bigrquery")[[".auth"]][["cred"]]
+    if (!is.null(refresh_token <- .authcred[["credentials"]][["refresh_token"]])) {
+      .authclient <- .authcred[["client"]]
+      access_token <- ""
       refresh_token <- c(
         type = "authorized_user",
-        client_secret = asNamespace("bigrquery")$.auth$cred$app$secret,
-        client_id = asNamespace("bigrquery")$.auth$cred$app$key,
-        refresh_token = asNamespace("bigrquery")$.auth$cred$credentials$refresh_token
+        client_secret = .authclient[["secret"]],
+        client_id = .authclient[["key"]],
+        refresh_token = refresh_token
       )
       refresh_token <- paste0("{", paste0(
         '"', names(refresh_token), '":"', refresh_token, '"',
-        collapse = ","), "}")
-      access_token <- ""
+        collapse = ","
+      ), "}")
     } else {
-      access_token <- asNamespace("bigrquery")$.auth$get_cred()$credentials$access_token
+      access_token <- .authcred[["credentials"]][["access_token"]]
       refresh_token <- ""
     }
   } else {
@@ -168,7 +194,7 @@ bqs_auth <- function() {
     refresh_token <- ""
   }
 
-  root_certificate = Sys.getenv("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", grpc_mingw_root_pem_path_detect())
+  root_certificate <- Sys.getenv("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH")
 
   .global$client$ptr <- bqs_client(
     client_info = bqs_ua(),
@@ -185,31 +211,37 @@ bqs_auth <- function() {
   .global$client$creation <- as.numeric(Sys.time())
 
   invisible()
-
 }
 
-#' Destroy client
+#' Close client
 #' @rdname bqs_auth
 #' @export
 bqs_deauth <- function() {
-  .global$client <- NULL
+  if (!is.null(.global[["client"]])) {
+    rm("client", envir = .global)
+  }
   invisible()
 }
 
-#' Substitute bigrquery bq_table_download method. This is very experimental.
+#' Overload `bigrquery::bq_table_download`
+#' @description
+#' `r lifecycle::badge("experimental")`
+#' Replace bigrquery bq_table_download method in bigrquery namespace.
 #' @param parent Parent project used by the API for billing.
 #' @importFrom rlang env_unlock
+#' @importFrom lifecycle badge
 #' @import bigrquery
 #' @export
 overload_bq_table_download <- function(parent) {
-  utils::assignInNamespace("bq_table_download",  function(
-    x, n_max = Inf, page_size = NULL, start_index = 0L, max_connections = 6L,
-    quiet = NA, bigint = c("integer", "integer64", "numeric", "character"), max_results = deprecated()) {
-
+  utils::assignInNamespace("bq_table_download", function(
+      x, n_max = Inf, page_size = NULL, start_index = 0L, max_connections = 6L,
+      quiet = NA, bigint = c("integer", "integer64", "numeric", "character"), max_results = deprecated()) {
     x <- bigrquery::as_bq_table(x)
     if (lifecycle::is_present(max_results)) {
-      lifecycle::deprecate_warn("1.4.0", "bq_table_download(max_results)",
-                                "bq_table_download(n_max)")
+      lifecycle::deprecate_warn(
+        "1.4.0", "bq_table_download(max_results)",
+        "bq_table_download(n_max)"
+      )
       n_max <- max_results
     }
     assertthat::assert_that(is.numeric(n_max), length(n_max) == 1)
@@ -235,44 +267,27 @@ overload_bq_table_download <- function(parent) {
   }
 }
 
-grpc_mingw_root_pem_path_detect <- function() {
-  if (Sys.info()[["sysname"]] == "Windows") {
-    RTOOLS43_ROOT <- gsub("\\\\", "/", Sys.getenv("RTOOLS43_HOME", "c:/rtools43"))
-    WIN <- if (Sys.info()[["machine"]] == "x86-64") {"64"} else {"32"}
-    MINGW_PREFIX <- paste0("mingw", WIN)
-    file.path(RTOOLS43_ROOT,
-              MINGW_PREFIX,
-              "share",
-              "grpc",
-              "roots.pem")
-  } else {
-    ""
-  }
-}
 
 # BigQuery storage --------------------------------------------------------
 #' @noRd
 bqs_initiate <- function() {
-  if (!isTRUE(Sys.getenv("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", TRUE))) {
-    if (file.exists(grpc_mingw_root_pem_path_detect())) {
-      Sys.setenv(GRPC_DEFAULT_SSL_ROOTS_FILE_PATH = grpc_mingw_root_pem_path_detect())
-    }
-  }
   bqs_init_logger()
-  # Issue with parallel arrow as.data.frame on Windows
   if (.Platform$OS.type == "windows") {
+    if (Sys.getenv("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH") == "") {
+      warning("On Windows, GRPC_DEFAULT_SSL_ROOTS_FILE_PATH should be set to the PEM file path to load SSL roots from.")
+    }
+    # Issue with parallel arrow as.data.frame on Windows
     options("arrow.use_threads" = FALSE)
   }
 }
 
 # utils ------------------------------------------------------------------
-`%||%` <- function (x, y) if (is.null(x)) y else x
+
+`%||%` <- function(x, y) if (is.null(x)) y else x
 
 parse_postprocess <- function(df, bigint) {
-
   if (bigint != "integer64") {
-    as_bigint <- switch(
-      bigint,
+    as_bigint <- switch(bigint,
       integer = as.integer,
       numeric = as.numeric,
       character = as.character

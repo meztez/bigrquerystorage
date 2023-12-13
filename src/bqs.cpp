@@ -82,7 +82,8 @@ public:
                                 const std::int64_t& timestamp_seconds,
                                 const std::int32_t& timestamp_nanos,
                                 const std::vector<std::string>& selected_fields,
-                                const std::string& row_restriction
+                                const std::string& row_restriction,
+                                const std::double_t& sample_percentage
   ) {
     google::cloud::bigquery::storage::v1::CreateReadSessionRequest method_request;
     ReadSession *read_session = method_request.mutable_read_session();
@@ -97,13 +98,17 @@ public:
       read_session->mutable_table_modifiers()->
         mutable_snapshot_time()->set_nanos(timestamp_nanos);
     }
+    for (int i = 0; i < int(selected_fields.size()); i++) {
+      read_session->mutable_read_options()->
+        add_selected_fields(selected_fields[i]);
+    }
     if (!row_restriction.empty()) {
       read_session->mutable_read_options()->
         set_row_restriction(row_restriction);
     }
-    for (int i = 0; i < int(selected_fields.size()); i++) {
+    if (sample_percentage >= 0) {
       read_session->mutable_read_options()->
-        add_selected_fields(selected_fields[i]);
+        set_sample_percentage(sample_percentage);
     }
     method_request.set_parent("projects/" + parent);
     grpc::ClientContext context;
@@ -327,6 +332,7 @@ SEXP bqs_ipc_stream(SEXP client,
                     std::int64_t n,
                     std::vector<std::string> selected_fields,
                     std::string row_restriction = "",
+                    std::double_t sample_percentage = -1,
                     std::int64_t timestamp_seconds = 0,
                     std::int32_t timestamp_nanos = 0,
                     bool quiet = false) {
@@ -347,7 +353,8 @@ SEXP bqs_ipc_stream(SEXP client,
     timestamp_seconds,
     timestamp_nanos,
     selected_fields,
-    row_restriction);
+    row_restriction,
+    sample_percentage);
   // Add schema to IPC stream
   to_raw(read_session.arrow_schema().serialized_schema(), &schema);
 
