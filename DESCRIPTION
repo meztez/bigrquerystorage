@@ -18,12 +18,13 @@ Imports:
     Rcpp,
     lifecycle,
     bit64,
-    tibble,
-    base64enc
+    tibble
 Suggests:
     testthat,
     hms,
-    wk
+    wk,
+    tzdb,
+    base64enc
 LinkingTo:
     Rcpp
 Encoding: UTF-8
@@ -33,4 +34,5 @@ SystemRequirements: grpc/protobuf headers and compilers. For example
 		libprotobuf-dev libgrpc++-dev protobuf-compiler-grpc (Debian) or
 		protobuf-devel grpc-devel grpc-plugins (Fedora/RHEL)
 RoxygenNote: 7.2.3
+Roxygen: list(markdown = TRUE)
 Biarch: TRUE
