@@ -1,0 +1,36 @@
+# -*- Dockerfile -*-
+
+FROM rockylinux:9
+
+# -------------------------------------------------------------------------
+RUN yum install -y \
+        https://github.com/r-lib/rig/releases/download/latest/r-rig-latest-1.$(arch).rpm && \
+    rig add release
+
+# -------------------------------------------------------------------------
+# Only copy DESCRIPTION, so Docker can cache the dependency install
+RUN mkdir /root/bigrquerystorage
+COPY DESCRIPTION /root/bigrquerystorage/
+WORKDIR /root/bigrquerystorage
+# No upgrade, to always install binary packages, in case P3M is behind
+RUN yum install -y openssl-devel openssl
+RUN R -q -e 'pak::local_install_deps(upgrade = FALSE)'
+RUN yum remove -y openssl-devel
+
+# -------------------------------------------------------------------------
+# FIXME: We don't need this once grpc is in the system requirements db
+RUN dnf install -y grpc-devel pkgconf
+
+# -------------------------------------------------------------------------
+# Call R CMD build first, so we get rid of Makevars, .o, .so, etc.
+# Change file ownership, otherwise git complains
+# Clean up thoroughly, in case the cleanup script is not perfect.
+RUN dnf install -y git
+COPY . /root/bigrquerystorage
+RUN chown root:root -R .
+RUN git clean -fdx .
+
+# -------------------------------------------------------------------------
+WORKDIR /root
+RUN R CMD build bigrquerystorage
+RUN R CMD INSTALL bigrquerystorage_*.tar.gz

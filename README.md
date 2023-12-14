@@ -48,7 +48,7 @@ remotes::install_github("meztez/bigrquerystorage")
 - [gRPC](https://github.com/grpc/grpc)
 - [protoc](https://github.com/protocolbuffers/protobuf)
 
-#### Debian 12 / Ubuntu 22.04
+#### Debian 11 & 12 / Ubuntu 22.04
 
 ``` sh
 # install protoc and grpc
@@ -56,19 +56,70 @@ apt-get install -y libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc \
                    pkg-config
 ```
 
-#### Fedora 38
+#### Fedora 36 & 37 & 38 / Rocky Linux 9
 
 ``` sh
 # install grpc, protoc is automatically installed
 dnf install -y grpc-devel pkgconf
 ```
 
+<details>
+<summary>
+Other Linux distributions
+</summary>
+
+Please [let us
+know](https://github.com/meztez/bigrquerystorage/issues/new/choose) if
+these instructions do not work any more.
+
+##### Alpine Linux
+
+``` sh
+apk add g++ gcc make openssl openssl-dev git cmake bash linux-headers
+```
+
+Alpine Linux 3.19 and Edge do not work currently, because the
+installation of the arrow package fails.
+
+##### Debian 10
+
+Needs the buster-backports repository.
+
+``` sh
+echo "deb https://deb.debian.org/debian buster-backports main" >> \
+    /etc/apt/sources.list.d/backports.list && \
+    apt-get update && \
+apt-get install -y 'libgrpc\+\+-dev'/buster-backports \
+    protobuf-compiler-grpc/buster-backports \
+    libprotobuf-dev/buster-backports \
+    protobuf-compiler/buster-backports pkg-config
+```
+
+##### OpenSUSE
+
+In OpenSUSE 15.4 and 15.5 the version of the grpc package is tool old,
+so installation fails. You can potentially compile a newer version of
+grpc from source.
+
+##### Ubuntu 20.04
+
+In Ubuntu 20.04 the version of the grpc package is tool old, so
+installation fails. You can potentially compile a newer version of grpc
+from source.
+
+##### CentOS 7 & 8 / RHEL 7 & 8
+
+These distros do not have a grpc package. You can potentially compile
+grpc from source.
+
+</details>
+
 #### macOS
 
 If you use Homebrew you may install the `grpc` package, plus
-`pkg-config`. If you don’t do that, the package will download static
-builds of the system dependencies during installation. This works with
-macOS Big Sur, or later, on Intel and Arm64 machines.
+`pkg-config`. If you don’t have Homebrew installed, the package will
+download static builds of the system dependencies during installation.
+This works with macOS Big Sur, or later, on Intel and Arm64 machines.
 
 ``` sh
 brew install grpc pkg-config
@@ -77,8 +128,8 @@ brew install grpc pkg-config
 #### Windows
 
 The package will automatically download a static build of the system
-requirements during installation. This works on R 4.3.x or later
-currently.
+requirements during installation. This works on R 4.2.x (with Rtools40
+or Rtools42), R 4.3.x (with Rtools43) or later currently.
 
 ## Example
 
