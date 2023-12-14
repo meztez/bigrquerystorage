@@ -52,18 +52,15 @@ remotes::install_github("meztez/bigrquerystorage")
 
 ``` sh
 # install protoc and grpc
-apt-get install -y libprotobuf-dev protobuf-compiler-grpc \
-                   libgrpc++-dev libc-ares-dev libre2-dev \
+apt-get install -y libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc \
                    pkg-config
 ```
 
 #### Fedora 38
 
 ``` sh
-# install protoc and grpc
-dnf install -y protobuf-devel protobuf-compiler \
-               grpc-devel c-ares-devel \
-               re2-devel pkgconf
+# install grpc, protoc is automatically installed
+dnf install -y grpc-devel pkgconf
 ```
 
 #### macOS

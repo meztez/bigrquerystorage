@@ -53,8 +53,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // bqs_ipc_stream
-SEXP bqs_ipc_stream(SEXP client, std::string project, std::string dataset, std::string table, std::string parent, std::int64_t n, std::vector<std::string> selected_fields, std::string row_restriction, std::int64_t timestamp_seconds, std::int32_t timestamp_nanos, bool quiet);
-RcppExport SEXP _bigrquerystorage_bqs_ipc_stream(SEXP clientSEXP, SEXP projectSEXP, SEXP datasetSEXP, SEXP tableSEXP, SEXP parentSEXP, SEXP nSEXP, SEXP selected_fieldsSEXP, SEXP row_restrictionSEXP, SEXP timestamp_secondsSEXP, SEXP timestamp_nanosSEXP, SEXP quietSEXP) {
+SEXP bqs_ipc_stream(SEXP client, std::string project, std::string dataset, std::string table, std::string parent, std::int64_t n, std::vector<std::string> selected_fields, std::string row_restriction, std::double_t sample_percentage, std::int64_t timestamp_seconds, std::int32_t timestamp_nanos, bool quiet);
+RcppExport SEXP _bigrquerystorage_bqs_ipc_stream(SEXP clientSEXP, SEXP projectSEXP, SEXP datasetSEXP, SEXP tableSEXP, SEXP parentSEXP, SEXP nSEXP, SEXP selected_fieldsSEXP, SEXP row_restrictionSEXP, SEXP sample_percentageSEXP, SEXP timestamp_secondsSEXP, SEXP timestamp_nanosSEXP, SEXP quietSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::traits::input_parameter< SEXP >::type client(clientSEXP);
@@ -65,10 +65,11 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< std::int64_t >::type n(nSEXP);
     Rcpp::traits::input_parameter< std::vector<std::string> >::type selected_fields(selected_fieldsSEXP);
     Rcpp::traits::input_parameter< std::string >::type row_restriction(row_restrictionSEXP);
+    Rcpp::traits::input_parameter< std::double_t >::type sample_percentage(sample_percentageSEXP);
     Rcpp::traits::input_parameter< std::int64_t >::type timestamp_seconds(timestamp_secondsSEXP);
     Rcpp::traits::input_parameter< std::int32_t >::type timestamp_nanos(timestamp_nanosSEXP);
     Rcpp::traits::input_parameter< bool >::type quiet(quietSEXP);
-    rcpp_result_gen = Rcpp::wrap(bqs_ipc_stream(client, project, dataset, table, parent, n, selected_fields, row_restriction, timestamp_seconds, timestamp_nanos, quiet));
+    rcpp_result_gen = Rcpp::wrap(bqs_ipc_stream(client, project, dataset, table, parent, n, selected_fields, row_restriction, sample_percentage, timestamp_seconds, timestamp_nanos, quiet));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -78,7 +79,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_bigrquerystorage_bqs_init_logger", (DL_FUNC) &_bigrquerystorage_bqs_init_logger, 0},
     {"_bigrquerystorage_grpc_version", (DL_FUNC) &_bigrquerystorage_grpc_version, 0},
     {"_bigrquerystorage_bqs_client", (DL_FUNC) &_bigrquerystorage_bqs_client, 6},
-    {"_bigrquerystorage_bqs_ipc_stream", (DL_FUNC) &_bigrquerystorage_bqs_ipc_stream, 11},
+    {"_bigrquerystorage_bqs_ipc_stream", (DL_FUNC) &_bigrquerystorage_bqs_ipc_stream, 12},
     {NULL, NULL, 0}
 };
 
