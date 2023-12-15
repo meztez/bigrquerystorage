@@ -87,7 +87,7 @@ these instructions do not work any more.
 ##### Alpine Linux
 
 ``` sh
-apk add g++ gcc make openssl openssl-dev git cmake bash linux-headers
+apk add grpc-dev protobuf-dev re2-dev c-ares-dev
 ```
 
 Alpine Linux 3.19 and Edge do not work currently, because the
