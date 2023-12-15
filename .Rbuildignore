@@ -16,3 +16,5 @@
 ^configure\.win$
 ^configure\.log$
 ^autobrew$
+^CRAN-SUBMISSION$
+^cran-comments\.md$

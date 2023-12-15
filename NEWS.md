@@ -1,3 +1,3 @@
-# bigrquerystorage 1.99.9000
+# bigrquerystorage 1.0.0
 
 * Initial CRAN submission.

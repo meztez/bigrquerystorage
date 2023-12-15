@@ -51,7 +51,7 @@ bqs_table_download <- function(
   timestamp_nanos <- as.integer(as.numeric(snapshot_time - timestamp_seconds) * 1000000000)
   if (lifecycle::is_present(max_results)) {
     lifecycle::deprecate_warn(
-      "1.99.0", "bqs_table_download(max_results)",
+      "1.0.0", "bqs_table_download(max_results)",
       "bqs_table_download(n_max)"
     )
     n_max <- max_results
