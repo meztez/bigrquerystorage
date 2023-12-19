@@ -7,6 +7,7 @@ NULL
 
 #' @rdname DBI
 #' @inheritParams DBI::dbFetch
+#' @return Returns a tibble.
 #' @export
 setMethod(
   "dbFetch", "BigQueryResult",

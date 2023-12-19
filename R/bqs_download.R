@@ -1,5 +1,9 @@
-#' Download table from BigQuery using BigQuery Storage API
-#' @param x BigQuery table reference `{project}.{dataset}.{table_name}`
+#' Download table data
+#'
+#' This retrieves rows block in a stream using a grpc protocol.
+#' It is most suitable for results of larger queries (>100 MB, say).
+#'
+#' @param x Table reference `{project}.{dataset}.{table_name}`
 #' @param parent Used as parent for `CreateReadSession`.
 #' grpc method. Default is to use option `bigquerystorage.project` value.
 #' @param snapshot_time Table modifier `snapshot time` as `POSIXct`.
@@ -9,7 +13,7 @@
 #' @param n_max Maximum number of results to retrieve. Use `Inf` or `-1L`
 #' retrieve all rows.
 #' @param quiet Should information be printed to console.
-#' @param as_tibble Should data be returned as tibble. Default is to return
+#' @param as_tibble Should data be returned as tibble. Default (FALSE) is to return
 #' as arrow Table from raw IPC stream.
 #' @param bigint The R type that BigQuery's 64-bit integer types should be mapped to.
 #'   The default is `"integer"` which returns R's `integer` type but results in `NA` for
@@ -20,6 +24,9 @@
 #' More details about table modifiers and table options are available from the
 #' API Reference documentation. (See [TableModifiers](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#tablemodifiers) and
 #' [TableReadOptions](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#tablereadoptions))
+#' @return This method returns a [arrow::Table] Table or optionally a tibble.
+#' If you need a `data.frame`, leave parameter as_tibble to FALSE and coerce
+#' the results with [as.data.frame()].
 #' @export
 #' @importFrom arrow RecordBatchStreamReader Table
 #' @importFrom lifecycle deprecated deprecate_warn
@@ -134,7 +141,7 @@ bqs_table_download <- function(
   return(tb)
 }
 
-#' Initialize client
+#' Initialize bigrquerystorage client
 #' @export
 #' @details
 #' Will attempt to reuse `bigrquery` credentials.
@@ -161,6 +168,7 @@ bqs_table_download <- function(
 #' Google Kubernetes Engine, App Engine, Cloud Run, and Cloud
 #' Functions provide.
 #' 3. If ADC can't use either of the above credentials, an error occurs.
+#' @return No return value, called for side effects.
 bqs_auth <- function() {
   if (!is.null(.global$client) &&
     (as.numeric(Sys.time()) - .global$client$creation < 30)) {
@@ -213,7 +221,7 @@ bqs_auth <- function() {
   invisible()
 }
 
-#' Close client
+#' Close bigrquerystorage client
 #' @rdname bqs_auth
 #' @export
 bqs_deauth <- function() {
@@ -231,6 +239,7 @@ bqs_deauth <- function() {
 #' @importFrom rlang env_unlock
 #' @importFrom lifecycle badge
 #' @import bigrquery
+#' @return No return value, called for side effects.
 #' @export
 overload_bq_table_download <- function(parent) {
   utils::assignInNamespace("bq_table_download", function(

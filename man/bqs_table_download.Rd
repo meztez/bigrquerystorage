@@ -2,7 +2,7 @@
 % Please edit documentation in R/bqs_download.R
 \name{bqs_table_download}
 \alias{bqs_table_download}
-\title{Download table from BigQuery using BigQuery Storage API}
+\title{Download table data}
 \usage{
 bqs_table_download(
   x,
@@ -19,7 +19,7 @@ bqs_table_download(
 )
 }
 \arguments{
-\item{x}{BigQuery table reference \verb{\{project\}.\{dataset\}.\{table_name\}}}
+\item{x}{Table reference \verb{\{project\}.\{dataset\}.\{table_name\}}}
 
 \item{parent}{Used as parent for \code{CreateReadSession}.
 grpc method. Default is to use option \code{bigquerystorage.project} value.}
@@ -37,7 +37,7 @@ retrieve all rows.}
 
 \item{quiet}{Should information be printed to console.}
 
-\item{as_tibble}{Should data be returned as tibble. Default is to return
+\item{as_tibble}{Should data be returned as tibble. Default (FALSE) is to return
 as arrow Table from raw IPC stream.}
 
 \item{bigint}{The R type that BigQuery's 64-bit integer types should be mapped to.
@@ -47,8 +47,14 @@ which allows the full range of 64 bit integers.}
 
 \item{max_results}{Deprecated}
 }
+\value{
+This method returns a \link[arrow:Table-class]{arrow::Table} Table or optionally a tibble.
+If you need a \code{data.frame}, leave parameter as_tibble to FALSE and coerce
+the results with \code{\link[=as.data.frame]{as.data.frame()}}.
+}
 \description{
-Download table from BigQuery using BigQuery Storage API
+This retrieves rows block in a stream using a grpc protocol.
+It is most suitable for results of larger queries (>100 MB, say).
 }
 \details{
 More details about table modifiers and table options are available from the

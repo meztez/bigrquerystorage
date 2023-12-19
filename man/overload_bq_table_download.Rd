@@ -9,6 +9,9 @@ overload_bq_table_download(parent)
 \arguments{
 \item{parent}{Parent project used by the API for billing.}
 }
+\value{
+No return value, called for side effects.
+}
 \description{
 \ifelse{html}{\href{https://lifecycle.r-lib.org/articles/stages.html#experimental}{\figure{lifecycle-experimental.svg}{options: alt='[Experimental]'}}}{\strong{[Experimental]}}
 Replace bigrquery bq_table_download method in bigrquery namespace.

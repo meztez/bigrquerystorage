@@ -3,16 +3,19 @@
 \name{bqs_auth}
 \alias{bqs_auth}
 \alias{bqs_deauth}
-\title{Initialize client}
+\title{Initialize bigrquerystorage client}
 \usage{
 bqs_auth()
 
 bqs_deauth()
 }
+\value{
+No return value, called for side effects.
+}
 \description{
-Initialize client
+Initialize bigrquerystorage client
 
-Close client
+Close bigrquerystorage client
 }
 \details{
 Will attempt to reuse \code{bigrquery} credentials.

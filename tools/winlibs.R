@@ -13,6 +13,7 @@ if(!file.exists("../windows/grpc/include/grpc/grpc.h")){
   dir.create("../windows", showWarnings = FALSE)
   untar(basename(url), exdir = "../windows", tar = 'internal')
   unlink(basename(url))
-  setwd("../windows")
+  oldwd <- setwd("../windows")
+  on.exit(setwd(oldwd), add = TRUE)
   file.rename(list.files(), 'grpc')
 }

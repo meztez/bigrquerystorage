@@ -1,12 +1,13 @@
 Package: bigrquerystorage
 Type: Package
-Title: R Client for BigQuery Storage API
+Title: An Interface to Google's 'BigQuery Storage' 'API'
 Version: 1.0.0
 Authors@R: c(
   person("Bruno", "Tremblay", role = c("aut", "cre"), email = "openr@neoxone.com"),
   person(family = "Google LLC", role = c("cph", "fnd")))
 Maintainer: Bruno Tremblay <openr@neoxone.com>
-Description: Provides facilities to interact with BigQuery Storage API.
+Description: Easily talk to Google's 'BigQuery Storage' 'API' from R
+    (<https://cloud.google.com/bigquery/docs/reference/storage/rpc>).
 License: Apache License (>= 2)
 Imports:
     arrow,
