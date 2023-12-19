@@ -3,9 +3,9 @@
 \docType{package}
 \name{bigrquerystorage-package}
 \alias{bigrquerystorage-package}
-\title{bigrquerystorage: An Interface to Google's 'BigQuery Storage' 'API'}
+\title{bigrquerystorage: An Interface to Google's 'BigQuery Storage' API}
 \description{
-Easily talk to Google's 'BigQuery Storage' 'API' from R (\url{https://cloud.google.com/bigquery/docs/reference/storage/rpc}).
+Easily talk to Google's 'BigQuery Storage' API from R (\url{https://cloud.google.com/bigquery/docs/reference/storage/rpc}).
 }
 \seealso{
 Useful links:
