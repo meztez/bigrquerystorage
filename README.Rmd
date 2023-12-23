@@ -47,10 +47,13 @@ The package also includes DBI methods for `dbFetch` and `dbReadTable`. It should
 
 ## Installation
 
+#### CRAN
 ``` r
-# CRAN
 install.packages("bigrquerystorage")
-# github (main)
+```
+
+#### Github
+```r
 remotes::install_github("meztez/bigrquerystorage")
 ```
 
