@@ -51,6 +51,8 @@ directly in `bigrquery` namespace.
 ``` r
 # CRAN
 install.packages("bigrquerystorage")
+
+```r
 # github (main)
 remotes::install_github("meztez/bigrquerystorage")
 ```
