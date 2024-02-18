@@ -2,6 +2,7 @@
 % Please edit documentation in R/bigrquerystorage.R
 \docType{package}
 \name{bigrquerystorage-package}
+\alias{bigrquerystorage}
 \alias{bigrquerystorage-package}
 \title{bigrquerystorage: An Interface to Google's 'BigQuery Storage' API}
 \description{
