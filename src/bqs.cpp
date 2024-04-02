@@ -136,8 +136,7 @@ public:
                 long int& rows_count,
                 long int& pages_count,
                 bool quiet,
-                RProgress::RProgress* pb,
-                bool last_stream) {
+                RProgress::RProgress* pb) {
 
     grpc::ClientContext context;
     context.AddMetadata("x-goog-request-params", "read_stream=" + stream);
@@ -164,6 +163,7 @@ public:
         }
         if (n > 0) {
           if (method_request.offset() + rows_count >= n) {
+          	context.TryCancel();
             pb->update(1);
             break;
           }
@@ -174,21 +174,23 @@ public:
                method_response.stats().progress().at_response_start()) * 200);
         }
       } else {
-        Rcpp::checkUserInterrupt();
+      	if (n > 0) {
+      		if (method_request.offset() + rows_count >= n) {
+      			context.TryCancel();
+      			break;
+      		}
+      	}
+      }
+      if (pages_count % 100 == 0L) {
+      	Rcpp::checkUserInterrupt();
       }
     }
-    if (n < 0) {
-      grpc::Status status = reader->Finish();
-      if (!status.ok()) {
-        std::string err;
-        err += "grpc method ReadRows error -> ";
-        err += status.error_message();
-        Rcpp::stop(err.c_str());
-      } else {
-        if (last_stream) {
-          pb->update(1);
-        }
-      }
+    grpc::Status status = reader->Finish();
+    if ((n < 0 && !status.ok()) || (n > 0 && !(status.ok() || status.error_code() == grpc::StatusCode::CANCELLED))) {
+      std::string err;
+      err += "grpc method ReadRows error -> ";
+      err += status.error_message();
+      Rcpp::stop(err.c_str());
     }
     rows_count += method_request.offset();
   }
@@ -370,9 +372,12 @@ SEXP bqs_ipc_stream(SEXP client,
   // Add batches to IPC stream
   for (int i = 0; i < read_session.streams_size(); i++) {
     client_ptr->ReadRows(read_session.streams(i).name(), &ipc_stream,
-                         n, rows_count, pages_count, quiet,
-                         &pb, i == read_session.streams_size() - 1);
+                         n, rows_count, pages_count, quiet, &pb);
+  	if (n > 0 && rows_count >= n) {
+  		break;
+  	}
   }
+  pb.update(1);
 
   if (!quiet) {
     REprintf("Streamed %ld rows in %ld messages.\n", rows_count, pages_count);
