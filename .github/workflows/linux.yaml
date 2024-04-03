@@ -20,7 +20,7 @@ jobs:
     outputs:
       distros: ${{ steps.setup-matrix.outputs.distros }}
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Set up matrix of builds
       id: setup-matrix
       run: |
@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-Latest
     name: ${{ matrix.distro }}
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Build package
       run: |
