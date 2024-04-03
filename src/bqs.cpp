@@ -136,7 +136,8 @@ public:
                 long int& rows_count,
                 long int& pages_count,
                 bool quiet,
-                RProgress::RProgress* pb) {
+                RProgress::RProgress* pb,
+                bool last_stream) {
 
     grpc::ClientContext context;
     context.AddMetadata("x-goog-request-params", "read_stream=" + stream);
@@ -193,6 +194,9 @@ public:
       Rcpp::stop(err.c_str());
     }
     rows_count += method_request.offset();
+    if (last_stream && !quiet) {
+      pb->update(1);
+    }
   }
 
   // Split stream
@@ -372,12 +376,12 @@ SEXP bqs_ipc_stream(SEXP client,
   // Add batches to IPC stream
   for (int i = 0; i < read_session.streams_size(); i++) {
     client_ptr->ReadRows(read_session.streams(i).name(), &ipc_stream,
-                         n, rows_count, pages_count, quiet, &pb);
+                         n, rows_count, pages_count, quiet,
+                         &pb, i == read_session.streams_size() - 1);
   	if (n > 0 && rows_count >= n) {
   		break;
   	}
   }
-  pb.update(1);
 
   if (!quiet) {
     REprintf("Streamed %ld rows in %ld messages.\n", rows_count, pages_count);
