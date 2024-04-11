@@ -164,7 +164,7 @@ test_that("n_max returns no more rows than actual originaly in table", {
   query <- "SELECT TRUE as x"
   tb <- bq_project_query(bigrquery::bq_test_project(), query)
   df <- bqs_table_download(tb, bigrquery::bq_test_project(), as_tibble = TRUE, quiet = TRUE, n_max = 50)
-  expect_equal(nrows(df), 1)
+  expect_equal(nrow(df), 1)
 })
 
 # Geography is mapped to an utf8 string in input,
