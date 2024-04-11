@@ -1,7 +1,7 @@
 Package: bigrquerystorage
 Type: Package
 Title: An Interface to Google's 'BigQuery Storage' API
-Version: 1.1.0
+Version: 1.1.0.9000
 Authors@R: c(
   person("Bruno", "Tremblay", role = c("aut", "cre"), email = "openr@neoxone.com"),
   person(family = "Google LLC", role = c("cph", "fnd")))

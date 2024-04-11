@@ -159,6 +159,14 @@ test_that("the return type of integer columns is set by the bigint argument", {
   expect_identical(out_chr, x)
 })
 
+test_that("n_max returns no more rows than actual originaly in table", {
+  auth_fn()
+  query <- "SELECT TRUE as x"
+  tb <- bq_project_query(bigrquery::bq_test_project(), query)
+  df <- bqs_table_download(tb, bigrquery::bq_test_project(), as_tibble = TRUE, quiet = TRUE, n_max = 50)
+  expect_equal(nrows(df), 1)
+})
+
 # Geography is mapped to an utf8 string in input,
 # it would have to be converted to a geography by the user
 test_that("can convert geography type", {
