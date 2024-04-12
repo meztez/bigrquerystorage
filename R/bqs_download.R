@@ -134,7 +134,7 @@ bqs_table_download <- function(
 
   # Batches do not support a n_max so we get just enough results before
   # exiting the streaming loop.
-  if (isTRUE(trim_to_n) && nrow(tb) > 0) {
+  if (isTRUE(trim_to_n) && nrow(tb) > n_max) {
     tb <- tb[1:n_max, ]
   }
 
