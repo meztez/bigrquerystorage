@@ -309,7 +309,9 @@ parse_postprocess <- function(df, bigint) {
 
 col_apply <- function(x, p, f) {
   if (is.list(x)) {
-    x[] <- lapply(x, col_apply, p = p, f = f)
+  	for (i in seq_len(length(x))) {
+  		x[[i]] <- col_apply(x[[i]], p = p, f = f)
+  	}
     x
   } else if (p(x)) {
     f(x)
