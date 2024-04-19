@@ -197,3 +197,21 @@ test_that("can convert bytes type", {
   )
 })
 
+test_that("nested list type", {
+	auth_fn()
+	sql <- "
+	  SELECT STRUCT(1 AS a, 'abc' AS b) as s,
+           [1, 2, 3] as a,
+           [STRUCT(1 as a, 'a' as b), STRUCT(2, 'b'), STRUCT(3, 'c')] as aos,
+           STRUCT([1, 2, 3] as a, ['a', 'b'] as b) as soa
+  "
+
+	tb <- bq_project_query(bq_test_project(), sql, quiet = TRUE)
+	df <- bqs_table_download(tb, bq_test_project(), as_tibble = TRUE, quiet = TRUE)
+
+	expect_equal(df[["s"]], tibble::tibble(a = 1, b = "abc"))
+	expect_equal(df[["a"]], list(1:3))
+	expect_equal(df[["aos"]], list(tibble::tibble(a = 1:3, b = c("a", "b", "c"))))
+	expect_equal(df[["soa"]], tibble::tibble(a = list(1:3), b = list(c("a", "b"))))
+
+})

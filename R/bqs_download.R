@@ -309,7 +309,10 @@ parse_postprocess <- function(df, bigint) {
 
 col_apply <- function(x, p, f) {
   if (is.list(x)) {
-    x[] <- lapply(x, col_apply, p = p, f = f)
+  	if (inherits(x, "arrow_list")) {
+  		x <- as.list(x)
+  	}
+  	x[] <- lapply(x, col_apply, p = p, f = f)
     x
   } else if (p(x)) {
     f(x)
