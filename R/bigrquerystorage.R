@@ -1,6 +1,5 @@
 #' @aliases NULL
 #' @aliases bigrquerystorage-package
-#' @import methods DBI
 #' @importFrom Rcpp sourceCpp
 #' @importFrom bit64 is.integer64
 #' @useDynLib bigrquerystorage, .registration = TRUE
