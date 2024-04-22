@@ -304,28 +304,28 @@ parse_postprocess <- function(df, bigint, fields) {
       character = as.character
     )
     tests[["bigint"]] <- list(
-    	"test" = \(x,y) bit64::is.integer64(x),
-    	"func" = \(x) as_bigint(x)
+    	"test" = function(x,y) bit64::is.integer64(x),
+    	"func" = function(x) as_bigint(x)
     )
   }
 	if (has_type(fields, "DATETIME")) {
 		tests[["DATETIME"]] <- list(
-			"test" = \(x,y) {y[["type"]] %in% "DATETIME"},
-			"func" = \(x) {attr(x, "tzone") <- "UTC"; x}
+			"test" = function(x,y) {y[["type"]] %in% "DATETIME"},
+			"func" = function(x) {attr(x, "tzone") <- "UTC"; x}
 		)
 	}
 	if (has_type(fields, "GEOGRAPHY")) {
 	  bqs_check_namespace("wk", "GEOGRAPHY")
 		tests[["GEOGRAPHY"]] <- list(
-			"test" = \(x,y) y[["type"]] %in% "GEOGRAPHY",
-			"func" = \(x) {attr(x, "class") <- c("wk_wkt", "wk_vctr");x}
+			"test" = function(x,y) y[["type"]] %in% "GEOGRAPHY",
+			"func" = function(x) {attr(x, "class") <- c("wk_wkt", "wk_vctr");x}
 		)
 	}
 	if (has_type(fields, "BYTES")) {
 		bqs_check_namespace("blob", "BYTES")
 		tests[["BYTES"]] <- list(
-			"test" = \(x,y) y[["type"]] %in% "BYTES",
-			"func" = \(x) {
+			"test" = function(x,y) y[["type"]] %in% "BYTES",
+			"func" = function(x) {
 				attr(x, "class") <- c("blob", "vctrs_list_of", "vctrs_vctr", "list")
 				attr(x, "ptype") <- raw(0)
 				x
