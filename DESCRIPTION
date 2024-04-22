@@ -21,9 +21,10 @@ Imports:
     bit64,
     tibble
 Suggests:
+    blob,
     testthat,
     hms,
-    wk,
+    wk (>= 0.3.2),
     tzdb,
     base64enc
 LinkingTo:

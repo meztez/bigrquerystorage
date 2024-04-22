@@ -124,11 +124,13 @@ bqs_table_download <- function(
   }
 
   if (isTRUE(as_tibble)) {
+  	fields <- select_fields(bigrquery::bq_table_fields(x), selected_fields)
     tb <- parse_postprocess(
       tibble::tibble(
         as.data.frame(tb)
       ),
-      bigint
+      bigint,
+      fields
     )
   }
 
@@ -292,31 +294,108 @@ bqs_initiate <- function() {
 
 # utils ------------------------------------------------------------------
 
-`%||%` <- function(x, y) if (is.null(x)) y else x
-
-parse_postprocess <- function(df, bigint) {
+#' @noRd
+parse_postprocess <- function(df, bigint, fields) {
+  tests <- list()
   if (bigint != "integer64") {
     as_bigint <- switch(bigint,
       integer = as.integer,
       numeric = as.numeric,
       character = as.character
     )
-    df <- col_apply(df, bit64::is.integer64, as_bigint)
+    tests[["bigint"]] <- list(
+    	"test" = \(x,y) bit64::is.integer64(x),
+    	"func" = \(x) as_bigint(x)
+    )
   }
-
+	if (has_type(fields, "DATETIME")) {
+		tests[["DATETIME"]] <- list(
+			"test" = \(x,y) {y[["type"]] %in% "DATETIME"},
+			"func" = \(x) {attr(x, "tzone") <- "UTC"; x}
+		)
+	}
+	if (has_type(fields, "GEOGRAPHY")) {
+	  bqs_check_namespace("wk", "GEOGRAPHY")
+		tests[["GEOGRAPHY"]] <- list(
+			"test" = \(x,y) y[["type"]] %in% "GEOGRAPHY",
+			"func" = \(x) {attr(x, "class") <- c("wk_wkt", "wk_vctr");x}
+		)
+	}
+	if (has_type(fields, "BYTES")) {
+		bqs_check_namespace("blob", "BYTES")
+		tests[["BYTES"]] <- list(
+			"test" = \(x,y) y[["type"]] %in% "BYTES",
+			"func" = \(x) {
+				attr(x, "class") <- c("blob", "vctrs_list_of", "vctrs_vctr", "list")
+				attr(x, "ptype") <- raw(0)
+				x
+			}
+		)
+	}
+  if (length(tests)) {
+	  df <- col_mapply(df, list("fields" = fields), tests)
+  }
   df
 }
 
-col_apply <- function(x, p, f) {
-  if (is.list(x)) {
-  	if (inherits(x, "arrow_list")) {
-  		x <- as.list(x)
-  	}
-  	x[] <- lapply(x, col_apply, p = p, f = f)
-    x
-  } else if (p(x)) {
-    f(x)
-  } else {
-    x
-  }
+#' @noRd
+#' @importFrom rlang is_named
+col_mapply <- function(x, y, tests) {
+	if (is.list(x)) {
+		if (inherits(x, "arrow_list")) {
+			x <- as.list(x)
+		}
+		if (rlang::is_named(x)) {
+			x[] <- mapply(col_mapply, x, y[["fields"]], MoreArgs = list(tests = tests), SIMPLIFY = FALSE)
+			return(x)
+		} else if (y[["type"]] %in% "RECORD" && y[["mode"]] %in% "REPEATED") {
+			x[] <- lapply(x, col_mapply, y = y, tests = tests)
+			return(x)
+		}
+	}
+	for (t in tests) {
+		if (t[["test"]](x, y)) {
+			if (y[["mode"]] %in% "REPEATED") {
+				x <- lapply(x, t[["func"]])
+			} else {
+				x <- t[["func"]](x)
+			}
+			break
+		}
+	}
+	x
 }
+
+#' @noRd
+#' @importFrom rlang check_installed
+bqs_check_namespace <- function(pkg, bqs_type) {
+	rlang::check_installed(pkg, sprintf("to parse BigQueryStorage '%s' fields.", bqs_type))
+}
+
+#' @noRd
+select_fields <- function(fields, selected_fields) {
+	if (length(selected_fields)) {
+		selected_fields <- strsplit(selected_fields, ".", fixed = TRUE)
+		nm <- vapply(fields, `[[`, character(1), "name")
+		snm <- vapply(selected_fields, head, character(1), 1)
+		for (i in rev(seq_len(length(nm)))) {
+			m <- match(tolower(nm[i]), tolower(snm))
+			if (is.na(m)) {
+				fields[[i]] <- NULL
+			} else {
+				if (length(f <- fields[[i]][["fields"]]) && length(sf <- selected_fields[[m]][-1])) {
+					fields[[i]][["fields"]] <- select_fields(f,	paste0(sf, collapse = "."))
+				}
+			}
+		}
+	}
+	return(fields)
+}
+
+#' @noRd
+has_type <- function(fields, bqs_type) {
+	f <- unlist(fields)
+	w <- which(grepl("type$", names(f)))
+	bqs_type %in% unique(f[w])
+}
+
