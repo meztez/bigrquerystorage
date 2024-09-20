@@ -110,20 +110,6 @@ bqs_table_download <- function(
 
   tb <- as.data.frame(nanoarrow::read_nanoarrow(raws))
 
-  # rdr <- RecordBatchStreamReader$create(unlist(raws))
-  # # There is currently no way to create an Arrow Table from a
-  # # RecordBatchStreamReader when there is a schema but no batches.
-  # if (length(raws[[2]]) == 0L) {
-  #   tb <- Table$create(
-  #     stats::setNames(
-  #       data.frame(matrix(ncol = rdr$schema$num_fields, nrow = 0)),
-  #       rdr$schema$names
-  #     )
-  #   )
-  # } else {
-  #   tb <- rdr$read_table()
-  # }
-
   if (isTRUE(as_tibble)) {
   	fields <- select_fields(bigrquery::bq_table_fields(x), selected_fields)
     tb <- parse_postprocess(
