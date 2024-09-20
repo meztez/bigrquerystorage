@@ -112,13 +112,7 @@ bqs_table_download <- function(
 
   if (isTRUE(as_tibble)) {
   	fields <- select_fields(bigrquery::bq_table_fields(x), selected_fields)
-    tb <- parse_postprocess(
-      tibble::tibble(
-        as.data.frame(tb)
-      ),
-      bigint,
-      fields
-    )
+    tb <- parse_postprocess(tibble::tibble(as.data.frame(tb)), bigint, fields)
   }
 
   # Batches do not support a n_max so we get just enough results before
@@ -219,52 +213,6 @@ bqs_deauth <- function() {
   }
   invisible()
 }
-
-#' Overload `bigrquery::bq_table_download`
-#' @description
-#' `r lifecycle::badge("experimental")`
-#' Replace bigrquery bq_table_download method in bigrquery namespace.
-#' @param parent Parent project used by the API for billing.
-#' @importFrom rlang env_unlock
-#' @importFrom lifecycle badge
-#' @import bigrquery
-#' @return No return value, called for side effects.
-#' @export
-overload_bq_table_download <- function(parent) {
-  utils::assignInNamespace("bq_table_download", function(
-      x, n_max = Inf, page_size = NULL, start_index = 0L, max_connections = 6L,
-      quiet = NA, bigint = c("integer", "integer64", "numeric", "character"), max_results = deprecated()) {
-    x <- bigrquery::as_bq_table(x)
-    if (lifecycle::is_present(max_results)) {
-      lifecycle::deprecate_warn(
-        "1.4.0", "bq_table_download(max_results)",
-        "bq_table_download(n_max)"
-      )
-      n_max <- max_results
-    }
-    assertthat::assert_that(is.numeric(n_max), length(n_max) == 1)
-    assertthat::assert_that(is.numeric(start_index), length(start_index) == 1)
-    bigint <- match.arg(bigint)
-    table_data <- bigrquerystorage::bqs_table_download(
-      x = x,
-      parent = parent,
-      n_max = n_max + start_index,
-      as_tibble = TRUE,
-      quiet = quiet,
-      bigint = bigint
-    )
-    if (start_index > 0L) {
-      table_data <- table_data[start_index:nrow(table_data), ]
-    }
-    return(table_data)
-  }, ns = "bigrquery")
-  if ("package:bigrquery" %in% search()) {
-    env_unlock(environment(bq_table_download))
-    namespaceExport(environment(bq_table_download), "bq_table_download")
-    lockEnvironment(environment(bq_table_download), bindings = TRUE)
-  }
-}
-
 
 # BigQuery storage --------------------------------------------------------
 #' @noRd

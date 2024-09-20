@@ -41,10 +41,6 @@ R package to transform the raw stream into an R object.
 `bqs_table_download` is the main function of this package. Other
 functions are helpers to facilitate authentication and debugging.
 
-It should be loaded after `bigrquery`. Alternatively, use
-`overload_bq_table_download` to replace `bigrquery::bq_table_download`
-directly in `bigrquery` namespace.
-
 ## Installation
 
 #### CRAN
@@ -183,13 +179,6 @@ sprintf(
   length(unique(rows$name)),
   paste(unique(rows$state), collapse = " ")
 )
-
-# Replace bigrquery::bq_download_table
-rows <- bigrquery::bq_table_download("bigquery-public-data.usa_names.usa_1910_current")
-# Downloading 6,122,890 rows in 613 pages.
-overload_bq_table_download(project_id)
-rows <- bigrquery::bq_table_download("bigquery-public-data.usa_names.usa_1910_current")
-# Streamed 6122890 rows in 5980 messages.
 ```
 
 ## Authentication
