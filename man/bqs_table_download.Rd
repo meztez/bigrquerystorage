@@ -48,7 +48,7 @@ which allows the full range of 64 bit integers.}
 \item{max_results}{Deprecated}
 }
 \value{
-This method returns a \link[arrow:Table-class]{arrow::Table} Table or optionally a tibble.
+This method returns a data.frame or optionally a tibble.
 If you need a \code{data.frame}, leave parameter as_tibble to FALSE and coerce
 the results with \code{\link[=as.data.frame]{as.data.frame()}}.
 }

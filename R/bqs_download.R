@@ -24,7 +24,7 @@
 #' More details about table modifiers and table options are available from the
 #' API Reference documentation. (See [TableModifiers](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#tablemodifiers) and
 #' [TableReadOptions](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#tablereadoptions))
-#' @return This method returns a [arrow::Table] Table or optionally a tibble.
+#' @return This method returns a data.frame or optionally a tibble.
 #' If you need a `data.frame`, leave parameter as_tibble to FALSE and coerce
 #' the results with [as.data.frame()].
 #' @export
