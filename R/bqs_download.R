@@ -28,7 +28,6 @@
 #' If you need a `data.frame`, leave parameter as_tibble to FALSE and coerce
 #' the results with [as.data.frame()].
 #' @export
-#' @importFrom arrow RecordBatchStreamReader Table
 #' @importFrom lifecycle deprecated deprecate_warn
 #' @importFrom tibble tibble
 #' @importFrom rlang is_missing
@@ -109,19 +108,21 @@ bqs_table_download <- function(
     quiet = quiet
   )
 
-  rdr <- RecordBatchStreamReader$create(unlist(raws))
-  # There is currently no way to create an Arrow Table from a
-  # RecordBatchStreamReader when there is a schema but no batches.
-  if (length(raws[[2]]) == 0L) {
-    tb <- Table$create(
-      stats::setNames(
-        data.frame(matrix(ncol = rdr$schema$num_fields, nrow = 0)),
-        rdr$schema$names
-      )
-    )
-  } else {
-    tb <- rdr$read_table()
-  }
+  tb <- as.data.frame(nanoarrow::read_nanoarrow(raws))
+
+  # rdr <- RecordBatchStreamReader$create(unlist(raws))
+  # # There is currently no way to create an Arrow Table from a
+  # # RecordBatchStreamReader when there is a schema but no batches.
+  # if (length(raws[[2]]) == 0L) {
+  #   tb <- Table$create(
+  #     stats::setNames(
+  #       data.frame(matrix(ncol = rdr$schema$num_fields, nrow = 0)),
+  #       rdr$schema$names
+  #     )
+  #   )
+  # } else {
+  #   tb <- rdr$read_table()
+  # }
 
   if (isTRUE(as_tibble)) {
   	fields <- select_fields(bigrquery::bq_table_fields(x), selected_fields)
@@ -398,4 +399,3 @@ has_type <- function(fields, bqs_type) {
 	w <- which(grepl("type$", names(f)))
 	bqs_type %in% unique(f[w])
 }
-
