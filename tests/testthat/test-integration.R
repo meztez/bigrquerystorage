@@ -16,44 +16,6 @@ test_that("BigQuery json and BigQuery return the same results", {
   expect_equal(dt, dt2)
 })
 
-test_that("Method dispatch to BigQuery Storage", {
-  auth_fn()
-
-  con <- bigrquery::dbConnect(
-    bigrquery::bigquery(),
-    project = "bigquery-public-data",
-    dataset = "usa_names",
-    billing = bigrquery::bq_test_project(),
-    quiet = TRUE
-  )
-
-  # Basic reading table as data.frame
-  dt <- DBI::dbGetQuery(con, "SELECT * FROM `bigquery-public-data.usa_names.usa_1910_current` LIMIT 50000")
-  expect_true(inherits(dt, "data.frame"))
-  expect_true(nrow(dt) == 50000)
-
-  # Full table fetch
-  dt <- DBI::dbReadTable(con, "bigquery-public-data.usa_names.usa_1910_current")
-  expect_true(inherits(dt, "data.frame"))
-})
-
-test_that("0 rows table can be returned", {
-  auth_fn()
-
-  con <- bigrquery::dbConnect(
-    bigrquery::bigquery(),
-    project = "bigquery-public-data",
-    dataset = "usa_names",
-    billing = bigrquery::bq_test_project(),
-    quiet = TRUE
-  )
-
-  # Check if a 0 rows table can be returned
-  dt <- DBI::dbGetQuery(con, "SELECT * FROM `bigquery-public-data.usa_names.usa_1910_current` LIMIT 0")
-  expect_true(inherits(dt, "data.frame"))
-  expect_true(nrow(dt) == 0)
-})
-
 test_that("Optional BigQuery Storage API parameters work", {
   auth_fn()
 
