@@ -10,7 +10,7 @@ Description: Easily talk to Google's 'BigQuery Storage' API from R
     (<https://cloud.google.com/bigquery/docs/reference/storage/rpc>).
 License: Apache License (>= 2)
 Imports:
-    nanoarrow,
+    nanoarrow (>= 0.5.0),
     methods,
     rlang,
     DBI,
