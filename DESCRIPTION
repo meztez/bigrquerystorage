@@ -11,9 +11,7 @@ Description: Easily talk to Google's 'BigQuery Storage' API from R
 License: Apache License (>= 2)
 Imports:
     nanoarrow (>= 0.5.0),
-    methods,
     rlang,
-    DBI,
     bigrquery,
     assertthat,
     Rcpp,

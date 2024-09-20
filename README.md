@@ -41,7 +41,6 @@ R package to transform the raw stream into an R object.
 `bqs_table_download` is the main function of this package. Other
 functions are helpers to facilitate authentication and debugging.
 
-The package also includes DBI methods for `dbFetch` and `dbReadTable`.
 It should be loaded after `bigrquery`. Alternatively, use
 `overload_bq_table_download` to replace `bigrquery::bq_table_download`
 directly in `bigrquery` namespace.

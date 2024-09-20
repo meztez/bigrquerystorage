@@ -6,6 +6,7 @@
   * Set timezone of BigQuery SQL type DATETIME to UTC
 * Fix nested list parse post processing.
 * Fix returning more rows than actual rows in source table when n_max > nrows.
+* Drop DBI methods.
 
 # bigrquerystorage 1.1.0
 
