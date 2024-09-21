@@ -345,8 +345,7 @@ SEXP bqs_ipc_stream(SEXP client,
 
   Rcpp::XPtr<BigQueryReadClient> client_ptr(client);
 
-  std::vector<uint8_t> schema;
-  std::vector<uint8_t> ipc_stream;
+  std::vector<uint8_t> bytes;
   long int rows_count = 0;
   long int pages_count = 0;
 
@@ -362,7 +361,7 @@ SEXP bqs_ipc_stream(SEXP client,
     row_restriction,
     sample_percentage);
   // Add schema to IPC stream
-  to_raw(read_session.arrow_schema().serialized_schema(), &schema);
+  to_raw(read_session.arrow_schema().serialized_schema(), &bytes);
 
   RProgress::RProgress pb(
       "\033[42m\033[30mStreaming (:percent)\033[39m\033[49m [:bar] eta[:eta|:elapsed] throt[:extra]");
@@ -375,7 +374,7 @@ SEXP bqs_ipc_stream(SEXP client,
 
   // Add batches to IPC stream
   for (int i = 0; i < read_session.streams_size(); i++) {
-    client_ptr->ReadRows(read_session.streams(i).name(), &ipc_stream,
+    client_ptr->ReadRows(read_session.streams(i).name(), &bytes,
                          n, rows_count, pages_count, quiet,
                          &pb, i == read_session.streams_size() - 1);
   	if (n > 0 && rows_count >= n) {
@@ -388,5 +387,5 @@ SEXP bqs_ipc_stream(SEXP client,
   }
 
   // Return stream
-  return Rcpp::List::create(schema, ipc_stream);
+  return Rcpp::wrap(bytes);
 }

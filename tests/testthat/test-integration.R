@@ -4,61 +4,23 @@ auth_fn <- function() {
   on.exit(unlink(tmp))
   writeBin(base64enc::base64decode(Sys.getenv("GCP_SERVICE_ACCOUNT")), tmp)
   bigrquery::bq_auth(path = tmp)
+  options(nanoarrow.warn_unregistered_extension = FALSE)
 }
-
 
 test_that("BigQuery json and BigQuery return the same results", {
   auth_fn()
 
   # Compare with bigrquery method
   dt <- bqs_table_download("bigquery-public-data.usa_names.usa_1910_current", bigrquery::bq_test_project(), n_max = 50000, as_tibble = TRUE, quiet = TRUE)
-  dt2 <- bq_table_download("bigquery-public-data.usa_names.usa_1910_current", n_max = 50000, quiet = TRUE)
+  dt2 <- bigrquery::bq_table_download("bigquery-public-data.usa_names.usa_1910_current", n_max = 50000, quiet = TRUE)
   expect_equal(dt, dt2)
-})
-
-test_that("Method dispatch to BigQuery Storage", {
-  auth_fn()
-
-  con <- bigrquery::dbConnect(
-    bigrquery::bigquery(),
-    project = "bigquery-public-data",
-    dataset = "usa_names",
-    billing = bigrquery::bq_test_project(),
-    quiet = TRUE
-  )
-
-  # Basic reading table as data.frame
-  dt <- DBI::dbGetQuery(con, "SELECT * FROM `bigquery-public-data.usa_names.usa_1910_current` LIMIT 50000")
-  expect_true(inherits(dt, "data.frame"))
-  expect_true(nrow(dt) == 50000)
-
-  # Full table fetch
-  dt <- DBI::dbReadTable(con, "bigquery-public-data.usa_names.usa_1910_current")
-  expect_true(inherits(dt, "data.frame"))
-})
-
-test_that("0 rows table can be returned", {
-  auth_fn()
-
-  con <- bigrquery::dbConnect(
-    bigrquery::bigquery(),
-    project = "bigquery-public-data",
-    dataset = "usa_names",
-    billing = bigrquery::bq_test_project(),
-    quiet = TRUE
-  )
-
-  # Check if a 0 rows table can be returned
-  dt <- DBI::dbGetQuery(con, "SELECT * FROM `bigquery-public-data.usa_names.usa_1910_current` LIMIT 0")
-  expect_true(inherits(dt, "data.frame"))
-  expect_true(nrow(dt) == 0)
 })
 
 test_that("Optional BigQuery Storage API parameters work", {
   auth_fn()
 
   # Check other features
-  dt <- bqs_table_download("bigquery-public-data:usa_names.usa_1910_current",
+  dt <- bqs_table_download("bigquery-public-data.usa_names.usa_1910_current",
     bigrquery::bq_test_project(),
     selected_fields = c("name", "number", "state"),
     row_restriction = 'state = "WA"',
@@ -76,7 +38,7 @@ test_that("Optional BigQuery Storage API parameters work", {
   # clause reads the entire table. If the sampling percentage is greater than zero and the table
   # is not empty, then table sampling always returns some results.
   dt <- bqs_table_download(
-    "bigquery-public-data:usa_names.usa_1910_current",
+    "bigquery-public-data.usa_names.usa_1910_current",
     bigrquery::bq_test_project(),
     selected_fields = "number",
     sample_percentage = 0,
@@ -91,7 +53,7 @@ test_that("can read utf-8 strings", {
   auth_fn()
 
   sql <- "SELECT '\U0001f603' as x"
-  tb <- bq_project_query(bigrquery::bq_test_project(), sql, quiet = TRUE)
+  tb <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql, quiet = TRUE)
   df <- bqs_table_download(tb, bigrquery::bq_test_project(), as_tibble = TRUE, quiet = TRUE)
   x <- df$x[[1]]
 
@@ -112,9 +74,9 @@ test_that("can convert date time types", {
     FROM (SELECT DATETIME '2000-01-02 03:04:05.67' as datetime)
   "
 
-  tb <- bq_project_query(bigrquery::bq_test_project(), sql, quiet = TRUE)
+  tb <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql, quiet = TRUE)
   df <- bqs_table_download(tb, bigrquery::bq_test_project(), as_tibble = TRUE, quiet = TRUE)
-  df2 <- bq_table_download(tb, quiet = TRUE)
+  df2 <- bigrquery::bq_table_download(tb, quiet = TRUE)
 
   base <- ISOdatetime(2000, 1, 2, 3, 4, 5.67, tz = "UTC")
 
@@ -129,7 +91,7 @@ test_that("correctly parse logical values", {
   auth_fn()
 
   query <- "SELECT TRUE as x"
-  tb <- bq_project_query(bigrquery::bq_test_project(), query)
+  tb <- bigrquery::bq_project_query(bigrquery::bq_test_project(), query)
   df <- bqs_table_download(tb, bigrquery::bq_test_project(), as_tibble = TRUE, quiet = TRUE)
 
   expect_true(df$x)
@@ -138,15 +100,19 @@ test_that("correctly parse logical values", {
 test_that("the return type of integer columns is set by the bigint argument", {
   auth_fn()
 
-  x <- c("-2147483648", "-2147483647", "-1", "0", "1", "2147483647", "2147483648")
+  x <- c("-2147483648", "-2147483647", "-1", "0", "1", "2147483647", "2147483648", "18014398509481984")
   sql <- paste0("SELECT * FROM UNNEST ([", paste0(x, collapse = ","), "]) AS x")
-  qry <- bq_project_query(bigrquery::bq_test_project(), sql)
+  qry <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql)
 
   expect_warning(
     out_int <- bqs_table_download(qry, bigrquery::bq_test_project(), as_tibble = TRUE, bigint = "integer", quiet = TRUE)$x,
-    "integer overflow"
+    "loss of precision in conversion to double"
   )
   expect_identical(out_int, suppressWarnings(as.integer(x)))
+
+  x <- c("-2147483648", "-2147483647", "-1", "0", "1", "2147483647", "2147483648")
+  sql <- paste0("SELECT * FROM UNNEST ([", paste0(x, collapse = ","), "]) AS x")
+  qry <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql)
 
   out_int64 <- bqs_table_download(qry, bigrquery::bq_test_project(), as_tibble = TRUE, bigint = "integer64", quiet = TRUE)$x
   expect_identical(out_int64, bit64::as.integer64(x))
@@ -161,7 +127,7 @@ test_that("the return type of integer columns is set by the bigint argument", {
 test_that("n_max returns no more rows than actual originaly in table", {
   auth_fn()
   query <- "SELECT TRUE as x"
-  tb <- bq_project_query(bigrquery::bq_test_project(), query)
+  tb <- bigrquery::bq_project_query(bigrquery::bq_test_project(), query)
   df <- bqs_table_download(tb, bigrquery::bq_test_project(), as_tibble = TRUE, quiet = TRUE, n_max = 50)
   expect_equal(nrow(df), 1)
 })
@@ -173,7 +139,7 @@ test_that("can convert geography type", {
 
   skip_if_not_installed("wk")
   sql <- "SELECT ST_GEOGFROMTEXT('POINT (30 10)') as geography"
-  tb <- bq_project_query(bigrquery::bq_test_project(), sql, quiet = TRUE)
+  tb <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql, quiet = TRUE)
   df <- bqs_table_download(tb, bigrquery::bq_test_project(), as_tibble = TRUE, quiet = TRUE)
 
   expect_identical(df$geography, wk::wkt("POINT(30 10)"))
@@ -183,7 +149,7 @@ test_that("can convert bytes type", {
   auth_fn()
 
   sql <- "SELECT ST_ASBINARY(ST_GEOGFROMTEXT('POINT (30 10)')) as bytes"
-  tb <- bq_project_query(bq_test_project(), sql, quiet = TRUE)
+  tb <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql, quiet = TRUE)
   df <- bqs_table_download(tb, bigrquery::bq_test_project(), as_tibble = TRUE, quiet = TRUE)
 
   expect_identical(
@@ -205,8 +171,8 @@ test_that("nested list type", {
            STRUCT([1, 2, 3] as a, ['a', 'b'] as b) as soa
   "
 
-	tb <- bq_project_query(bq_test_project(), sql, quiet = TRUE)
-	df <- bqs_table_download(tb, bq_test_project(), as_tibble = TRUE, quiet = TRUE)
+	tb <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql, quiet = TRUE)
+	df <- bqs_table_download(tb, bigrquery::bq_test_project(), as_tibble = TRUE, quiet = TRUE)
 
 	expect_equal(df[["s"]], tibble::tibble(a = 1, b = "abc"))
 	expect_equal(df[["a"]], list(1:3))
@@ -235,9 +201,9 @@ test_that("post process parse works", {
     STRUCT([CAST ('Hi' as BYTES), CAST ('Bob' as BYTES)] as a, ['a', 'b'] as b) as bb,
     STRUCT([ST_GEOGFROMTEXT('POINT (30 10)'), ST_GEOGFROMTEXT('POINT (15 15)')] as geo) as gg
   FROM (SELECT DATETIME '2000-01-02 03:04:05.67' as datetime)"
-	tb <- bq_project_query(bq_test_project(), sql, quiet = TRUE)
-	df <- bqs_table_download(tb, bq_test_project(), as_tibble = TRUE, quiet = TRUE)
-	df2 <- bqs_table_download(tb, bq_test_project(), as_tibble = TRUE, quiet = TRUE, selected_fields = c("bb.a", "uniCODE", "aos"))
+	tb <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql, quiet = TRUE)
+	df <- bqs_table_download(tb, bigrquery::bq_test_project(), as_tibble = TRUE, quiet = TRUE)
+	df2 <- bqs_table_download(tb, bigrquery::bq_test_project(), as_tibble = TRUE, quiet = TRUE, selected_fields = c("bb.a", "uniCODE", "aos"))
   expect_equal(attr(df$datetime,"tzone"), "UTC")
   expect_true(inherits(df$bytes, "blob"))
   expect_true(inherits(df$geography, "wk_wkt"))

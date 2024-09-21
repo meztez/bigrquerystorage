@@ -24,14 +24,14 @@
 #' More details about table modifiers and table options are available from the
 #' API Reference documentation. (See [TableModifiers](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#tablemodifiers) and
 #' [TableReadOptions](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#tablereadoptions))
-#' @return This method returns a [arrow::Table] Table or optionally a tibble.
+#' @return This method returns a data.frame or optionally a tibble.
 #' If you need a `data.frame`, leave parameter as_tibble to FALSE and coerce
 #' the results with [as.data.frame()].
 #' @export
-#' @importFrom arrow RecordBatchStreamReader Table
 #' @importFrom lifecycle deprecated deprecate_warn
 #' @importFrom tibble tibble
 #' @importFrom rlang is_missing
+#' @import nanoarrow
 bqs_table_download <- function(
     x,
     parent = getOption("bigquerystorage.project", ""),
@@ -41,7 +41,7 @@ bqs_table_download <- function(
     sample_percentage,
     n_max = Inf,
     quiet = NA,
-    as_tibble = FALSE,
+    as_tibble = lifecycle::deprecated(),
     bigint = c("integer", "integer64", "numeric", "character"),
     max_results = lifecycle::deprecated()) {
   # Parameters validation
@@ -109,30 +109,8 @@ bqs_table_download <- function(
     quiet = quiet
   )
 
-  rdr <- RecordBatchStreamReader$create(unlist(raws))
-  # There is currently no way to create an Arrow Table from a
-  # RecordBatchStreamReader when there is a schema but no batches.
-  if (length(raws[[2]]) == 0L) {
-    tb <- Table$create(
-      stats::setNames(
-        data.frame(matrix(ncol = rdr$schema$num_fields, nrow = 0)),
-        rdr$schema$names
-      )
-    )
-  } else {
-    tb <- rdr$read_table()
-  }
-
-  if (isTRUE(as_tibble)) {
-  	fields <- select_fields(bigrquery::bq_table_fields(x), selected_fields)
-    tb <- parse_postprocess(
-      tibble::tibble(
-        as.data.frame(tb)
-      ),
-      bigint,
-      fields
-    )
-  }
+  fields <- select_fields(bigrquery::bq_table_fields(x), selected_fields)
+  tb <- parse_postprocess(tibble::tibble(as.data.frame(nanoarrow::read_nanoarrow(raws))), bigint, fields)
 
   # Batches do not support a n_max so we get just enough results before
   # exiting the streaming loop.
@@ -233,52 +211,6 @@ bqs_deauth <- function() {
   invisible()
 }
 
-#' Overload `bigrquery::bq_table_download`
-#' @description
-#' `r lifecycle::badge("experimental")`
-#' Replace bigrquery bq_table_download method in bigrquery namespace.
-#' @param parent Parent project used by the API for billing.
-#' @importFrom rlang env_unlock
-#' @importFrom lifecycle badge
-#' @import bigrquery
-#' @return No return value, called for side effects.
-#' @export
-overload_bq_table_download <- function(parent) {
-  utils::assignInNamespace("bq_table_download", function(
-      x, n_max = Inf, page_size = NULL, start_index = 0L, max_connections = 6L,
-      quiet = NA, bigint = c("integer", "integer64", "numeric", "character"), max_results = deprecated()) {
-    x <- bigrquery::as_bq_table(x)
-    if (lifecycle::is_present(max_results)) {
-      lifecycle::deprecate_warn(
-        "1.4.0", "bq_table_download(max_results)",
-        "bq_table_download(n_max)"
-      )
-      n_max <- max_results
-    }
-    assertthat::assert_that(is.numeric(n_max), length(n_max) == 1)
-    assertthat::assert_that(is.numeric(start_index), length(start_index) == 1)
-    bigint <- match.arg(bigint)
-    table_data <- bigrquerystorage::bqs_table_download(
-      x = x,
-      parent = parent,
-      n_max = n_max + start_index,
-      as_tibble = TRUE,
-      quiet = quiet,
-      bigint = bigint
-    )
-    if (start_index > 0L) {
-      table_data <- table_data[start_index:nrow(table_data), ]
-    }
-    return(table_data)
-  }, ns = "bigrquery")
-  if ("package:bigrquery" %in% search()) {
-    env_unlock(environment(bq_table_download))
-    namespaceExport(environment(bq_table_download), "bq_table_download")
-    lockEnvironment(environment(bq_table_download), bindings = TRUE)
-  }
-}
-
-
 # BigQuery storage --------------------------------------------------------
 #' @noRd
 bqs_initiate <- function() {
@@ -287,8 +219,8 @@ bqs_initiate <- function() {
     if (Sys.getenv("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH") == "") {
       warning("On Windows, GRPC_DEFAULT_SSL_ROOTS_FILE_PATH should be set to the PEM file path to load SSL roots from.")
     }
-    # Issue with parallel arrow as.data.frame on Windows
-    options("arrow.use_threads" = FALSE)
+    # Suppress warning from unregistered BigQuery extension
+    options("nanoarrow.warn_unregistered_extension" = FALSE)
   }
 }
 
@@ -297,14 +229,14 @@ bqs_initiate <- function() {
 #' @noRd
 parse_postprocess <- function(df, bigint, fields) {
   tests <- list()
-  if (bigint != "integer64") {
+  if (bigint != "numeric") {
     as_bigint <- switch(bigint,
       integer = as.integer,
-      numeric = as.numeric,
+      integer64 = bit64::as.integer64,
       character = as.character
     )
     tests[["bigint"]] <- list(
-    	"test" = function(x,y) bit64::is.integer64(x),
+    	"test" = function(x,y) is.numeric(x),
     	"func" = function(x) as_bigint(x)
     )
   }
@@ -342,8 +274,11 @@ parse_postprocess <- function(df, bigint, fields) {
 #' @importFrom rlang is_named
 col_mapply <- function(x, y, tests) {
 	if (is.list(x)) {
-		if (inherits(x, "arrow_list")) {
+		if (inherits(x, c("arrow_list", "vctrs_list_of"))) {
 			x <- as.list(x)
+		}
+		if (inherits(x, "data.frame") && !inherits(x, "tbl_df")) {
+			x <- tibble::tibble(x)
 		}
 		if (rlang::is_named(x)) {
 			x[] <- mapply(col_mapply, x, y[["fields"]], MoreArgs = list(tests = tests), SIMPLIFY = FALSE)
@@ -398,4 +333,3 @@ has_type <- function(fields, bqs_type) {
 	w <- which(grepl("type$", names(f)))
 	bqs_type %in% unique(f[w])
 }
-
