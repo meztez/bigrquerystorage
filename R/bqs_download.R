@@ -219,8 +219,8 @@ bqs_initiate <- function() {
     if (Sys.getenv("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH") == "") {
       warning("On Windows, GRPC_DEFAULT_SSL_ROOTS_FILE_PATH should be set to the PEM file path to load SSL roots from.")
     }
-    # Issue with parallel arrow as.data.frame on Windows
-    options("arrow.use_threads" = FALSE)
+    # Suppress warning from unregistered BigQuery extension
+    options("nanoarrow.warn_unregistered_extension" = FALSE)
   }
 }
 
