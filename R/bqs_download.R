@@ -229,14 +229,14 @@ bqs_initiate <- function() {
 #' @noRd
 parse_postprocess <- function(df, bigint, fields) {
   tests <- list()
-  if (bigint != "integer64") {
+  if (bigint != "numeric") {
     as_bigint <- switch(bigint,
       integer = as.integer,
-      numeric = as.numeric,
+      integer64 = bit64::as.integer64,
       character = as.character
     )
     tests[["bigint"]] <- list(
-    	"test" = function(x,y) bit64::is.integer64(x),
+    	"test" = function(x,y) is.numeric(x),
     	"func" = function(x) as_bigint(x)
     )
   }
@@ -274,8 +274,11 @@ parse_postprocess <- function(df, bigint, fields) {
 #' @importFrom rlang is_named
 col_mapply <- function(x, y, tests) {
 	if (is.list(x)) {
-		if (inherits(x, "arrow_list")) {
+		if (inherits(x, c("arrow_list", "vctrs_list_of"))) {
 			x <- as.list(x)
+		}
+		if (inherits(x, "data.frame") && !inherits(x, "tbl_df")) {
+			x <- tibble::tibble(x)
 		}
 		if (rlang::is_named(x)) {
 			x[] <- mapply(col_mapply, x, y[["fields"]], MoreArgs = list(tests = tests), SIMPLIFY = FALSE)

@@ -4,8 +4,8 @@ auth_fn <- function() {
   on.exit(unlink(tmp))
   writeBin(base64enc::base64decode(Sys.getenv("GCP_SERVICE_ACCOUNT")), tmp)
   bigrquery::bq_auth(path = tmp)
+  options(nanoarrow.warn_unregistered_extension = FALSE)
 }
-
 
 test_that("BigQuery json and BigQuery return the same results", {
   auth_fn()
@@ -106,9 +106,13 @@ test_that("the return type of integer columns is set by the bigint argument", {
 
   expect_warning(
     out_int <- bqs_table_download(qry, bigrquery::bq_test_project(), as_tibble = TRUE, bigint = "integer", quiet = TRUE)$x,
-    "integer overflow"
+    "loss of precision in conversion to double"
   )
   expect_identical(out_int, suppressWarnings(as.integer(x)))
+
+  x <- c("-2147483648", "-2147483647", "-1", "0", "1", "2147483647", "2147483648")
+  sql <- paste0("SELECT * FROM UNNEST ([", paste0(x, collapse = ","), "]) AS x")
+  qry <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql)
 
   out_int64 <- bqs_table_download(qry, bigrquery::bq_test_project(), as_tibble = TRUE, bigint = "integer64", quiet = TRUE)$x
   expect_identical(out_int64, bit64::as.integer64(x))
