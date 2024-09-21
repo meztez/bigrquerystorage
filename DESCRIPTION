@@ -12,7 +12,6 @@ License: Apache License (>= 2)
 Imports:
     nanoarrow (>= 0.5.0),
     rlang,
-    bigrquery,
     assertthat,
     Rcpp,
     lifecycle,
@@ -20,6 +19,7 @@ Imports:
     tibble
 Suggests:
     blob,
+    bigrquery,
     testthat,
     hms,
     wk (>= 0.3.2),
