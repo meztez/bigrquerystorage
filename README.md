@@ -140,9 +140,11 @@ brew install grpc pkg-config
 
 #### Windows
 
-The package will automatically download a static build of the system
-requirements during installation. This works on R 4.2.x (with Rtools40
-or Rtools42), R 4.3.x (with Rtools43) or later currently.
+From Rtools43, grpc is included in the toolchain.
+
+The package used to automatically download static builds of the system
+requirements during installation but this was removed per CRAN policy.
+Only, R 4.3.x (with Rtools43) or later is currently supported.
 
 ## Example
 
