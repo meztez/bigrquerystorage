@@ -13,7 +13,7 @@ bqs_table_download(
   sample_percentage,
   n_max = Inf,
   quiet = NA,
-  as_tibble = FALSE,
+  as_tibble = lifecycle::deprecated(),
   bigint = c("integer", "integer64", "numeric", "character"),
   max_results = lifecycle::deprecated()
 )

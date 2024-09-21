@@ -3,6 +3,7 @@
 export(bqs_auth)
 export(bqs_deauth)
 export(bqs_table_download)
+import(nanoarrow)
 importFrom(Rcpp,sourceCpp)
 importFrom(bit64,is.integer64)
 importFrom(lifecycle,deprecate_warn)

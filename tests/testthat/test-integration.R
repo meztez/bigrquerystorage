@@ -20,7 +20,7 @@ test_that("Optional BigQuery Storage API parameters work", {
   auth_fn()
 
   # Check other features
-  dt <- bqs_table_download("bigquery-public-data:usa_names.usa_1910_current",
+  dt <- bqs_table_download("bigquery-public-data.usa_names.usa_1910_current",
     bigrquery::bq_test_project(),
     selected_fields = c("name", "number", "state"),
     row_restriction = 'state = "WA"',
@@ -38,7 +38,7 @@ test_that("Optional BigQuery Storage API parameters work", {
   # clause reads the entire table. If the sampling percentage is greater than zero and the table
   # is not empty, then table sampling always returns some results.
   dt <- bqs_table_download(
-    "bigquery-public-data:usa_names.usa_1910_current",
+    "bigquery-public-data.usa_names.usa_1910_current",
     bigrquery::bq_test_project(),
     selected_fields = "number",
     sample_percentage = 0,
@@ -100,7 +100,7 @@ test_that("correctly parse logical values", {
 test_that("the return type of integer columns is set by the bigint argument", {
   auth_fn()
 
-  x <- c("-2147483648", "-2147483647", "-1", "0", "1", "2147483647", "2147483648")
+  x <- c("-2147483648", "-2147483647", "-1", "0", "1", "2147483647", "2147483648", "18014398509481984")
   sql <- paste0("SELECT * FROM UNNEST ([", paste0(x, collapse = ","), "]) AS x")
   qry <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql)
 

@@ -31,6 +31,7 @@
 #' @importFrom lifecycle deprecated deprecate_warn
 #' @importFrom tibble tibble
 #' @importFrom rlang is_missing
+#' @import nanoarrow
 bqs_table_download <- function(
     x,
     parent = getOption("bigquerystorage.project", ""),
@@ -40,7 +41,7 @@ bqs_table_download <- function(
     sample_percentage,
     n_max = Inf,
     quiet = NA,
-    as_tibble = FALSE,
+    as_tibble = lifecycle::deprecated(),
     bigint = c("integer", "integer64", "numeric", "character"),
     max_results = lifecycle::deprecated()) {
   # Parameters validation
@@ -108,12 +109,8 @@ bqs_table_download <- function(
     quiet = quiet
   )
 
-  tb <- as.data.frame(nanoarrow::read_nanoarrow(raws))
-
-  if (isTRUE(as_tibble)) {
-  	fields <- select_fields(bigrquery::bq_table_fields(x), selected_fields)
-    tb <- parse_postprocess(tibble::tibble(as.data.frame(tb)), bigint, fields)
-  }
+  fields <- select_fields(bigrquery::bq_table_fields(x), selected_fields)
+  tb <- parse_postprocess(tibble::tibble(as.data.frame(nanoarrow::read_nanoarrow(raws))), bigint, fields)
 
   # Batches do not support a n_max so we get just enough results before
   # exiting the streaming loop.

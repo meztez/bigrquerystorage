@@ -165,7 +165,6 @@ rows <- bqs_table_download(
   , selected_fields = c("name", "number", "state"),
   row_restriction = 'state = "WA"'
   # , sample_percentage = 50
-  # , as_tibble = TRUE
 )
 
 sprintf(
