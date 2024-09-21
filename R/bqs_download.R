@@ -150,6 +150,9 @@ bqs_table_download <- function(
 #' 3. If ADC can't use either of the above credentials, an error occurs.
 #' @return No return value, called for side effects.
 bqs_auth <- function() {
+
+  rlang::check_installed("bigrquery", "`bigrquery` have to be available to use `bigrquerystorage`.")
+
   if (!is.null(.global$client) &&
     (as.numeric(Sys.time()) - .global$client$creation < 30)) {
     return(invisible())
@@ -308,11 +311,12 @@ bqs_check_namespace <- function(pkg, bqs_type) {
 }
 
 #' @noRd
+#' @importFrom utils head
 select_fields <- function(fields, selected_fields) {
 	if (length(selected_fields)) {
 		selected_fields <- strsplit(selected_fields, ".", fixed = TRUE)
 		nm <- vapply(fields, `[[`, character(1), "name")
-		snm <- vapply(selected_fields, head, character(1), 1)
+		snm <- vapply(selected_fields, utils::head, character(1), 1)
 		for (i in rev(seq_len(length(nm)))) {
 			m <- match(tolower(nm[i]), tolower(snm))
 			if (is.na(m)) {
