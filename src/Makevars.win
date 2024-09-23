@@ -1,6 +1,6 @@
 R_VERSION=$("${R_HOME}/bin${R_ARCH_BIN}/Rscript.exe" -e "cat(compareVersion(as.character(packageVersion('base')), '4.3'))")
 
-ifeq ($(R_VERSION),0)
+ifeq ($(R_VERSION),-1)
 
 RWINLIB = ../windows/grpc
 
