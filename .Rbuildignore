@@ -13,7 +13,6 @@
 ^[.]deps-arm64$
 ^[.]deps-win$
 ^inst/roots[.]pem$
-^configure\.win$
 ^configure\.log$
 ^autobrew$
 ^CRAN-SUBMISSION$

@@ -1,0 +1,7 @@
+R_VERSION=`"${R_HOME}/bin${R_ARCH_BIN}/Rscript.exe" -e "cat(compareVersion(as.character(packageVersion('base')), '4.3'))"`
+
+if [ "$R_VERSION" = "-1" ]; then
+  cp -f ./src/Makevars.win.withoutgrpc ./src/Makevars.win
+else
+  cp -f ./src/Makevars.win.withgrpc ./src/Makevars.win
+fi
