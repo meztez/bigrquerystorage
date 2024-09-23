@@ -1,6 +1,6 @@
-R_VERSION = $("${R_HOME}/bin${R_ARCH_BIN}/Rscript.exe" -e "cat(compareVersion(as.character(packageVersion('base')), '4.3'))")
+R_VERSION=$("${R_HOME}/bin${R_ARCH_BIN}/Rscript.exe" -e "cat(compareVersion(as.character(packageVersion('base')), '4.3'))")
 
-ifneq $(R_VERSION) 0
+ifneq ($(R_VERSION),0)
 
 PKG_CPPFLAGS=-I.
 
