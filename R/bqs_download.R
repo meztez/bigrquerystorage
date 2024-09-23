@@ -109,6 +109,7 @@ bqs_table_download <- function(
     quiet = quiet
   )
 
+  rlang::local_options(nanoarrow.warn_unregistered_extension = FALSE)
   fields <- select_fields(bigrquery::bq_table_fields(x), selected_fields)
   tb <- parse_postprocess(tibble::tibble(as.data.frame(nanoarrow::read_nanoarrow(raws))), bigint, fields)
 
