@@ -1,37 +1,6 @@
 R_VERSION=$("${R_HOME}/bin${R_ARCH_BIN}/Rscript.exe" -e "cat(compareVersion(as.character(packageVersion('base')), '4.3'))")
 
-ifneq ($(R_VERSION),0)
-
-PKG_CPPFLAGS=-I.
-
-PKG_LIBS=$(shell pkg-config --libs grpc++ protobuf)
-
-PROTO_FILES=google/api/field_behavior.proto google/api/http.proto google/api/launch_stage.proto \
-	google/api/resource.proto google/cloud/bigquery/storage/v1/arrow.proto \
-	google/cloud/bigquery/storage/v1/avro.proto google/cloud/bigquery/storage/v1/table.proto \
-	google/api/annotations.proto google/api/client.proto google/cloud/bigquery/storage/v1/protobuf.proto \
-	google/cloud/bigquery/storage/v1/stream.proto google/rpc/status.proto \
-	google/cloud/bigquery/storage/v1/storage.proto
-
-GRPC_FILES=google/cloud/bigquery/storage/v1/storage.proto
-
-OBJECTS=bqs.o RcppExports.o $(PROTO_FILES:.proto=.pb.o) $(GRPC_FILES:.proto=.grpc.pb.o)
-
-all: clean winlibs protos
-
-protos: winlibs
-	(cd ../src/protos;\
-	protoc --experimental_allow_proto3_optional --cpp_out=../../src $(PROTO_FILES);\
-	protoc --plugin=protoc-gen-grpc=$$(which grpc_cpp_plugin.exe) --grpc_out=../../src $(GRPC_FILES))
-	sed -i "s/OPTION/OPTIONFIX/g" google/api/field_behavior.pb.h
-
-winlibs:
-	cp -f ${R_TOOLS_SOFT}/share/grpc/roots.pem ../inst
-
-clean:
-	rm -Rf $(OBJECTS) $(SHLIB) google
-
-else
+ifeq ($(R_VERSION),0)
 
 RWINLIB = ../windows/grpc
 
@@ -84,6 +53,37 @@ protos: winlibs
 winlibs:
 	"${R_HOME}/bin${R_ARCH_BIN}/Rscript.exe" "../tools/winlibs.R"
 	cp -f ${RWINLIB}/share/grpc/roots.pem ../inst
+
+clean:
+	rm -Rf $(OBJECTS) $(SHLIB) google
+
+else
+
+PKG_CPPFLAGS=-I.
+
+PKG_LIBS=$(shell pkg-config --libs grpc++ protobuf)
+
+PROTO_FILES=google/api/field_behavior.proto google/api/http.proto google/api/launch_stage.proto \
+	google/api/resource.proto google/cloud/bigquery/storage/v1/arrow.proto \
+	google/cloud/bigquery/storage/v1/avro.proto google/cloud/bigquery/storage/v1/table.proto \
+	google/api/annotations.proto google/api/client.proto google/cloud/bigquery/storage/v1/protobuf.proto \
+	google/cloud/bigquery/storage/v1/stream.proto google/rpc/status.proto \
+	google/cloud/bigquery/storage/v1/storage.proto
+
+GRPC_FILES=google/cloud/bigquery/storage/v1/storage.proto
+
+OBJECTS=bqs.o RcppExports.o $(PROTO_FILES:.proto=.pb.o) $(GRPC_FILES:.proto=.grpc.pb.o)
+
+all: clean winlibs protos
+
+protos: winlibs
+	(cd ../src/protos;\
+	protoc --experimental_allow_proto3_optional --cpp_out=../../src $(PROTO_FILES);\
+	protoc --plugin=protoc-gen-grpc=$$(which grpc_cpp_plugin.exe) --grpc_out=../../src $(GRPC_FILES))
+	sed -i "s/OPTION/OPTIONFIX/g" google/api/field_behavior.pb.h
+
+winlibs:
+	cp -f ${R_TOOLS_SOFT}/share/grpc/roots.pem ../inst
 
 clean:
 	rm -Rf $(OBJECTS) $(SHLIB) google
