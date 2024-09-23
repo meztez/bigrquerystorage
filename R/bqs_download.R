@@ -30,7 +30,7 @@
 #' @export
 #' @importFrom lifecycle deprecated deprecate_warn
 #' @importFrom tibble tibble
-#' @importFrom rlang is_missing
+#' @importFrom rlang is_missing local_options
 #' @import nanoarrow
 bqs_table_download <- function(
     x,
@@ -109,6 +109,7 @@ bqs_table_download <- function(
     quiet = quiet
   )
 
+  rlang::local_options(nanoarrow.warn_unregistered_extension = FALSE)
   fields <- select_fields(bigrquery::bq_table_fields(x), selected_fields)
   tb <- parse_postprocess(tibble::tibble(as.data.frame(nanoarrow::read_nanoarrow(raws))), bigint, fields)
 
@@ -222,8 +223,6 @@ bqs_initiate <- function() {
     if (Sys.getenv("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH") == "") {
       warning("On Windows, GRPC_DEFAULT_SSL_ROOTS_FILE_PATH should be set to the PEM file path to load SSL roots from.")
     }
-    # Suppress warning from unregistered BigQuery extension
-    options("nanoarrow.warn_unregistered_extension" = FALSE)
   }
 }
 
