@@ -4,7 +4,6 @@ auth_fn <- function() {
   on.exit(unlink(tmp))
   writeBin(base64enc::base64decode(Sys.getenv("GCP_SERVICE_ACCOUNT")), tmp)
   bigrquery::bq_auth(path = tmp)
-  options(nanoarrow.warn_unregistered_extension = FALSE)
 }
 
 test_that("BigQuery json and BigQuery return the same results", {
