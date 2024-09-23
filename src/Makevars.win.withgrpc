@@ -26,4 +26,3 @@ winlibs:
 
 clean:
 	rm -Rf $(OBJECTS) $(SHLIB) google
-
