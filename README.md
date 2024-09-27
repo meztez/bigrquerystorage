@@ -5,7 +5,7 @@
 
 <!-- badges: start -->
 
-[![CRAN_Status_Badge](http://www.r-pkg.org/badges/version/bigrquerystorage)](https://cran.r-project.org/package=bigrquerystorage)
+[![CRAN_Status_Badge](https://www.r-pkg.org/badges/version/bigrquerystorage)](https://cran.r-project.org/package=bigrquerystorage)
 [![R-CMD-check](https://github.com/meztez/bigrquerystorage/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/meztez/bigrquerystorage/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
