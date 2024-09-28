@@ -21,8 +21,6 @@ jobs:
       fail-fast: false
       matrix:
         config:
-          # macos-11 is no longer supported by homebrew:
-          - { os: macos-11,       r: 'release' }
           - { os: macos-12,       r: 'release' }
           - { os: macos-13,       r: 'release' }
           - { os: macos-13,       r: 'release', deps: 'homebrew' }
