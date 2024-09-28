@@ -2,30 +2,23 @@ RWINLIB = ../windows/grpc
 
 PKG_CPPFLAGS=-I. -I$(RWINLIB)/include
 
-ifeq (,$(findstring gcc 10.,$(R_COMPILED_BY)))
-
-ABSL_LIBS=-labsl_raw_hash_set -labsl_hash -labsl_city -labsl_low_level_hash -labsl_random_internal_pool_urbg \
-	-labsl_random_internal_randen -labsl_random_internal_randen_hwaes -labsl_random_internal_randen_hwaes_impl \
-	-labsl_random_internal_randen_slow -labsl_random_internal_platform -labsl_random_internal_seed_material \
-	-labsl_random_seed_gen_exception -labsl_statusor -labsl_status -labsl_cord -labsl_cordz_info -labsl_cord_internal \
-	-labsl_cordz_functions -labsl_exponential_biased -labsl_cordz_handle -labsl_strerror -labsl_str_format_internal \
-	-labsl_synchronization -labsl_stacktrace -labsl_symbolize -labsl_malloc_internal -labsl_time  -labsl_strings \
-	-labsl_strings_internal -labsl_base -labsl_spinlock_wait -labsl_int128 -labsl_throw_delegate -labsl_time_zone \
-	-labsl_raw_logging_internal
-
-else
+SRCDIR=src
+PKG_LIBS_DIR=$(RWINLIB)/lib
+ifeq (gcc 8.,$(findstring gcc 8.,$(R_COMPILED_BY)))
+PKG_CXXFLAGS+=-D_WIN32_WINNT=0x600
+SRCDIR=src$(subst /,-,$(R_ARCH))
+PKG_LIBS_DIR=$(RWINLIB)/lib-8.3.0$(R_ARCH)
+endif
 
 ABSL_LIBS=-labsl_status -labsl_cord -labsl_bad_optional_access -labsl_str_format_internal -labsl_synchronization \
 	-labsl_stacktrace -labsl_symbolize  -labsl_malloc_internal -labsl_time -labsl_strings -labsl_strings_internal -labsl_base \
 	-labsl_spinlock_wait -labsl_int128 -labsl_throw_delegate -labsl_time_zone  -labsl_raw_logging_internal
 
-endif
-
-PKG_LIBS=-L$(RWINLIB)/lib \
+PKG_LIBS=-L$(PKG_LIBS_DIR) \
 	-lgrpc++ -lgrpc -laddress_sorting -lre2 -lupb -lcares -lz -lgpr -lssl -lcrypto -lprotobuf \
 	$(ABSL_LIBS) -pthread -ldbghelp -lws2_32 -lgdi32 -lcrypt32 -lbcrypt -ldbghelp -liphlpapi -ladvapi32
 
-BINDIR=$(RWINLIB)/bin$(subst 64,,$(WIN))
+BINDIR=$(RWINLIB)/bin
 
 PROTO_FILES=google/api/field_behavior.proto google/api/http.proto google/api/launch_stage.proto \
 	google/api/resource.proto google/cloud/bigquery/storage/v1/arrow.proto \
@@ -41,9 +34,9 @@ OBJECTS=bqs.o RcppExports.o $(PROTO_FILES:.proto=.pb.o) $(GRPC_FILES:.proto=.grp
 all: clean winlibs protos
 
 protos: winlibs
-	(cd ../src/protos; PATH="../${BINDIR}:${PATH}";\
-	protoc --experimental_allow_proto3_optional --cpp_out=../../src $(PROTO_FILES);\
-	protoc --plugin=protoc-gen-grpc=$$(which grpc_cpp_plugin.exe) --grpc_out=../../src $(GRPC_FILES))
+	(cd ../$(SRCDIR)/protos; PATH="../${BINDIR}:${PATH}";\
+	protoc --experimental_allow_proto3_optional --cpp_out=../../$(SRCDIR) $(PROTO_FILES);\
+	protoc --plugin=protoc-gen-grpc=$$(which grpc_cpp_plugin.exe) --grpc_out=../../$(SRCDIR) $(GRPC_FILES))
 	sed -i "s/OPTION/OPTIONFIX/g" google/api/field_behavior.pb.h
 
 winlibs:
