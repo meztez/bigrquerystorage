@@ -1,4 +1,4 @@
-# bigrquerystorage 1.1.0.9000
+# bigrquerystorage 1.2.0
 
 * Now uses nanoarrow instead of arrow. This lightens the dependency chain quite a bit (@hadleywickham).
 * Deprecated `use_tibble` in `bqs_table_download`, always convert to tibble from the new nanoarrow stream reader.
