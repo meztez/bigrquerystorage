@@ -121,7 +121,7 @@ esac
 srcdir="$PWD/src"
 cd ./src/protos
 protoc --experimental_allow_proto3_optional --cpp_out=${srcdir} ${PROTO_FILES}
-protoc --plugin=protoc-gen-grpc=$(which grpc_cpp_plugin) --grpc_out=${srcdir} google/cloud/bigquery/storage/v1/storage.proto
+protoc --experimental_allow_proto3_optional --plugin=protoc-gen-grpc=$(which grpc_cpp_plugin) --grpc_out=${srcdir} google/cloud/bigquery/storage/v1/storage.proto
 if [ $? -ne 0 ]; then
   echo "Error: failed to compile proto files."
   exit 1
