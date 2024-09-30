@@ -127,7 +127,7 @@ bqs_table_download <- function(
 #' @details
 #' Will attempt to reuse `bigrquery` credentials.
 #'
-#' About Crendentials
+#' About Credentials
 #'
 #' If your application runs inside a Google Cloud environment that has
 #' a default service account, your application can retrieve the service
