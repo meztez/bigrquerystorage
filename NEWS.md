@@ -1,3 +1,7 @@
+# bigrquerystorage 1.2.1
+
+* Increment `nanoarrow` version requirement.
+
 # bigrquerystorage 1.2.0
 
 * Now uses nanoarrow instead of arrow. This lightens the dependency chain quite a bit (@hadleywickham).
