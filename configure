@@ -132,6 +132,9 @@ cd ../..
 find ./src/google -type f  -name '*.pb.*' -exec sed -i.bak 's/PROTOBUF_DEPRECATED//g' {} \;
 find ./src/google -type f  -name '*.pb.h' -exec sed -i.bak 's/#pragma/# pragma/g' {} \;
 
+# Fix end of line
+sed -i.bak "s/\r//" src/google/cloud/bigquery/storage/v1/storage.grpc.pb.h
+
 # Fix a conflicting name with some macro
 sed -i.bak "s/OPTION/OPTIONFIX/g" src/google/api/field_behavior.pb.h
 
