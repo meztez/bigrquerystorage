@@ -110,13 +110,13 @@ apt-get install -y 'libgrpc\+\+-dev'/buster-backports \
 
 ##### OpenSUSE
 
-In OpenSUSE 15.4 and 15.5 the version of the grpc package is tool old,
+In OpenSUSE 15.4 and 15.5 the version of the grpc package is too old,
 so installation fails. You can potentially compile a newer version of
 grpc from source.
 
 ##### Ubuntu 20.04
 
-In Ubuntu 20.04 the version of the grpc package is tool old, so
+In Ubuntu 20.04 the version of the grpc package is too old, so
 installation fails. You can potentially compile a newer version of grpc
 from source.
 

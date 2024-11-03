@@ -1,3 +1,7 @@
+# bigrquerystorage Development Version
+
+* Fix service authentification when using `gcloud auth application-default` database.
+
 # bigrquerystorage 1.2.1
 
 * Increment `nanoarrow` version requirement.
