@@ -2,7 +2,27 @@
 #include <string>
 #include <vector>
 #include <grpc/grpc.h>
+
+#if __has_include(<grpcpp/version_info.h>)
+#include <grpcpp/version_info.h>
+#if GRPC_CPP_VERSION_MAJOR >= 1 & GRPC_CPP_VERSION_MINOR >= 67
+#define ABSL_LOGGING 1
+#endif
+#endif
+
+#ifndef ABSL_LOGGING
 #include <grpc/support/log.h>
+#endif
+
+#ifdef ABSL_LOGGING
+#include <absl/base/no_destructor.h>
+#include <absl/base/log_severity.h>
+#include <absl/log/globals.h>
+#include <absl/log/initialize.h>
+#include <absl/log/log_sink_registry.h>
+#include <absl/log/log_sink.h>
+#endif
+
 #include <grpcpp/grpcpp.h>
 #include "google/cloud/bigquery/storage/v1/stream.pb.h"
 #include "google/cloud/bigquery/storage/v1/storage.pb.h"
@@ -15,27 +35,60 @@ using google::cloud::bigquery::storage::v1::ReadSession;
 using google::cloud::bigquery::storage::v1::BigQueryRead;
 
 // -- Utilities and logging ----------------------------------------------------
-
 // Define a default logger for gRPC
+#ifndef ABSL_LOGGING
 void bqs_default_log(gpr_log_func_args* args) {
   Rcpp::Rcerr << args->message << std::endl;
 }
+#endif
+
+#ifdef ABSL_LOGGING
+class RLogSink : public absl::LogSink {
+public:
+  void Send(const absl::LogEntry& entry) override {
+    Rcpp::Rcerr << entry.text_message_with_prefix_and_newline() << std::endl;
+  }
+};
+#endif
 
 // Set gRPC verbosity level
 // [[Rcpp::export(rng=false)]]
 void bqs_set_log_verbosity(int severity) {
+
+#ifndef ABSL_LOGGING
   //-1 UNSET
   // 0 DEBUG
   // 1 INFO
   // 2 ERROR
   // 3 QUIET
   gpr_set_log_verbosity(static_cast<gpr_log_severity>(severity));
+#endif
+
+#ifdef ABSL_LOGGING
+  // -1 UNSET
+  //  0 INFO
+  //  1 WARNING
+  //  2 ERROR
+  //  3 FATAL
+  absl::SetMinLogLevel(static_cast<absl::LogSeverityAtLeast>(severity));
+#endif
+
 }
 
 // Set gRPC default logger
 // [[Rcpp::export(rng=false)]]
 void bqs_init_logger() {
+
+#ifndef ABSL_LOGGING
   gpr_set_log_function(bqs_default_log);
+#endif
+
+#ifdef ABSL_LOGGING
+  absl::InitializeLog();
+  static absl::NoDestructor<RLogSink> r_log_sink;
+  absl::AddLogSink(r_log_sink.get());
+#endif
+
   bqs_set_log_verbosity(2);
 }
 
