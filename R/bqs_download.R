@@ -238,7 +238,7 @@ parse_postprocess <- function(df, bigint, fields) {
       character = as.character
     )
     tests[["bigint"]] <- list(
-    	"test" = function(x,y) is.numeric(x),
+    	"test" = function(x,y) is.numeric(x) & y[["type"]] %in% c("INT", "SMALLINT", "INTEGER", "BIGINT", "TINYINT", "BYTEINT", "INT64"),
     	"func" = function(x) as_bigint(x)
     )
   }

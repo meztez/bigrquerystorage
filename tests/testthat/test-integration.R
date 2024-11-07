@@ -99,7 +99,7 @@ test_that("correctly parse logical values", {
 test_that("the return type of integer columns is set by the bigint argument", {
   auth_fn()
 
-  x <- c("-2147483648", "-2147483647", "-1", "0", "1", "2147483647", "2147483648", "18014398509481984")
+  x <- c("-2147483648", "-2147483647", "-1", "0", "1", "2147483647", "2147483648", "18014398509481984", "9007199254740992")
   sql <- paste0("SELECT * FROM UNNEST ([", paste0(x, collapse = ","), "]) AS x")
   qry <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql)
 
@@ -121,6 +121,17 @@ test_that("the return type of integer columns is set by the bigint argument", {
 
   out_chr <- bqs_table_download(qry, bigrquery::bq_test_project(), as_tibble = TRUE, bigint = "character", quiet = TRUE)$x
   expect_identical(out_chr, x)
+
+})
+
+test_that("float return as numeric", {
+  auth_fn()
+	x <- c("-2.147483648", "-1.5", "0.5", "1.5")
+	sql <- paste0("SELECT * FROM UNNEST ([", paste0(x, collapse = ","), "]) AS x")
+	qry <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql)
+	out <- bqs_table_download(qry, bigrquery::bq_test_project(), as_tibble = TRUE, quiet = TRUE)$x
+	expect_identical(out, as.numeric(x))
+
 })
 
 test_that("n_max returns no more rows than actual originaly in table", {

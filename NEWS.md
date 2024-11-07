@@ -1,6 +1,7 @@
 # bigrquerystorage Development Version
 
 * Fix service authentification when using `gcloud auth application-default` database.
+* Fix FLOAT conversion.
 
 # bigrquerystorage 1.2.1
 
