@@ -1,6 +1,7 @@
-# bigrquerystorage Development Version
+# bigrquerystorage 1.2.2
 
-* Fix service authentification when using `gcloud auth application-default` database.
+* Fix logging for new version of gRPC.
+* Fix service authentication when using `gcloud auth application-default` database.
 * Fix FLOAT conversion.
 
 # bigrquerystorage 1.2.1
