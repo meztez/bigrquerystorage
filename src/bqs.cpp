@@ -5,7 +5,7 @@
 
 #if __has_include(<grpcpp/version_info.h>)
 #include <grpcpp/version_info.h>
-#if GRPC_CPP_VERSION_MAJOR >= 1 & GRPC_CPP_VERSION_MINOR >= 67
+#if GRPC_CPP_VERSION_MAJOR >= 1 & GRPC_CPP_VERSION_MINOR >= 66
 #define ABSL_LOGGING 1
 #endif
 #endif

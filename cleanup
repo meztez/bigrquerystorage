@@ -1,2 +1,2 @@
-rm -f src/Makevars autobrew configure.log
+rm -f src/Makevars src/Makevars.win autobrew configure.log
 rm -Rf .deps
