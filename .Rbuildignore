@@ -17,3 +17,4 @@
 ^autobrew$
 ^CRAN-SUBMISSION$
 ^cran-comments\.md$
+^auth.json
