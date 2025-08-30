@@ -122,6 +122,67 @@ bqs_table_download <- function(
   return(tb)
 }
 
+#' Upload table data
+#'
+#' This uploads data to a BigQuery table using the BigQuery Storage Write API.
+#' It is most suitable for uploading larger datasets (>100 MB, say).
+#'
+#' @param x Table reference `{project}.{dataset}.{table_name}`
+#' @param data A data.frame or arrow Table to upload
+#' @param parent Used as parent for `CreateWriteStream`.
+#' grpc method. Default is to use option `bigquerystorage.project` value.
+#' @param quiet Should information be printed to console.
+#' @return Number of rows uploaded
+#' @export
+bqs_table_upload <- function(x, data, parent = getOption("bigquerystorage.project", ""), quiet = NA) {
+  # Parameters validation
+  bqs_table_name <- unlist(strsplit(unlist(x), "\\.|:"))
+  assertthat::assert_that(length(bqs_table_name) >= 3)
+
+  parent <- as.character(parent)
+  if (!nchar(parent)) {
+    parent <- bqs_table_name[1]
+  }
+
+  # Convert data to IPC format
+  if (inherits(data, "data.frame")) {
+    # Convert data.frame to arrow Table
+    data <- arrow::as_arrow_table(data)
+  }
+  assertthat::assert_that(inherits(data, "ArrowTabular"))
+
+  # Convert to IPC bytes
+  con <- rawConnection(raw(0), "wb")
+  arrow::write_ipc_stream(data, con)
+  raw_data <- rawConnectionValue(con)
+  close(con)
+
+  quiet <- isTRUE(quiet)
+
+  bqs_auth()
+
+  # Initialize progress bar for upload
+  if (!quiet) {
+    pb <- RProgress::RProgress$new(
+      "\033[42m\033[30mUploading (:percent)\033[39m\033[49m [:bar] eta[:eta|:elapsed]")
+    pb$set_cursor_char(">")
+    pb$set_total(100)  # We'll update this as we go
+  }
+
+  # Upload data
+  row_count <- bqs_ipc_stream_write(
+    client = .global$client$ptr,
+    project = bqs_table_name[1],
+    dataset = bqs_table_name[2],
+    table = bqs_table_name[3],
+    parent = parent,
+    data = raw_data,
+    quiet = quiet
+  )
+
+  return(row_count)
+}
+
 #' Initialize bigrquerystorage client
 #' @export
 #' @details

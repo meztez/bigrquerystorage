@@ -222,3 +222,73 @@ test_that("post process parse works", {
   expect_true(inherits(df$gg$geo[[1]], "wk_wkt"))
   expect_equal(length(df2), 3)
 })
+
+test_that("bqs_table_upload works", {
+  auth_fn()
+
+  # Create a temporary dataset for testing
+  temp_dataset <- bigrquery::bq_dataset(bigrquery::bq_test_project(), paste0("temp_upload_test_", as.integer(Sys.time())))
+  bigrquery::bq_dataset_create(temp_dataset)
+
+  # Create a temporary table for testing
+  temp_table <- bigrquery::bq_table(temp_dataset, paste0("temp_table_", as.integer(Sys.time())))
+
+  # Test data
+  test_data <- data.frame(
+    id = 1:10,
+    name = letters[1:10],
+    value = rnorm(10)
+  )
+
+  # Upload data
+  rows_uploaded <- bqs_table_upload(temp_table, test_data, quiet = TRUE)
+
+  # Verify the number of rows uploaded
+  expect_equal(rows_uploaded, 10)
+
+  # Download and verify the data
+  downloaded_data <- bqs_table_download(temp_table, bigrquery::bq_test_project(), as_tibble = TRUE, quiet = TRUE)
+
+  # Check that the data matches
+  expect_equal(nrow(downloaded_data), 10)
+  expect_equal(ncol(downloaded_data), 3)
+  expect_equal(sort(downloaded_data$id), 1:10)
+  expect_equal(sort(downloaded_data$name), letters[1:10])
+
+  # Clean up: delete the temporary dataset (this will delete the table too)
+  bigrquery::bq_dataset_delete(temp_dataset, delete_contents = TRUE)
+})
+
+test_that("bqs_table_upload handles Arrow tables", {
+  auth_fn()
+
+  # Create a temporary dataset for testing
+  temp_dataset <- bigrquery::bq_dataset(bigrquery::bq_test_project(), paste0("temp_upload_arrow_test_", as.integer(Sys.time())))
+  bigrquery::bq_dataset_create(temp_dataset)
+
+  # Create a temporary table for testing
+  temp_table <- bigrquery::bq_table(temp_dataset, paste0("temp_table_", as.integer(Sys.time())))
+
+  # Test data as Arrow table
+  test_data <- arrow::arrow_table(
+    id = 1:5,
+    score = c(85.5, 92.0, 78.3, 96.7, 88.9)
+  )
+
+  # Upload data
+  rows_uploaded <- bqs_table_upload(temp_table, test_data, quiet = TRUE)
+
+  # Verify the number of rows uploaded
+  expect_equal(rows_uploaded, 5)
+
+  # Download and verify the data
+  downloaded_data <- bqs_table_download(temp_table, bigrquery::bq_test_project(), as_tibble = TRUE, quiet = TRUE)
+
+  # Check that the data matches
+  expect_equal(nrow(downloaded_data), 5)
+  expect_equal(ncol(downloaded_data), 2)
+  expect_equal(sort(downloaded_data$id), 1:5)
+
+  # Clean up: delete the temporary dataset
+  bigrquery::bq_dataset_delete(temp_dataset, delete_contents = TRUE)
+})

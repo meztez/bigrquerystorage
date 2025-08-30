@@ -21,3 +21,10 @@ bqs_ipc_stream <- function(client, project, dataset, table, parent, n, selected_
     .Call(`_bigrquerystorage_bqs_ipc_stream`, client, project, dataset, table, parent, n, selected_fields, row_restriction, sample_percentage, timestamp_seconds, timestamp_nanos, quiet)
 }
 
+bqs_write_client <- function(cred, client_info, service_configuration, target) {
+    .Call(`_bigrquerystorage_bqs_write_client`, cred, client_info, service_configuration, target)
+}
+
+bqs_ipc_stream_write <- function(client, project, dataset, table, parent, data, quiet) {
+    .Call(`_bigrquerystorage_bqs_ipc_stream_write`, client, project, dataset, table, parent, data, quiet)
+}

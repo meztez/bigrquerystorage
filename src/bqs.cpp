@@ -28,11 +28,18 @@
 #include "google/cloud/bigquery/storage/v1/storage.pb.h"
 # pragma GCC diagnostic ignored "-Winconsistent-missing-override"
 #include "google/cloud/bigquery/storage/v1/storage.grpc.pb.h"
+#include <arrow/api.h>
+#include <arrow/io/api.h>
+#include <arrow/ipc/api.h>
 #include <Rcpp.h>
 #include "RProgress.h"
 
 using google::cloud::bigquery::storage::v1::ReadSession;
 using google::cloud::bigquery::storage::v1::BigQueryRead;
+using google::cloud::bigquery::storage::v1::BigQueryWrite;
+using google::cloud::bigquery::storage::v1::WriteStream;
+using google::cloud::bigquery::storage::v1::AppendRowsRequest;
+using google::cloud::bigquery::storage::v1::AppendRowsResponse;
 
 // -- Utilities and logging ----------------------------------------------------
 // Define a default logger for gRPC
@@ -284,6 +291,135 @@ private:
   std::string client_info_;
 };
 
+class BigQueryWriteClient {
+public:
+  BigQueryWriteClient(std::shared_ptr<grpc::Channel> channel)
+    : stub_(BigQueryWrite::NewStub(channel)) {
+  }
+  void SetClientInfo(const std::string &client_info) {
+    client_info_ = client_info;
+  }
+
+  // Create write stream
+  WriteStream CreateWriteStream(const std::string& project,
+                                const std::string& dataset,
+                                const std::string& table,
+                                const std::string& parent) {
+    google::cloud::bigquery::storage::v1::CreateWriteStreamRequest method_request;
+    WriteStream *write_stream = method_request.mutable_write_stream();
+    std::string table_fullname =
+      "projects/" + project + "/datasets/" + dataset + "/tables/" + table;
+    write_stream->set_table(table_fullname);
+    write_stream->set_type(google::cloud::bigquery::storage::v1::WriteStream_Type::WriteStream_Type_PENDING);
+    method_request.set_parent("projects/" + parent);
+    grpc::ClientContext context;
+    context.AddMetadata("x-goog-request-params",
+                        "write_stream.table=" + table_fullname);
+    context.AddMetadata("x-goog-api-client", client_info_);
+    WriteStream method_response;
+
+    // The actual RPC.
+    grpc::Status status = stub_->
+      CreateWriteStream(&context, method_request, &method_response);
+    if (!status.ok()) {
+      std::string err;
+      err += "gRPC method CreateWriteStream error -> ";
+      err += status.error_message();
+      Rcpp::stop(err.c_str());
+    }
+    return method_response;
+  }
+
+  // Append rows
+  void AppendRows(const std::string& stream_name,
+                  const std::string& serialized_schema,
+                  const std::string& serialized_batch) {
+    grpc::ClientContext context;
+    context.AddMetadata("x-goog-request-params", "write_stream=" + stream_name);
+    context.AddMetadata("x-goog-api-client", client_info_);
+
+    AppendRowsRequest method_request;
+    method_request.set_write_stream(stream_name);
+    method_request.mutable_arrow_rows()->mutable_writer_schema()->set_serialized_schema(serialized_schema);
+    method_request.mutable_arrow_rows()->mutable_rows()->set_serialized_record_batch(serialized_batch);
+
+    AppendRowsResponse method_response;
+
+    std::unique_ptr<grpc::ClientReaderWriter<AppendRowsRequest, AppendRowsResponse>> writer(
+        stub_->AppendRows(&context));
+
+    if (!writer->Write(method_request)) {
+      std::string err = "Failed to write AppendRowsRequest";
+      Rcpp::stop(err.c_str());
+    }
+    writer->WritesDone();
+
+    if (writer->Read(&method_response)) {
+      if (method_response.has_error()) {
+        std::string err;
+        err += "AppendRows error -> ";
+        err += method_response.error().message();
+        Rcpp::stop(err.c_str());
+      }
+    }
+
+    grpc::Status status = writer->Finish();
+    if (!status.ok()) {
+      std::string err;
+      err += "gRPC method AppendRows error -> ";
+      err += status.error_message();
+      Rcpp::stop(err.c_str());
+    }
+  }
+
+  // Finalize write stream
+  int64_t FinalizeWriteStream(const std::string& stream_name) {
+    google::cloud::bigquery::storage::v1::FinalizeWriteStreamRequest method_request;
+    method_request.set_name(stream_name);
+    grpc::ClientContext context;
+    context.AddMetadata("x-goog-request-params", "name=" + stream_name);
+    context.AddMetadata("x-goog-api-client", client_info_);
+    google::cloud::bigquery::storage::v1::FinalizeWriteStreamResponse method_response;
+
+    grpc::Status status = stub_->
+      FinalizeWriteStream(&context, method_request, &method_response);
+    if (!status.ok()) {
+      std::string err;
+      err += "gRPC method FinalizeWriteStream error -> ";
+      err += status.error_message();
+      Rcpp::stop(err.c_str());
+    }
+    return method_response.row_count();
+  }
+
+  // Batch commit write streams
+  void BatchCommitWriteStreams(const std::string& parent,
+                               const std::vector<std::string>& streams) {
+    google::cloud::bigquery::storage::v1::BatchCommitWriteStreamsRequest method_request;
+    method_request.set_parent("projects/" + parent);
+    for (const auto& stream : streams) {
+      method_request.add_write_streams(stream);
+    }
+    grpc::ClientContext context;
+    context.AddMetadata("x-goog-request-params", "parent=projects/" + parent);
+    context.AddMetadata("x-goog-api-client", client_info_);
+    google::cloud::bigquery::storage::v1::BatchCommitWriteStreamsResponse method_response;
+
+    grpc::Status status = stub_->
+      BatchCommitWriteStreams(&context, method_request, &method_response);
+    if (!status.ok()) {
+      std::string err;
+      err += "gRPC method BatchCommitWriteStreams error -> ";
+      err += status.error_message();
+      Rcpp::stop(err.c_str());
+    }
+  }
+
+private:
+  std::unique_ptr<BigQueryWrite::Stub> stub_;
+  std::string client_info_;
+};
+
 
 
 // -- Credentials functions ----------------------------------------------------
@@ -383,6 +519,28 @@ SEXP bqs_client(std::string client_info,
 }
 
 // [[Rcpp::export(rng=false)]]
+SEXP bqs_write_client(std::shared_ptr<grpc::ChannelCredentials> cred,
+                      std::string client_info,
+                      std::string service_configuration,
+                      std::string target) {
+
+  grpc::ChannelArguments channel_arguments;
+  channel_arguments.SetMaxReceiveMessageSize(104857600);
+  channel_arguments.SetServiceConfigJSON(service_configuration);
+
+  BigQueryWriteClient *client = new BigQueryWriteClient(
+    grpc::CreateCustomChannel(target, cred, channel_arguments)
+  );
+
+  client->SetClientInfo(client_info);
+
+  Rcpp::XPtr<BigQueryWriteClient> ptr(client, true);
+
+  return ptr;
+
+}
+
+// [[Rcpp::export(rng=false)]]
 SEXP bqs_ipc_stream(SEXP client,
                     std::string project,
                     std::string dataset,
@@ -441,4 +599,71 @@ SEXP bqs_ipc_stream(SEXP client,
 
   // Return stream
   return Rcpp::wrap(bytes);
+}
+
+// [[Rcpp::export(rng=false)]]
+SEXP bqs_ipc_stream_write(SEXP client,
+                          std::string project,
+                          std::string dataset,
+                          std::string table,
+                          std::string parent,
+                          std::vector<uint8_t> data,
+                          bool quiet) {
+
+  Rcpp::XPtr<BigQueryWriteClient> client_ptr(client);
+
+  if (!quiet) {
+    REprintf("Creating write stream...\n");
+  }
+
+  // Create write stream
+  WriteStream write_stream = client_ptr->CreateWriteStream(
+    project, dataset, table, parent);
+
+  if (!quiet) {
+    REprintf("Parsing data...\n");
+  }
+
+  // Parse IPC data
+  auto buffer = std::make_shared<arrow::Buffer>(data.data(), data.size());
+  auto reader = arrow::io::BufferReader(buffer);
+  auto ipc_reader = arrow::ipc::RecordBatchStreamReader::Open(&reader).ValueOrDie();
+  auto schema = ipc_reader->schema();
+  auto batch = ipc_reader->Next().ValueOrDie();
+
+  // Serialize schema
+  auto schema_buffer = arrow::ipc::SerializeSchema(*schema).ValueOrDie();
+  std::string serialized_schema(schema_buffer->data(), schema_buffer->size());
+
+  // Serialize batch
+  auto batch_buffer = arrow::ipc::SerializeRecordBatch(*batch).ValueOrDie();
+  std::string serialized_batch(batch_buffer->data(), batch_buffer->size());
+
+  if (!quiet) {
+    REprintf("Uploading data...\n");
+  }
+
+  // Append rows
+  client_ptr->AppendRows(write_stream.name(), serialized_schema, serialized_batch);
+
+  if (!quiet) {
+    REprintf("Finalizing stream...\n");
+  }
+
+  // Finalize stream
+  int64_t row_count = client_ptr->FinalizeWriteStream(write_stream.name());
+
+  if (!quiet) {
+    REprintf("Committing data...\n");
+  }
+
+  // Commit
+  client_ptr->BatchCommitWriteStreams(parent, {write_stream.name()});
+
+  if (!quiet) {
+    REprintf("Uploaded %ld rows successfully.\n", row_count);
+  }
+
+  // Return row count
+  return Rcpp::wrap(row_count);
 }

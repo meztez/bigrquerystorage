@@ -3,6 +3,7 @@
 .RData
 .Ruserdata
 .Rprofile
+.vscode
 scripts/googleapis/
 src/google/
 *.py

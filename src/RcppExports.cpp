@@ -80,6 +80,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"_bigrquerystorage_grpc_version", (DL_FUNC) &_bigrquerystorage_grpc_version, 0},
     {"_bigrquerystorage_bqs_client", (DL_FUNC) &_bigrquerystorage_bqs_client, 6},
     {"_bigrquerystorage_bqs_ipc_stream", (DL_FUNC) &_bigrquerystorage_bqs_ipc_stream, 12},
+    {"_bigrquerystorage_bqs_write_client", (DL_FUNC) &_bigrquerystorage_bqs_write_client, 4},
+    {"_bigrquerystorage_bqs_ipc_stream_write", (DL_FUNC) &_bigrquerystorage_bqs_ipc_stream_write, 6},
     {NULL, NULL, 0}
 };
 
