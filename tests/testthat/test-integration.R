@@ -105,7 +105,7 @@ test_that("the return type of integer columns is set by the bigint argument", {
 
   expect_warning(
     out_int <- bqs_table_download(qry, bigrquery::bq_test_project(), as_tibble = TRUE, bigint = "integer", quiet = TRUE)$x,
-    "loss of precision in conversion to double"
+    "NAs produced by integer overflow"
   )
   expect_identical(out_int, suppressWarnings(as.integer(x)))
 
