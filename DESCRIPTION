@@ -1,7 +1,7 @@
 Package: bigrquerystorage
 Type: Package
 Title: An Interface to Google's 'BigQuery Storage' API
-Version: 1.2.3
+Version: 1.2.3.9000
 Authors@R: c(
   person("Bruno", "Tremblay", role = c("aut", "cre"), email = "openr@neoxone.com"),
   person(family = "Google LLC", role = c("cph", "fnd")))
@@ -10,7 +10,7 @@ Description: Easily talk to Google's 'BigQuery Storage' API from R
     (<https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc>).
 License: Apache License (>= 2)
 Imports:
-    nanoarrow (>= 0.6.0),
+    nanoarrow (>= 0.9.0.9000),
     rlang,
     assertthat,
     Rcpp,
@@ -34,5 +34,7 @@ SystemRequirements: grpc/protobuf headers and compilers. For example
 		libprotobuf-dev libgrpc++-dev protobuf-compiler-grpc (Debian) or
 		protobuf-devel grpc-devel grpc-plugins (Fedora/RHEL)
 Roxygen: list(markdown = TRUE)
+Remotes:
+    meztez/arrow-nanoarrow/r@fix-932-list-int64-ptype
 Biarch: TRUE
 Config/roxygen2/version: 8.0.0

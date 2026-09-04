@@ -1,3 +1,14 @@
+# bigrquerystorage (development version)
+
+* REPEATED INT64 columns are now also read directly as `bit64::integer64`
+  (instead of going through R's double, which could lose precision for
+  values above 2^53). This relies on a nanoarrow fix for
+  apache/arrow-nanoarrow#932 (list<int64> conversion corrupted values);
+  until that fix is merged and released, this package temporarily depends
+  on a patched nanoarrow fork/branch (see `DESCRIPTION`'s `Remotes` field).
+  This dev version will not be submitted to CRAN until nanoarrow ships a
+  release with the fix (#86).
+
 # bigrquerystorage 1.2.3
 
 * Fix RANGE conversion.

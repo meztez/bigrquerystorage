@@ -231,17 +231,18 @@ bqs_initiate <- function() {
 # utils ------------------------------------------------------------------
 
 #' Build a conversion target for a nanoarrow stream where every int64 column,
-#' including those nested in structs, becomes a bit64::integer64 instead of the
-#' lossy double that the default conversion produces. See
-#' https://github.com/r-dbi/bigrquery/issues/689. int64 fields nested under
-#' list types (REPEATED columns) are left at the inferred double because
-#' nanoarrow (<= 0.8.0.1) converts int64-under-list to integer64 incorrectly.
+#' including those nested in structs and lists (REPEATED columns), becomes a
+#' bit64::integer64 instead of the lossy double that the default conversion
+#' produces. See https://github.com/r-dbi/bigrquery/issues/689.
 #' @noRd
 int64_ptype <- function(schema, ptype = nanoarrow::infer_nanoarrow_ptype(schema)) {
   if (identical(schema$format, "l")) {
     bit64::integer64()
   } else if (is.data.frame(ptype)) {
     ptype[] <- mapply(int64_ptype, schema$children, ptype, SIMPLIFY = FALSE)
+    ptype
+  } else if (inherits(ptype, "vctrs_list_of") && length(schema$children)) {
+    attr(ptype, "ptype") <- int64_ptype(schema$children[[1]], attr(ptype, "ptype"))
     ptype
   } else {
     ptype
