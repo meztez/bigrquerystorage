@@ -1,6 +1,7 @@
 # bigrquerystorage 1.2.3
 
 * Fix RANGE conversion.
+* Replace `Rf_error` with `Rcpp::stop` in `RProgress.h` (#84).
 
 # bigrquerystorage 1.2.2
 

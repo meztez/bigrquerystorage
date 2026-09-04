@@ -23,6 +23,7 @@
 #include <R.h>
 #include <Rinternals.h>
 #include <R_ext/Print.h>
+#include <Rcpp.h>
 
 // For gettimeofday implementation on windows
 #ifdef Win32
@@ -246,7 +247,7 @@ private:
 	void clear_line(bool use_stderr, int width) {
 
 		char *spaces = (char*) calloc(width + 2, sizeof(char));
-		if (!spaces) Rf_error("Progress bar: out of memory");
+		if (!spaces) Rcpp::stop("Progress bar: out of memory");
 		for (int i = 1; i <= width; i++) spaces[i] = ' ';
 		spaces[0] = '\r';
 		spaces[width + 1] = '\0';
