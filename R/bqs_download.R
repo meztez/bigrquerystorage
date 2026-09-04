@@ -111,7 +111,9 @@ bqs_table_download <- function(
 
   rlang::local_options(nanoarrow.warn_unregistered_extension = FALSE)
   fields <- select_fields(bigrquery::bq_table_fields(x), selected_fields)
-  tb <- parse_postprocess(tibble::tibble(as.data.frame(nanoarrow::read_nanoarrow(raws))), bigint, fields)
+  stream <- nanoarrow::read_nanoarrow(raws)
+  to <- int64_ptype(stream$get_schema())
+  tb <- parse_postprocess(tibble::tibble(nanoarrow::convert_array_stream(stream, to = to)), bigint, fields)
 
   # Batches do not support a n_max so we get just enough results before
   # exiting the streaming loop.
@@ -228,20 +230,37 @@ bqs_initiate <- function() {
 
 # utils ------------------------------------------------------------------
 
+#' Build a conversion target for a nanoarrow stream where every int64 column,
+#' including those nested in structs, becomes a bit64::integer64 instead of the
+#' lossy double that the default conversion produces. See
+#' https://github.com/r-dbi/bigrquery/issues/689. int64 fields nested under
+#' list types (REPEATED columns) are left at the inferred double because
+#' nanoarrow (<= 0.8.0.1) converts int64-under-list to integer64 incorrectly.
+#' @noRd
+int64_ptype <- function(schema, ptype = nanoarrow::infer_nanoarrow_ptype(schema)) {
+  if (identical(schema$format, "l")) {
+    bit64::integer64()
+  } else if (is.data.frame(ptype)) {
+    ptype[] <- mapply(int64_ptype, schema$children, ptype, SIMPLIFY = FALSE)
+    ptype
+  } else {
+    ptype
+  }
+}
+
 #' @noRd
 parse_postprocess <- function(df, bigint, fields) {
   tests <- list()
-  if (bigint != "numeric") {
-    as_bigint <- switch(bigint,
-      integer = as.integer,
-      integer64 = bit64::as.integer64,
-      character = as.character
-    )
-    tests[["bigint"]] <- list(
-    	"test" = function(x,y) is.numeric(x) & y[["type"]] %in% c("INT", "SMALLINT", "INTEGER", "BIGINT", "TINYINT", "BYTEINT", "INT64"),
-    	"func" = function(x) as_bigint(x)
-    )
-  }
+  as_bigint <- switch(bigint,
+    integer = as.integer,
+    integer64 = bit64::as.integer64,
+    numeric = as.numeric,
+    character = as.character
+  )
+  tests[["bigint"]] <- list(
+  	"test" = function(x,y) y[["type"]] %in% c("INT", "SMALLINT", "INTEGER", "BIGINT", "TINYINT", "BYTEINT", "INT64"),
+  	"func" = function(x) as_bigint(x)
+  )
 	if (has_type(fields, "DATETIME")) {
 		tests[["DATETIME"]] <- list(
 			"test" = function(x,y) {y[["type"]] %in% "DATETIME"},

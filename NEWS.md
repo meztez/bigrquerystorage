@@ -2,6 +2,13 @@
 
 * Fix RANGE conversion.
 * Replace `Rf_error` with `Rcpp::stop` in `RProgress.h` (#84).
+* `bqs_table_download()` no longer converts INT64 columns through R's double,
+  which silently lost precision for values above 2^53 before the `bigint`
+  argument was applied. INT64 columns (including fields nested in RECORD
+  columns) are now read directly as `bit64::integer64`, so
+  `bigint = "integer64"` and `bigint = "character"` are lossless over the full
+  64-bit range (r-dbi/bigrquery#689). REPEATED INT64 columns still go through
+  double due to a conversion bug in nanoarrow, but now honor `bigint` (#86, #87).
 
 # bigrquerystorage 1.2.2
 
