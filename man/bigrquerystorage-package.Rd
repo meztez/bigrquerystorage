@@ -19,6 +19,11 @@ Useful links:
 \author{
 \strong{Maintainer}: Bruno Tremblay \email{openr@neoxone.com}
 
+Authors:
+\itemize{
+  \item Bruno Tremblay \email{openr@neoxone.com}
+}
+
 Other contributors:
 \itemize{
   \item  Google LLC [copyright holder, funder]

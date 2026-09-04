@@ -33,6 +33,6 @@ BugReports: https://github.com/meztez/bigrquerystorage/issues
 SystemRequirements: grpc/protobuf headers and compilers. For example
 		libprotobuf-dev libgrpc++-dev protobuf-compiler-grpc (Debian) or
 		protobuf-devel grpc-devel grpc-plugins (Fedora/RHEL)
-RoxygenNote: 7.3.2
 Roxygen: list(markdown = TRUE)
 Biarch: TRUE
+Config/roxygen2/version: 8.0.0
