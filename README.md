@@ -17,15 +17,15 @@ bigrquery to bgs_table_download from bigrquerystorage</figcaption>
 </figure>
 
 Use [BigQuery Storage
-API](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1)
+API](https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1)
 from R.
 
 The main utility is to replace `bigrquery::bq_table_download` method.
 
 It supports [BigQueryRead
-interface](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigqueryread).
+interface](https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigqueryread).
 Support for [BigQueryWrite
-interface](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigquerywrite)
+interface](https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigquerywrite)
 may be added in a future release.
 
 ## Advantages over BigQuery REST API

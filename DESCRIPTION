@@ -7,7 +7,7 @@ Authors@R: c(
   person(family = "Google LLC", role = c("cph", "fnd")))
 Maintainer: Bruno Tremblay <openr@neoxone.com>
 Description: Easily talk to Google's 'BigQuery Storage' API from R
-    (<https://cloud.google.com/bigquery/docs/reference/storage/rpc>).
+    (<https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc>).
 License: Apache License (>= 2)
 Imports:
     nanoarrow (>= 0.6.0),

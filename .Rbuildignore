@@ -18,3 +18,5 @@
 ^CRAN-SUBMISSION$
 ^cran-comments\.md$
 ^auth.json
+^\.vscode$
+^\.posit$

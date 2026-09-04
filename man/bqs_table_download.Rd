@@ -58,6 +58,6 @@ It is most suitable for results of larger queries (>100 MB, say).
 }
 \details{
 More details about table modifiers and table options are available from the
-API Reference documentation. (See \href{https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#tablemodifiers}{TableModifiers} and
-\href{https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#tablereadoptions}{TableReadOptions})
+API Reference documentation. (See \href{https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#tablemodifiers}{TableModifiers} and
+\href{https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#tablereadoptions}{TableReadOptions})
 }
