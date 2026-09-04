@@ -18,4 +18,5 @@ src/google/
 configure.log
 autobrew
 auth.json
-.vscode
+.vscode/*
+.posit/*
