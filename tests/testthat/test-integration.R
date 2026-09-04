@@ -11,7 +11,7 @@ test_that("BigQuery json and BigQuery return the same results", {
 
   # Compare with bigrquery method
   dt <- bqs_table_download("bigquery-public-data.usa_names.usa_1910_current", bigrquery::bq_test_project(), n_max = 50000, as_tibble = TRUE, quiet = TRUE)
-  dt2 <- bigrquery::bq_table_download("bigquery-public-data.usa_names.usa_1910_current", n_max = 50000, quiet = TRUE)
+  dt2 <- bigrquery::bq_table_download("bigquery-public-data.usa_names.usa_1910_current", n_max = 50000, quiet = TRUE, api = "json")
   expect_equal(dt, dt2)
 })
 
@@ -170,6 +170,31 @@ test_that("can convert bytes type", {
       0x40
     )))
   )
+})
+
+# https://github.com/meztez/bigrquerystorage/issues/81
+# RANGE columns previously errored in parse_postprocess()/col_mapply() because
+# the RANGE struct has 2 sub-fields (start, end) but the underlying record
+# handling assumed the named vector length always matched y[["fields"]].
+test_that("can download RANGE type", {
+  auth_fn()
+
+  sql <- "SELECT RANGE(DATE '2024-01-01', DATE '2025-01-01') AS year_range"
+  tb <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql, quiet = TRUE)
+
+  expect_no_error(
+    df <- bqs_table_download(tb, bigrquery::bq_test_project(), as_tibble = TRUE, quiet = TRUE)
+  )
+
+  # RANGE is returned as a start/end struct of Dates (the arrow api has no
+  # native RANGE type, unlike the json api which returns a "[start, end)"
+  # string); check the decoded boundaries match the json api's values.
+  expect_equal(nrow(df), 1)
+  expect_true("year_range" %in% names(df))
+  expect_true(inherits(df$year_range, "data.frame"))
+  expect_setequal(names(df$year_range), c("start", "end"))
+  expect_equal(df$year_range$start, as.Date("2024-01-01"))
+  expect_equal(df$year_range$end, as.Date("2025-01-01"))
 })
 
 test_that("nested list type", {

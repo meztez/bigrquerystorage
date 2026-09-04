@@ -1,3 +1,7 @@
+# bigrquerystorage 1.2.3
+
+* Fix RANGE conversion.
+
 # bigrquerystorage 1.2.2
 
 * Fix logging for new version of gRPC.

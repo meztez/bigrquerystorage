@@ -282,7 +282,7 @@ col_mapply <- function(x, y, tests) {
 		if (inherits(x, "data.frame") && !inherits(x, "tbl_df")) {
 			x <- tibble::tibble(x)
 		}
-		if (rlang::is_named(x)) {
+		if (rlang::is_named(x) && length(x) == length(y[["fields"]])) {
 			x[] <- mapply(col_mapply, x, y[["fields"]], MoreArgs = list(tests = tests), SIMPLIFY = FALSE)
 			return(x)
 		} else if (y[["type"]] %in% "RECORD" && y[["mode"]] %in% "REPEATED") {
