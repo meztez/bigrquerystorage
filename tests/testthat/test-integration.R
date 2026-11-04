@@ -122,6 +122,11 @@ test_that("the return type of integer columns is set by the bigint argument", {
   out_chr <- bqs_table_download(qry, bigrquery::bq_test_project(), as_tibble = TRUE, bigint = "character", quiet = TRUE)$x
   expect_identical(out_chr, x)
 
+  sql_rep <- "SELECT [9223372036854775295, 2] AS rep, STRUCT([9223372036854775295, 3] AS nested_rep) AS s UNION ALL SELECT [4], STRUCT([5] AS nested_rep)"
+  qry_rep <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql_rep, quiet = TRUE)
+  df_rep <- bqs_table_download(qry_rep, bigrquery::bq_test_project(), bigint = "integer64", quiet = TRUE)
+  expect_identical(df_rep$rep[[1]], bit64::as.integer64(c("9223372036854775295", "2")))
+  expect_identical(df_rep$s$nested_rep[[1]], bit64::as.integer64(c("9223372036854775295", "3")))
 })
 
 test_that("float return as numeric", {
@@ -247,3 +252,30 @@ test_that("post process parse works", {
   expect_true(inherits(df$gg$geo[[1]], "wk_wkt"))
   expect_equal(length(df2), 3)
 })
+
+test_that("type, compression, and Decimal128 fast path work", {
+  auth_fn()
+  sql <- "SELECT NUMERIC '12345.6789' AS num, CAST(NULL AS NUMERIC) AS num_na, 42 AS int_col, 'hello' AS str_col"
+  tb <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql, quiet = TRUE)
+
+  res_tb <- bqs_table_download(tb, bigrquery::bq_test_project(), quiet = TRUE, type = "tibble")
+  expect_s3_class(res_tb, "tbl_df")
+  expect_equal(res_tb$num, 12345.6789)
+  expect_true(is.na(res_tb$num_na))
+  expect_identical(res_tb$int_col, 42L)
+  expect_identical(res_tb$str_col, "hello")
+
+  res_df <- bqs_table_download(tb, bigrquery::bq_test_project(), quiet = TRUE, type = "data.frame", compression = "none")
+  expect_true(is.data.frame(res_df) && !inherits(res_df, "tbl_df"))
+  expect_equal(res_df$num, 12345.6789)
+
+  res_arrow <- bqs_table_download(tb, bigrquery::bq_test_project(), quiet = TRUE, type = "arrow")
+  expect_s3_class(res_arrow, "nanoarrow_array_stream")
+
+  if (requireNamespace("data.table", quietly = TRUE)) {
+    res_dt <- bqs_table_download(tb, bigrquery::bq_test_project(), quiet = TRUE, type = "data.table")
+    expect_s3_class(res_dt, "data.table")
+    expect_equal(res_dt$num, 12345.6789)
+  }
+})
+

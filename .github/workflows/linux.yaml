@@ -11,12 +11,12 @@ on:
           debian-11, debian-12, debian-unstable, fedora-36, fedora-37,
           fedora-38, rocky-9, ubuntu-22.04.
         required: false
-        defaule: 'all'
-        type: strinf
+        default: 'all'
+        type: string
 
 jobs:
   setup-matrix:
-    runs-on: ubuntu-Latest
+    runs-on: ubuntu-latest
     outputs:
       distros: ${{ steps.setup-matrix.outputs.distros }}
     steps:
@@ -33,7 +33,7 @@ jobs:
       fail-fast: false
       matrix:
         distro: ${{ fromJson(needs.setup-matrix.outputs.distros) }}
-    runs-on: ubuntu-Latest
+    runs-on: ubuntu-latest
     name: ${{ matrix.distro }}
     steps:
     - uses: actions/checkout@v4

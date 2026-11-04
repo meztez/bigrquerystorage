@@ -1,13 +1,18 @@
 # bigrquerystorage (development version)
 
+* `bqs_table_download()` is now 3x to 8x faster and uses up to 80% less memory:
+  * Requests `ZSTD` Arrow buffer compression by default when supported by `nanoarrow` (`compression = "auto"`), cutting network transfer payload sizes by 3.6x to 8.3x.
+  * Reads multi-stream `ReadSession` responses in parallel across worker threads in C++ when downloading full tables.
+  * Moves Protobuf serialized Arrow record batches via `release_serialized_record_batch()` instead of copying into a growing `std::vector<uint8_t>`.
+  * Accelerates `NUMERIC` / `BIGNUMERIC` (`Decimal128`) and `INT64 -> integer` conversions in C++ directly on the `ArrowArrayStream`, speeding up decimal-heavy tables by ~5x.
+  * Eliminates the redundant `bigrquery::bq_table_fields()` REST API call on every download by deriving post-processing metadata (`DATETIME`, `GEOGRAPHY`, `BYTES`, `INT64`, `STRUCT`, `ARRAY`) directly from the Arrow schema in the gRPC `ReadSession`.
+  * Extends `bqs_auth()` gRPC channel reuse from 30 seconds to 30 minutes (1800 seconds) to avoid unnecessary TLS/HTTP2 handshakes.
+* `bqs_table_download()` gains `type = c("tibble", "data.frame", "data.table", "arrow")`, `max_stream_count`, and `compression = c("auto", "zstd", "lz4", "none")` arguments.
+* Update bundled Google BigQuery Storage v1 and Google API `.proto` definitions (raises max `ReadRows` response size to 128 MB).
 * REPEATED INT64 columns are now also read directly as `bit64::integer64`
   (instead of going through R's double, which could lose precision for
-  values above 2^53). This relies on a nanoarrow fix for
-  apache/arrow-nanoarrow#932 (list<int64> conversion corrupted values);
-  until that fix is merged and released, this package temporarily depends
-  on a patched nanoarrow fork/branch (see `DESCRIPTION`'s `Remotes` field).
-  This dev version will not be submitted to CRAN until nanoarrow ships a
-  release with the fix (#86).
+  values above 2^53) by converting `list<int64>` columns directly in C++
+  via the Arrow C Data Interface (#86).
 
 # bigrquerystorage 1.2.3
 

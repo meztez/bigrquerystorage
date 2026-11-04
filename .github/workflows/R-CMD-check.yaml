@@ -6,10 +6,12 @@
 # usethis::use_github_action("check-standard") will install it.
 on:
   push:
-  pull_request:
     branches: [main, master]
+  pull_request:
 
-name: R-CMD-check
+name: R-CMD-check.yaml
+
+permissions: read-all
 
 jobs:
   R-CMD-check:
@@ -21,15 +23,11 @@ jobs:
       fail-fast: false
       matrix:
         config:
-          - { os: macos-12,       r: 'release' }
-          - { os: macos-13,       r: 'release' }
-          - { os: macos-13,       r: 'release', deps: 'homebrew' }
-          - { os: windows-latest, r: '4.0' }
-          - { os: windows-latest, r: '4.1' }
-          - { os: windows-latest, r: '4.2' }
+          - { os: macos-latest,   r: 'release' }
+          - { os: macos-latest,   r: 'release', deps: 'homebrew' }
           - { os: windows-latest, r: 'release' }
           - { os: windows-latest, r: 'devel'   }
-          - { os: ubuntu-latest,  r: 'devel', http-user-agent: 'release'}
+          - { os: ubuntu-latest,  r: 'devel', http-user-agent: 'release' }
           - { os: ubuntu-latest,  r: 'release'  }
           - { os: ubuntu-latest,  r: 'oldrel-1' }
           - { os: ubuntu-latest,  r: 'oldrel-2' }
@@ -55,11 +53,11 @@ jobs:
 
       - name: "System packages on Linux"
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y libprotobuf-dev protobuf-compiler-grpc libgrpc++-dev
+        run: sudo apt-get update && sudo apt-get install -y libprotobuf-dev protobuf-compiler-grpc libgrpc++-dev libzstd-dev liblz4-dev
 
       - name: "System packages on macOS"
         if: runner.os == 'macOS' && matrix.config.deps
-        run: brew install grpc --fetch-HEAD
+        run: brew install grpc zstd lz4
 
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
@@ -69,3 +67,4 @@ jobs:
       - uses: r-lib/actions/check-r-package@v2
         with:
           upload-snapshots: true
+

@@ -13,23 +13,27 @@
 #' @param n_max Maximum number of results to retrieve. Use `Inf` or `-1L`
 #' retrieve all rows.
 #' @param quiet Should information be printed to console.
-#' @param as_tibble Should data be returned as tibble. Default (FALSE) is to return
-#' as arrow Table from raw IPC stream.
+#' @param as_tibble Should data be returned as tibble. Deprecated; use `type` instead.
 #' @param bigint The R type that BigQuery's 64-bit integer types should be mapped to.
 #'   The default is `"integer"` which returns R's `integer` type but results in `NA` for
 #'   values above/below +/- 2147483647. `"integer64"` returns a [bit64::integer64],
 #'   which allows the full range of 64 bit integers.
 #' @param max_results Deprecated
+#' @param type The output container type: `"tibble"` (default), `"data.frame"`,
+#'   `"data.table"`, or `"arrow"` (returns a `nanoarrow_array_stream`).
+#' @param max_stream_count Maximum number of streams to request from BigQuery Storage
+#'   (`0L` lets the server choose an optimal number of streams).
+#' @param compression Arrow record batch compression codec: `"auto"` (default, uses
+#'   `"zstd"` when supported by `nanoarrow`), `"zstd"`, `"lz4"`, or `"none"`.
 #' @details
 #' More details about table modifiers and table options are available from the
 #' API Reference documentation. (See [TableModifiers](https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#tablemodifiers) and
 #' [TableReadOptions](https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#tablereadoptions))
-#' @return This method returns a data.frame or optionally a tibble.
-#' If you need a `data.frame`, leave parameter as_tibble to FALSE and coerce
-#' the results with [as.data.frame()].
+#' @return By default (`type = "tibble"`), a [tibble::tibble]. Alternatively a
+#'   `data.frame`, `data.table::data.table`, or `nanoarrow_array_stream` according to `type`.
 #' @export
 #' @importFrom lifecycle deprecated deprecate_warn
-#' @importFrom tibble tibble
+#' @importFrom tibble tibble new_tibble
 #' @importFrom rlang is_missing local_options
 #' @import nanoarrow
 bqs_table_download <- function(
@@ -43,7 +47,10 @@ bqs_table_download <- function(
     quiet = NA,
     as_tibble = lifecycle::deprecated(),
     bigint = c("integer", "integer64", "numeric", "character"),
-    max_results = lifecycle::deprecated()) {
+    max_results = lifecycle::deprecated(),
+    type = c("tibble", "data.frame", "data.table", "arrow"),
+    max_stream_count = 0L,
+    compression = c("auto", "zstd", "lz4", "none")) {
   # Parameters validation
   bqs_table_name <- unlist(strsplit(unlist(x), "\\.|:"))
   assertthat::assert_that(length(bqs_table_name) >= 3)
@@ -89,6 +96,19 @@ bqs_table_download <- function(
   }
 
   bigint <- match.arg(bigint)
+  type <- match.arg(type)
+  compression <- match.arg(compression)
+
+  if (type == "data.table") {
+    bqs_check_namespace("data.table", "data.table output")
+  }
+
+  compression_codec <- switch(compression,
+    auto = if (isTRUE(nanoarrow::nanoarrow_with_zstd())) 2L else if (isTRUE(nanoarrow::nanoarrow_with_lz4())) 1L else 0L,
+    zstd = 2L,
+    lz4 = 1L,
+    none = 0L
+  )
 
   quiet <- isTRUE(quiet)
 
@@ -106,22 +126,33 @@ bqs_table_download <- function(
     sample_percentage = sample_percentage,
     timestamp_seconds = timestamp_seconds,
     timestamp_nanos = timestamp_nanos,
-    quiet = quiet
+    quiet = quiet,
+    max_stream_count = as.integer(max_stream_count),
+    compression_codec = compression_codec
   )
 
   rlang::local_options(nanoarrow.warn_unregistered_extension = FALSE)
-  fields <- select_fields(bigrquery::bq_table_fields(x), selected_fields)
   stream <- nanoarrow::read_nanoarrow(raws)
-  to <- int64_ptype(stream$get_schema())
-  tb <- parse_postprocess(tibble::tibble(nanoarrow::convert_array_stream(stream, to = to)), bigint, fields)
+  if (type == "arrow") {
+    return(stream)
+  }
+
+  schema <- stream$get_schema()
+  to <- int64_ptype(schema)
+  df <- bqs_convert_stream(stream, to, bigint, nanoarrow::convert_array_stream, convert_stream_no_warnings)
+  tb <- parse_postprocess_schema(df, schema, bigint)
 
   # Batches do not support a n_max so we get just enough results before
   # exiting the streaming loop.
   if (isTRUE(trim_to_n) && nrow(tb) > n_max) {
-    tb <- tb[1:n_max, ]
+    tb <- tb[seq_len(n_max), , drop = FALSE]
   }
 
-  return(tb)
+  switch(type,
+    tibble = tb,
+    "data.frame" = as.data.frame(tb),
+    "data.table" = data.table::setDT(as.data.frame(tb))
+  )
 }
 
 #' Initialize bigrquerystorage client
@@ -157,7 +188,7 @@ bqs_auth <- function() {
   rlang::check_installed("bigrquery", "`bigrquery` have to be available to use `bigrquerystorage`.")
 
   if (!is.null(.global$client) &&
-    (as.numeric(Sys.time()) - .global$client$creation < 30)) {
+    (as.numeric(Sys.time()) - .global$client$creation < 1800)) {
     return(invisible())
   } else {
     bqs_deauth()
@@ -247,6 +278,95 @@ int64_ptype <- function(schema, ptype = nanoarrow::infer_nanoarrow_ptype(schema)
   } else {
     ptype
   }
+}
+
+#' Post-process converted R data.frame using the Arrow schema directly
+#' (eliminates the redundant REST API call to `bigrquery::bq_table_fields()`).
+#' @noRd
+parse_postprocess_schema <- function(df, schema, bigint) {
+  as_bigint <- switch(bigint,
+    integer = as.integer,
+    integer64 = bit64::as.integer64,
+    numeric = as.numeric,
+    character = as.character
+  )
+
+  walk_col <- function(col, sch) {
+    fmt <- sch$format
+    ext <- sch$metadata[["ARROW:extension:name"]]
+    if (identical(fmt, "+s")) {
+      if (is.data.frame(col) && !inherits(col, "tbl_df")) {
+        col <- tibble::new_tibble(col, nrow = nrow(col))
+      }
+      if (is.list(col) && length(col) == length(sch$children)) {
+        col[] <- mapply(walk_col, col, sch$children, SIMPLIFY = FALSE)
+      }
+      return(col)
+    }
+    if (identical(fmt, "+l")) {
+      if (inherits(col, c("arrow_list", "vctrs_list_of"))) {
+        col <- as.list(col)
+      }
+      child_sch <- sch$children[[1]]
+      if (!is.null(ext) && is.null(child_sch$metadata[["ARROW:extension:name"]])) {
+        child_sch$metadata[["ARROW:extension:name"]] <- ext
+      }
+      if (needs_postprocess_schema(child_sch, bigint)) {
+        col[] <- lapply(col, walk_col, sch = child_sch)
+      }
+      return(col)
+    }
+    if (identical(fmt, "l")) {
+      if (bigint == "integer" && is.integer(col)) {
+        return(col)
+      }
+      if (bigint == "integer64" && inherits(col, "integer64")) {
+        return(col)
+      }
+      return(as_bigint(col))
+    }
+    if (identical(ext, "google:sqlType:datetime") || identical(fmt, "tsu:")) {
+      attr(col, "tzone") <- "UTC"
+      return(col)
+    }
+    if (identical(ext, "google:sqlType:geography")) {
+      bqs_check_namespace("wk", "GEOGRAPHY")
+      attr(col, "class") <- c("wk_wkt", "wk_vctr")
+      return(col)
+    }
+    if (identical(fmt, "z")) {
+      bqs_check_namespace("blob", "BYTES")
+      if (!inherits(col, "blob")) {
+        attr(col, "class") <- c("blob", "vctrs_list_of", "vctrs_vctr", "list")
+        attr(col, "ptype") <- raw(0)
+      }
+      return(col)
+    }
+    col
+  }
+
+  walk_col(df, schema)
+}
+
+#' @noRd
+needs_postprocess_schema <- function(sch, bigint) {
+  fmt <- sch$format
+  ext <- sch$metadata[["ARROW:extension:name"]]
+  if (identical(fmt, "l") || identical(fmt, "z") || identical(fmt, "tsu:")) {
+    return(TRUE)
+  }
+  if (identical(ext, "google:sqlType:datetime") || identical(ext, "google:sqlType:geography")) {
+    return(TRUE)
+  }
+  if (identical(fmt, "+s") || identical(fmt, "+l")) {
+    return( TRUE )
+  }
+  FALSE
+}
+
+#' @noRd
+convert_stream_no_warnings <- function(stream, ptype, size, n) {
+  suppressWarnings(nanoarrow::convert_array_stream(stream, ptype, size, n))
 }
 
 #' @noRd

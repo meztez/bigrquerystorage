@@ -27,7 +27,7 @@
         }
       ],
       "timeout": "86400s",
-      "maxResponseMessageBytes": "104857600",
+      "maxResponseMessageBytes": "134217728",
       "retryPolicy": {
         "maxAttempts": 3,
         "initialBackoff": "0.100s",

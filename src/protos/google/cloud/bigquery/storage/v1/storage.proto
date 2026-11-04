@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -78,9 +78,9 @@ service BigQueryRead {
   }
 
   // Reads rows from the stream in the format prescribed by the ReadSession.
-  // Each response contains one or more table rows, up to a maximum of 100 MiB
+  // Each response contains one or more table rows, up to a maximum of 128 MB
   // per response; read requests which attempt to read individual rows larger
-  // than 100 MiB will fail.
+  // than 128 MB will fail.
   //
   // Each request also returns a set of stream statistics reflecting the current
   // state of the stream.
@@ -279,6 +279,18 @@ message ReadRowsRequest {
   // Requesting a larger offset is undefined. If not specified, start reading
   // from offset zero.
   int64 offset = 2;
+
+  // Specifies output serialization options. Only job _default streams are
+  // supported.
+  //
+  // This feature is not yet available.
+  oneof output_format_serialization_options {
+    // Optional. Options specific to the Apache Arrow output format.
+    //
+    // This feature is not yet available.
+    ArrowSerializationOptions arrow_serialization_options = 5
+        [(google.api.field_behavior) = OPTIONAL];
+  }
 }
 
 // Information on if the current connection is being throttled.
@@ -365,6 +377,13 @@ message ReadRowsResponse {
   // greater than 0, the client should skip decompression.
   optional int64 uncompressed_byte_size = 9
       [(google.api.field_behavior) = OPTIONAL];
+
+  // Output only. The total estimated number of rows in the query results.
+  // Only populated when reading data from a BigQuery job.
+  //
+  // This feature is not yet available.
+  optional int64 total_estimated_row_count = 10
+      [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
 // Request message for `SplitReadStream`.
@@ -419,12 +438,10 @@ message CreateWriteStreamRequest {
 // switching table destinations. You can also switch table destinations within
 // the same connection for the default stream.
 //
-// The size of a single AppendRowsRequest must be less than 10 MB in size.
+// The size of a single AppendRowsRequest must be less than 20 MB in size.
 // Requests larger than this return an error, typically `INVALID_ARGUMENT`.
 message AppendRowsRequest {
   // Arrow schema and data.
-  // Arrow format is an experimental feature only selected for allowlisted
-  // customers.
   message ArrowData {
     // Optional. Arrow Schema used to serialize the data.
     ArrowSchema writer_schema = 1;
@@ -436,8 +453,8 @@ message AppendRowsRequest {
   // ProtoData contains the data rows and schema when constructing append
   // requests.
   message ProtoData {
-    // The protocol buffer schema used to serialize the data. Provide this value
-    // whenever:
+    // Optional. The protocol buffer schema used to serialize the data. Provide
+    // this value whenever:
     //
     // * You send the first request of an RPC connection.
     //
@@ -446,7 +463,7 @@ message AppendRowsRequest {
     // * You specify a new destination table.
     ProtoSchema writer_schema = 1;
 
-    // Serialized row data in protobuf message format.
+    // Required. Serialized row data in protobuf message format.
     // Currently, the backend expects the serialized rows to adhere to
     // proto2 semantics when appending rows, particularly with respect to
     // how default values are encoded.
@@ -522,8 +539,7 @@ message AppendRowsRequest {
     // Rows in proto format.
     ProtoData proto_rows = 4;
 
-    // Rows in arrow format. This is an experimental feature only selected for
-    // allowlisted customers.
+    // Rows in arrow format.
     ArrowData arrow_rows = 5;
   }
 
@@ -553,8 +569,8 @@ message AppendRowsRequest {
 
   // Optional. Default missing value interpretation for all columns in the
   // table. When a value is specified on an `AppendRowsRequest`, it is applied
-  // to all requests on the connection from that point forward, until a
-  // subsequent `AppendRowsRequest` sets it to a different value.
+  // to all requests from that point forward, until a subsequent
+  // `AppendRowsRequest` sets it to a different value.
   // `missing_value_interpretation` can override
   // `default_missing_value_interpretation`. For example, if you want to write
   // `NULL` instead of using default values for some columns, you can set
@@ -562,6 +578,9 @@ message AppendRowsRequest {
   // time, set `missing_value_interpretations` to `NULL_VALUE` on those columns.
   MissingValueInterpretation default_missing_value_interpretation = 8
       [(google.api.field_behavior) = OPTIONAL];
+
+  // Optional. Stats and telemetry data gathered on the client side.
+  ClientStats client_stats = 9 [(google.api.field_behavior) = OPTIONAL];
 }
 
 // Response message for `AppendRows`.
@@ -786,4 +805,69 @@ message RowError {
 
   // Description of the issue encountered when processing the row.
   string message = 3;
+}
+
+// Stats and telemetry data gathered on the client side about requests
+// being sent to the BigQuery Storage service, for internal use only.
+message ClientStats {
+  // Stats and telemetry data gathered on the client side about a single
+  // request.
+  message RequestStats {
+    // Optional. Timestamp indicating when the request was sent over the
+    // network, expressed in epoch milliseconds.
+    optional int64 send_time_millis = 1
+        [(google.api.field_behavior) = OPTIONAL];
+
+    // Optional. Number of pending requests at the moment this request was sent.
+    // This includes requests waiting to be sent, and those that are inflight.
+    optional int64 queued_requests_count = 2
+        [(google.api.field_behavior) = OPTIONAL];
+  }
+
+  // Aggregate connection metrics over a window interval.
+  message WindowStats {
+    // Optional. The maximum response latency observed in the window, expressed
+    // in milliseconds.
+    optional int64 max_response_latency_millis = 1
+        [(google.api.field_behavior) = OPTIONAL];
+
+    // Optional. The average response latency observed in the window, expressed
+    // in milliseconds.
+    optional int64 avg_response_latency_millis = 2
+        [(google.api.field_behavior) = OPTIONAL];
+
+    // Optional. The longest time spent waiting without receiving a response in
+    // the window. This could exceed max_response_latency_millis because the
+    // latter is evaluated only when a response is received. Expressed in
+    // milliseconds.
+    optional int64 longest_wait_no_response_millis = 3
+        [(google.api.field_behavior) = OPTIONAL];
+
+    // Optional. How many requests were sent in the window.
+    optional int64 requests_sent_count = 4
+        [(google.api.field_behavior) = OPTIONAL];
+
+    // Optional. How many responses were received in the window.
+    optional int64 responses_received_count = 5
+        [(google.api.field_behavior) = OPTIONAL];
+
+    // Optional. How many bytes were sent in the window.
+    optional int64 bytes_sent_count = 6
+        [(google.api.field_behavior) = OPTIONAL];
+
+    // Optional. Start time of the window interval for which these stats are
+    // aggregated, expressed in epoch milliseconds.
+    optional int64 window_start_time_epoch_millis = 7
+        [(google.api.field_behavior) = OPTIONAL];
+
+    // Optional. Duration of the window interval for which these stats are
+    // aggregated, expressed in milliseconds.
+    optional int64 window_millis = 8 [(google.api.field_behavior) = OPTIONAL];
+  }
+
+  // Optional. Per-request stats.
+  RequestStats request_stats = 1 [(google.api.field_behavior) = OPTIONAL];
+
+  // Optional. Windowed stats.
+  WindowStats window_stats = 2 [(google.api.field_behavior) = OPTIONAL];
 }

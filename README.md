@@ -1,69 +1,59 @@
+---
+output: github_document
+---
 
 <!-- README.md is generated from README.Rmd. Please edit that file -->
+
+
 
 # bigrquerystorage
 
 <!-- badges: start -->
-
 [![CRAN_Status_Badge](https://www.r-pkg.org/badges/version/bigrquerystorage)](https://cran.r-project.org/package=bigrquerystorage)
 [![R-CMD-check](https://github.com/meztez/bigrquerystorage/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/meztez/bigrquerystorage/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
-<figure>
-<img src="./docs/bigrquerystorage.gif"
-alt="Comparing bq_table_download from bigrquery to bgs_table_download from bigrquerystorage" />
-<figcaption aria-hidden="true">Comparing bq_table_download from
-bigrquery to bgs_table_download from bigrquerystorage</figcaption>
-</figure>
+![Comparing bq_table_download from bigrquery to bgs_table_download from bigrquerystorage](./docs/bigrquerystorage.gif)
 
-Use [BigQuery Storage
-API](https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1)
-from R.
+Use [BigQuery Storage API](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1) from R.
 
 The main utility is to replace `bigrquery::bq_table_download` method.
 
-It supports [BigQueryRead
-interface](https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigqueryread).
-Support for [BigQueryWrite
-interface](https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigquerywrite)
-may be added in a future release.
+It supports [BigQueryRead interface](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigqueryread).
+Support for [BigQueryWrite interface](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigquerywrite) may be added in a future release.
 
 ## Advantages over BigQuery REST API
 
-BigQuery Storage API is not rate limited and per project quota do not
-apply. It is an rpc protocol and provides faster downloads for big
-results sets.
+BigQuery Storage API is not rate limited and per project quota do not apply. It is an rpc protocol
+and provides faster downloads for big results sets.
 
 ## Details
 
-This implementation use a C++ generated client combined with the `arrow`
-R package to transform the raw stream into an R object.
+This implementation uses a C++ gRPC client combined with the `nanoarrow` R package to transform
+the Arrow IPC stream into an R `tibble`, `data.frame`, `data.table`, or `nanoarrow_array_stream`.
 
-`bqs_table_download` is the main function of this package. Other
-functions are helpers to facilitate authentication and debugging.
+`bqs_table_download` is the main function of this package. Other functions are helpers to
+facilitate authentication and debugging.
 
 ## Installation
 
 #### CRAN
-
 ``` r
 install.packages("bigrquerystorage")
 ```
 
 #### Github
-
-``` r
+```r
 remotes::install_github("meztez/bigrquerystorage")
 ```
 
 ### System requirements:
-
 - [gRPC](https://github.com/grpc/grpc)
 - [protoc](https://github.com/protocolbuffers/protobuf)
 
 #### Debian 11 & 12 / Ubuntu 22.04
 
-``` sh
+```sh
 # install protoc and grpc
 apt-get install -y libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc \
                    pkg-config
@@ -71,23 +61,20 @@ apt-get install -y libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc \
 
 #### Fedora 36 & 37 & 38 / Rocky Linux 9
 
-``` sh
+```sh
 # install grpc, protoc is automatically installed
 dnf install -y grpc-devel pkgconf
 ```
 
-<details>
-<summary>
-Other Linux distributions
-</summary>
+<details><summary>Other Linux distributions</summary>
 
-Please [let us
-know](https://github.com/meztez/bigrquerystorage/issues/new/choose) if
-these instructions do not work any more.
+Please
+[let us know](https://github.com/meztez/bigrquerystorage/issues/new/choose)
+if these instructions do not work any more.
 
 ##### Alpine Linux
 
-``` sh
+```sh
 apk add grpc-dev protobuf-dev re2-dev c-ares-dev
 ```
 
@@ -98,7 +85,7 @@ installation of the arrow package fails.
 
 Needs the buster-backports repository.
 
-``` sh
+```sh
 echo "deb https://deb.debian.org/debian buster-backports main" >> \
     /etc/apt/sources.list.d/backports.list && \
     apt-get update && \
@@ -107,7 +94,6 @@ apt-get install -y 'libgrpc\+\+-dev'/buster-backports \
     libprotobuf-dev/buster-backports \
     protobuf-compiler/buster-backports pkg-config
 ```
-
 ##### OpenSUSE
 
 In OpenSUSE 15.4 and 15.5 the version of the grpc package is too old,
@@ -116,9 +102,9 @@ grpc from source.
 
 ##### Ubuntu 20.04
 
-In Ubuntu 20.04 the version of the grpc package is too old, so
-installation fails. You can potentially compile a newer version of grpc
-from source.
+In Ubuntu 20.04 the version of the grpc package is too old,
+so installation fails. You can potentially compile a newer version of
+grpc from source.
 
 ##### CentOS 7 & 8 / RHEL 7 & 8
 
@@ -130,11 +116,11 @@ grpc from source.
 #### macOS
 
 If you use Homebrew you may install the `grpc` package, plus
-`pkg-config`. If you don’t have Homebrew installed, the package will
+`pkg-config`. If you don't have Homebrew installed, the package will
 download static builds of the system dependencies during installation.
 This works with macOS Big Sur, or later, on Intel and Arm64 machines.
 
-``` sh
+```sh
 brew install grpc pkg-config
 ```
 
@@ -148,8 +134,9 @@ Only, R 4.3.x (with Rtools43) or later is currently supported.
 
 ## Example
 
-This is a basic example which shows you how to solve a common problem.
-BigQuery Storage API requires a billing project.
+This is a basic example which shows you how to solve a common problem. BigQuery Storage API requires
+a billing project.
+
 
 ``` r
 
@@ -186,8 +173,9 @@ sprintf(
 ## Authentication
 
 Done using Google Application Default Credentials (ADC) or by recycling
-`bigrquery` authentication. Auth will be done automatically the first
-time a request is made.
+`bigrquery` authentication. Auth will be done automatically the first time
+a request is made.
+
 
 ``` r
 bqs_auth()
@@ -196,9 +184,6 @@ bqs_deauth()
 
 ## Stability
 
-Does not support AVRO output format. Report any issues to the project
-[issue
-tracker](https://github.com/meztez/bigrquerystorage/issues/new/choose).
+Does not support AVRO output format. Report any issues to the project [issue tracker](https://github.com/meztez/bigrquerystorage/issues/new/choose).
 
-Full gRPC debug trace with
-`bigrquerystorage:::bqs_set_log_verbosity(0)`.
+Full gRPC debug trace with `bigrquerystorage:::bqs_set_log_verbosity(0)`.

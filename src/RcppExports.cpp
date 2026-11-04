@@ -53,8 +53,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // bqs_ipc_stream
-SEXP bqs_ipc_stream(SEXP client, std::string project, std::string dataset, std::string table, std::string parent, std::int64_t n, std::vector<std::string> selected_fields, std::string row_restriction, std::double_t sample_percentage, std::int64_t timestamp_seconds, std::int32_t timestamp_nanos, bool quiet);
-RcppExport SEXP _bigrquerystorage_bqs_ipc_stream(SEXP clientSEXP, SEXP projectSEXP, SEXP datasetSEXP, SEXP tableSEXP, SEXP parentSEXP, SEXP nSEXP, SEXP selected_fieldsSEXP, SEXP row_restrictionSEXP, SEXP sample_percentageSEXP, SEXP timestamp_secondsSEXP, SEXP timestamp_nanosSEXP, SEXP quietSEXP) {
+SEXP bqs_ipc_stream(SEXP client, std::string project, std::string dataset, std::string table, std::string parent, std::int64_t n, std::vector<std::string> selected_fields, std::string row_restriction, std::double_t sample_percentage, std::int64_t timestamp_seconds, std::int32_t timestamp_nanos, bool quiet, int32_t max_stream_count, int32_t compression_codec);
+RcppExport SEXP _bigrquerystorage_bqs_ipc_stream(SEXP clientSEXP, SEXP projectSEXP, SEXP datasetSEXP, SEXP tableSEXP, SEXP parentSEXP, SEXP nSEXP, SEXP selected_fieldsSEXP, SEXP row_restrictionSEXP, SEXP sample_percentageSEXP, SEXP timestamp_secondsSEXP, SEXP timestamp_nanosSEXP, SEXP quietSEXP, SEXP max_stream_countSEXP, SEXP compression_codecSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::traits::input_parameter< SEXP >::type client(clientSEXP);
@@ -69,7 +69,23 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< std::int64_t >::type timestamp_seconds(timestamp_secondsSEXP);
     Rcpp::traits::input_parameter< std::int32_t >::type timestamp_nanos(timestamp_nanosSEXP);
     Rcpp::traits::input_parameter< bool >::type quiet(quietSEXP);
-    rcpp_result_gen = Rcpp::wrap(bqs_ipc_stream(client, project, dataset, table, parent, n, selected_fields, row_restriction, sample_percentage, timestamp_seconds, timestamp_nanos, quiet));
+    Rcpp::traits::input_parameter< int32_t >::type max_stream_count(max_stream_countSEXP);
+    Rcpp::traits::input_parameter< int32_t >::type compression_codec(compression_codecSEXP);
+    rcpp_result_gen = Rcpp::wrap(bqs_ipc_stream(client, project, dataset, table, parent, n, selected_fields, row_restriction, sample_percentage, timestamp_seconds, timestamp_nanos, quiet, max_stream_count, compression_codec));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bqs_convert_stream
+SEXP bqs_convert_stream(SEXP stream_xptr, SEXP ptype_df, std::string bigint, Rcpp::Function na_convert_stream, Rcpp::Function na_convert_stream_quiet);
+RcppExport SEXP _bigrquerystorage_bqs_convert_stream(SEXP stream_xptrSEXP, SEXP ptype_dfSEXP, SEXP bigintSEXP, SEXP na_convert_streamSEXP, SEXP na_convert_stream_quietSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< SEXP >::type stream_xptr(stream_xptrSEXP);
+    Rcpp::traits::input_parameter< SEXP >::type ptype_df(ptype_dfSEXP);
+    Rcpp::traits::input_parameter< std::string >::type bigint(bigintSEXP);
+    Rcpp::traits::input_parameter< Rcpp::Function >::type na_convert_stream(na_convert_streamSEXP);
+    Rcpp::traits::input_parameter< Rcpp::Function >::type na_convert_stream_quiet(na_convert_stream_quietSEXP);
+    rcpp_result_gen = Rcpp::wrap(bqs_convert_stream(stream_xptr, ptype_df, bigint, na_convert_stream, na_convert_stream_quiet));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -79,7 +95,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"_bigrquerystorage_bqs_init_logger", (DL_FUNC) &_bigrquerystorage_bqs_init_logger, 0},
     {"_bigrquerystorage_grpc_version", (DL_FUNC) &_bigrquerystorage_grpc_version, 0},
     {"_bigrquerystorage_bqs_client", (DL_FUNC) &_bigrquerystorage_bqs_client, 6},
-    {"_bigrquerystorage_bqs_ipc_stream", (DL_FUNC) &_bigrquerystorage_bqs_ipc_stream, 12},
+    {"_bigrquerystorage_bqs_ipc_stream", (DL_FUNC) &_bigrquerystorage_bqs_ipc_stream, 14},
+    {"_bigrquerystorage_bqs_convert_stream", (DL_FUNC) &_bigrquerystorage_bqs_convert_stream, 5},
     {NULL, NULL, 0}
 };
 

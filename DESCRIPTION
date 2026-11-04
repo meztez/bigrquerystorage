@@ -9,8 +9,10 @@ Maintainer: Bruno Tremblay <openr@neoxone.com>
 Description: Easily talk to Google's 'BigQuery Storage' API from R
     (<https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc>).
 License: Apache License (>= 2)
+Depends:
+    R (>= 4.1)
 Imports:
-    nanoarrow (>= 0.9.0.9000),
+    nanoarrow (>= 0.6.0),
     rlang,
     assertthat,
     Rcpp,
@@ -24,9 +26,11 @@ Suggests:
     hms,
     wk (>= 0.3.2),
     tzdb,
-    base64enc
+    base64enc,
+    data.table
 LinkingTo:
-    Rcpp
+    Rcpp,
+    nanoarrow
 Encoding: UTF-8
 URL: https://github.com/meztez/bigrquerystorage
 BugReports: https://github.com/meztez/bigrquerystorage/issues
@@ -34,7 +38,5 @@ SystemRequirements: grpc/protobuf headers and compilers. For example
 		libprotobuf-dev libgrpc++-dev protobuf-compiler-grpc (Debian) or
 		protobuf-devel grpc-devel grpc-plugins (Fedora/RHEL)
 Roxygen: list(markdown = TRUE)
-Remotes:
-    meztez/arrow-nanoarrow/r@fix-932-list-int64-ptype
 Biarch: TRUE
 Config/roxygen2/version: 8.0.0
