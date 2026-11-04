@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cstdint>
 #include <grpc/grpc.h>
+# pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 
 #if __has_include(<grpcpp/version_info.h>)
 #include <grpcpp/version_info.h>
@@ -34,6 +35,7 @@
 #include "google/cloud/bigquery/storage/v1/stream.pb.h"
 #include "google/cloud/bigquery/storage/v1/storage.pb.h"
 # pragma GCC diagnostic ignored "-Winconsistent-missing-override"
+# pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include "google/cloud/bigquery/storage/v1/storage.grpc.pb.h"
 #include <Rcpp.h>
 #include <nanoarrow/r.h>
