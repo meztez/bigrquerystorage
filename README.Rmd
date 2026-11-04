@@ -36,8 +36,8 @@ and provides faster downloads for big results sets.
 
 ## Details
 
-This implementation use a C++ generated client combined with the `arrow` R package to transform
-the raw stream into an R object.
+This implementation uses a C++ gRPC client combined with the `nanoarrow` R package to transform
+the Arrow IPC stream into an R `tibble`, `data.frame`, `data.table`, or `nanoarrow_array_stream`.
 
 `bqs_table_download` is the main function of this package. Other functions are helpers to
 facilitate authentication and debugging.

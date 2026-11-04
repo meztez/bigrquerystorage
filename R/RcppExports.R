@@ -17,7 +17,11 @@ bqs_client <- function(client_info, service_configuration, refresh_token = "", a
     .Call(`_bigrquerystorage_bqs_client`, client_info, service_configuration, refresh_token, access_token, root_certificate, target)
 }
 
-bqs_ipc_stream <- function(client, project, dataset, table, parent, n, selected_fields, row_restriction = "", sample_percentage = -1L, timestamp_seconds = 0L, timestamp_nanos = 0L, quiet = FALSE) {
-    .Call(`_bigrquerystorage_bqs_ipc_stream`, client, project, dataset, table, parent, n, selected_fields, row_restriction, sample_percentage, timestamp_seconds, timestamp_nanos, quiet)
+bqs_ipc_stream <- function(client, project, dataset, table, parent, n, selected_fields, row_restriction = "", sample_percentage = -1L, timestamp_seconds = 0L, timestamp_nanos = 0L, quiet = FALSE, max_stream_count = 0L, compression_codec = 0L) {
+    .Call(`_bigrquerystorage_bqs_ipc_stream`, client, project, dataset, table, parent, n, selected_fields, row_restriction, sample_percentage, timestamp_seconds, timestamp_nanos, quiet, max_stream_count, compression_codec)
+}
+
+bqs_convert_stream <- function(stream_xptr, ptype_df, bigint, na_convert_stream) {
+    .Call(`_bigrquerystorage_bqs_convert_stream`, stream_xptr, ptype_df, bigint, na_convert_stream)
 }
 

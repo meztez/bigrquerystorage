@@ -247,3 +247,30 @@ test_that("post process parse works", {
   expect_true(inherits(df$gg$geo[[1]], "wk_wkt"))
   expect_equal(length(df2), 3)
 })
+
+test_that("type, compression, and Decimal128 fast path work", {
+  auth_fn()
+  sql <- "SELECT NUMERIC '12345.6789' AS num, CAST(NULL AS NUMERIC) AS num_na, 42 AS int_col, 'hello' AS str_col"
+  tb <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql, quiet = TRUE)
+
+  res_tb <- bqs_table_download(tb, bigrquery::bq_test_project(), quiet = TRUE, type = "tibble")
+  expect_s3_class(res_tb, "tbl_df")
+  expect_equal(res_tb$num, 12345.6789)
+  expect_true(is.na(res_tb$num_na))
+  expect_identical(res_tb$int_col, 42L)
+  expect_identical(res_tb$str_col, "hello")
+
+  res_df <- bqs_table_download(tb, bigrquery::bq_test_project(), quiet = TRUE, type = "data.frame", compression = "none")
+  expect_true(is.data.frame(res_df) && !inherits(res_df, "tbl_df"))
+  expect_equal(res_df$num, 12345.6789)
+
+  res_arrow <- bqs_table_download(tb, bigrquery::bq_test_project(), quiet = TRUE, type = "arrow")
+  expect_s3_class(res_arrow, "nanoarrow_array_stream")
+
+  if (requireNamespace("data.table", quietly = TRUE)) {
+    res_dt <- bqs_table_download(tb, bigrquery::bq_test_project(), quiet = TRUE, type = "data.table")
+    expect_s3_class(res_dt, "data.table")
+    expect_equal(res_dt$num, 12345.6789)
+  }
+})
+

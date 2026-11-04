@@ -66,3 +66,28 @@ test_that("repeated int64 columns honor bigint and are lossless", {
   expect_identical(dfint$x[[1]], c(NA_integer_, 2L))
   expect_identical(dfint$x[[2]], 3L)
 })
+
+test_that("bqs_convert_stream and parse_postprocess_schema handle Decimal128 and bigint modes", {
+  big <- bit64::as.integer64("9223372036854775295")
+  arr <- as_nanoarrow_array(
+    data.frame(x = c(big, bit64::as.integer64("42"))),
+    schema = na_struct(list(x = na_int64()))
+  )
+
+  for (mode in c("integer", "integer64", "numeric", "character")) {
+    stream <- basic_array_stream(list(arr))
+    schema <- stream$get_schema()
+    to <- int64_ptype(schema)
+    df <- suppressWarnings(bqs_convert_stream(stream, to, mode, nanoarrow::convert_array_stream))
+    tb <- suppressWarnings(parse_postprocess_schema(df, schema, mode))
+    expect_s3_class(tb, "tbl_df")
+    if (mode == "integer") {
+      expect_identical(tb$x, c(NA_integer_, 42L))
+    } else if (mode == "integer64") {
+      expect_identical(tb$x, c(big, bit64::as.integer64("42")))
+    } else if (mode == "character") {
+      expect_identical(tb$x, c("9223372036854775295", "42"))
+    }
+  }
+})
+

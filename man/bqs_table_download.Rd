@@ -15,7 +15,10 @@ bqs_table_download(
   quiet = NA,
   as_tibble = lifecycle::deprecated(),
   bigint = c("integer", "integer64", "numeric", "character"),
-  max_results = lifecycle::deprecated()
+  max_results = lifecycle::deprecated(),
+  type = c("tibble", "data.frame", "data.table", "arrow"),
+  max_stream_count = 0L,
+  compression = c("auto", "zstd", "lz4", "none")
 )
 }
 \arguments{
@@ -37,8 +40,7 @@ retrieve all rows.}
 
 \item{quiet}{Should information be printed to console.}
 
-\item{as_tibble}{Should data be returned as tibble. Default (FALSE) is to return
-as arrow Table from raw IPC stream.}
+\item{as_tibble}{Should data be returned as tibble. Deprecated; use \code{type} instead.}
 
 \item{bigint}{The R type that BigQuery's 64-bit integer types should be mapped to.
 The default is \code{"integer"} which returns R's \code{integer} type but results in \code{NA} for
@@ -46,11 +48,19 @@ values above/below +/- 2147483647. \code{"integer64"} returns a \link[bit64:inte
 which allows the full range of 64 bit integers.}
 
 \item{max_results}{Deprecated}
+
+\item{type}{The output container type: \code{"tibble"} (default), \code{"data.frame"},
+\code{"data.table"}, or \code{"arrow"} (returns a \code{nanoarrow_array_stream}).}
+
+\item{max_stream_count}{Maximum number of streams to request from BigQuery Storage
+(\code{0L} lets the server choose an optimal number of streams).}
+
+\item{compression}{Arrow record batch compression codec: \code{"auto"} (default, uses
+\code{"zstd"} when supported by \code{nanoarrow}), \code{"zstd"}, \code{"lz4"}, or \code{"none"}.}
 }
 \value{
-This method returns a data.frame or optionally a tibble.
-If you need a \code{data.frame}, leave parameter as_tibble to FALSE and coerce
-the results with \code{\link[=as.data.frame]{as.data.frame()}}.
+By default (\code{type = "tibble"}), a \link[tibble:tibble]{tibble::tibble}. Alternatively a
+\code{data.frame}, \code{data.table::data.table}, or \code{nanoarrow_array_stream} according to \code{type}.
 }
 \description{
 This retrieves rows block in a stream using a grpc protocol.
