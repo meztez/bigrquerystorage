@@ -21,7 +21,7 @@ bqs_ipc_stream <- function(client, project, dataset, table, parent, n, selected_
     .Call(`_bigrquerystorage_bqs_ipc_stream`, client, project, dataset, table, parent, n, selected_fields, row_restriction, sample_percentage, timestamp_seconds, timestamp_nanos, quiet, max_stream_count, compression_codec)
 }
 
-bqs_convert_stream <- function(stream_xptr, ptype_df, bigint, na_convert_stream) {
-    .Call(`_bigrquerystorage_bqs_convert_stream`, stream_xptr, ptype_df, bigint, na_convert_stream)
+bqs_convert_stream <- function(stream_xptr, ptype_df, bigint, na_convert_stream, na_convert_stream_quiet) {
+    .Call(`_bigrquerystorage_bqs_convert_stream`, stream_xptr, ptype_df, bigint, na_convert_stream, na_convert_stream_quiet)
 }
 

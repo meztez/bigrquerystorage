@@ -76,15 +76,16 @@ BEGIN_RCPP
 END_RCPP
 }
 // bqs_convert_stream
-SEXP bqs_convert_stream(SEXP stream_xptr, SEXP ptype_df, std::string bigint, Rcpp::Function na_convert_stream);
-RcppExport SEXP _bigrquerystorage_bqs_convert_stream(SEXP stream_xptrSEXP, SEXP ptype_dfSEXP, SEXP bigintSEXP, SEXP na_convert_streamSEXP) {
+SEXP bqs_convert_stream(SEXP stream_xptr, SEXP ptype_df, std::string bigint, Rcpp::Function na_convert_stream, Rcpp::Function na_convert_stream_quiet);
+RcppExport SEXP _bigrquerystorage_bqs_convert_stream(SEXP stream_xptrSEXP, SEXP ptype_dfSEXP, SEXP bigintSEXP, SEXP na_convert_streamSEXP, SEXP na_convert_stream_quietSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::traits::input_parameter< SEXP >::type stream_xptr(stream_xptrSEXP);
     Rcpp::traits::input_parameter< SEXP >::type ptype_df(ptype_dfSEXP);
     Rcpp::traits::input_parameter< std::string >::type bigint(bigintSEXP);
     Rcpp::traits::input_parameter< Rcpp::Function >::type na_convert_stream(na_convert_streamSEXP);
-    rcpp_result_gen = Rcpp::wrap(bqs_convert_stream(stream_xptr, ptype_df, bigint, na_convert_stream));
+    Rcpp::traits::input_parameter< Rcpp::Function >::type na_convert_stream_quiet(na_convert_stream_quietSEXP);
+    rcpp_result_gen = Rcpp::wrap(bqs_convert_stream(stream_xptr, ptype_df, bigint, na_convert_stream, na_convert_stream_quiet));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -95,7 +96,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_bigrquerystorage_grpc_version", (DL_FUNC) &_bigrquerystorage_grpc_version, 0},
     {"_bigrquerystorage_bqs_client", (DL_FUNC) &_bigrquerystorage_bqs_client, 6},
     {"_bigrquerystorage_bqs_ipc_stream", (DL_FUNC) &_bigrquerystorage_bqs_ipc_stream, 14},
-    {"_bigrquerystorage_bqs_convert_stream", (DL_FUNC) &_bigrquerystorage_bqs_convert_stream, 4},
+    {"_bigrquerystorage_bqs_convert_stream", (DL_FUNC) &_bigrquerystorage_bqs_convert_stream, 5},
     {NULL, NULL, 0}
 };
 

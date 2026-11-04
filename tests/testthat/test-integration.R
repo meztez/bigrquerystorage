@@ -122,6 +122,11 @@ test_that("the return type of integer columns is set by the bigint argument", {
   out_chr <- bqs_table_download(qry, bigrquery::bq_test_project(), as_tibble = TRUE, bigint = "character", quiet = TRUE)$x
   expect_identical(out_chr, x)
 
+  sql_rep <- "SELECT [9223372036854775295, 2] AS rep, STRUCT([9223372036854775295, 3] AS nested_rep) AS s UNION ALL SELECT [4], STRUCT([5] AS nested_rep)"
+  qry_rep <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql_rep, quiet = TRUE)
+  df_rep <- bqs_table_download(qry_rep, bigrquery::bq_test_project(), bigint = "integer64", quiet = TRUE)
+  expect_identical(df_rep$rep[[1]], bit64::as.integer64(c("9223372036854775295", "2")))
+  expect_identical(df_rep$s$nested_rep[[1]], bit64::as.integer64(c("9223372036854775295", "3")))
 })
 
 test_that("float return as numeric", {

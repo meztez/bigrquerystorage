@@ -49,22 +49,58 @@ test_that("int64_ptype leaves non-nested vctrs_list_of ptypes untouched (e.g. bl
 
 test_that("repeated int64 columns honor bigint and are lossless", {
   big <- bit64::as.integer64("9223372036854775295")
-  arr <- suppressWarnings(as_nanoarrow_array(
-    list(c(big, bit64::as.integer64("2")), bit64::as.integer64("3")),
-    schema = na_list(na_int64())
-  ))
-  stream <- basic_array_stream(list(arr))
-  x <- convert_array_stream(stream, to = int64_ptype(stream$get_schema()))
-  fields <- list(list(name = "x", type = "INT64", mode = "REPEATED"))
+  # Construct a struct(x = list<int64>) array without relying on
+  # as_nanoarrow_array.list() on integer64 (which in nanoarrow <= 0.9.0 used
+  # unlist() and stripped the integer64 class).
+  item_arr <- as_nanoarrow_array(
+    c(big, bit64::as.integer64("2"), bit64::as.integer64("3")),
+    schema = na_int64()
+  )
+  list_arr <- nanoarrow_array_init(na_list(na_int64()))
+  list_arr <- nanoarrow_array_modify(
+    list_arr,
+    list(
+      length = 2L,
+      null_count = 0L,
+      offset = 0L,
+      buffers = list(NULL, as_nanoarrow_buffer(c(0L, 2L, 3L))),
+      children = list(item_arr)
+    )
+  )
+  struct_schema <- na_struct(list(x = na_list(na_int64())))
+  struct_arr <- nanoarrow_array_init(struct_schema)
+  struct_arr <- nanoarrow_array_modify(
+    struct_arr,
+    list(
+      length = 2L,
+      null_count = 0L,
+      offset = 0L,
+      buffers = list(NULL),
+      children = list(list_arr)
+    )
+  )
+  nanoarrow_array_set_schema(struct_arr, struct_schema)
 
-  df64 <- parse_postprocess(tibble::tibble(x = x), "integer64", fields)
+  convert_repeated <- function(mode) {
+    stream <- basic_array_stream(list(struct_arr))
+    schema <- stream$get_schema()
+    to <- int64_ptype(schema)
+    df <- bqs_convert_stream(stream, to, mode, nanoarrow::convert_array_stream, convert_stream_no_warnings)
+    parse_postprocess_schema(df, schema, mode)
+  }
+
+  df64 <- convert_repeated("integer64")
   expect_s3_class(df64$x[[1]], "integer64")
   expect_identical(df64$x[[1]], c(big, bit64::as.integer64("2")))
   expect_identical(df64$x[[2]], bit64::as.integer64("3"))
 
-  dfint <- suppressWarnings(parse_postprocess(tibble::tibble(x = x), "integer", fields))
+  dfint <- suppressWarnings(convert_repeated("integer"))
   expect_identical(dfint$x[[1]], c(NA_integer_, 2L))
   expect_identical(dfint$x[[2]], 3L)
+
+  dfchr <- convert_repeated("character")
+  expect_identical(dfchr$x[[1]], c("9223372036854775295", "2"))
+  expect_identical(dfchr$x[[2]], "3")
 })
 
 test_that("bqs_convert_stream and parse_postprocess_schema handle Decimal128 and bigint modes", {
@@ -78,7 +114,7 @@ test_that("bqs_convert_stream and parse_postprocess_schema handle Decimal128 and
     stream <- basic_array_stream(list(arr))
     schema <- stream$get_schema()
     to <- int64_ptype(schema)
-    df <- suppressWarnings(bqs_convert_stream(stream, to, mode, nanoarrow::convert_array_stream))
+    df <- suppressWarnings(bqs_convert_stream(stream, to, mode, nanoarrow::convert_array_stream, convert_stream_no_warnings))
     tb <- suppressWarnings(parse_postprocess_schema(df, schema, mode))
     expect_s3_class(tb, "tbl_df")
     if (mode == "integer") {

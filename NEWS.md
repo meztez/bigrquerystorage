@@ -11,13 +11,8 @@
 * Update bundled Google BigQuery Storage v1 and Google API `.proto` definitions (raises max `ReadRows` response size to 128 MB).
 * REPEATED INT64 columns are now also read directly as `bit64::integer64`
   (instead of going through R's double, which could lose precision for
-  values above 2^53). This relies on a nanoarrow fix for
-  apache/arrow-nanoarrow#932 (list<int64> conversion corrupted values);
-  until a new `nanoarrow` release is published on CRAN, this package
-  temporarily depends on the `apache/arrow-nanoarrow` development version
-  (see `DESCRIPTION`'s `Remotes` field).
-  This dev version will not be submitted to CRAN until nanoarrow ships a
-  release with the fix (#86).
+  values above 2^53) by converting `list<int64>` columns directly in C++
+  via the Arrow C Data Interface (#86).
 
 # bigrquerystorage 1.2.3
 

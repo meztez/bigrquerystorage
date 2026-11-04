@@ -645,15 +645,150 @@ struct SubStreamData {
   static void release(struct ArrowArrayStream* s) { s->release = NULL; }
 };
 
+static inline bool is_bit_set(const uint8_t* valid, int64_t idx) {
+  return (valid[idx >> 3] >> (idx & 7)) & 1;
+}
+
+static SEXP make_int64_sexp(const int64_t* vals,
+                            const uint8_t* valid,
+                            int64_t null_count,
+                            int64_t offset,
+                            int64_t len) {
+  SEXP vec = PROTECT(Rf_allocVector(REALSXP, len));
+  int64_t* dst = reinterpret_cast<int64_t*>(REAL(vec));
+  if (null_count == 0 || valid == nullptr) {
+    if (len > 0) {
+      std::memcpy(dst, vals + offset, len * sizeof(int64_t));
+    }
+  } else {
+    for (int64_t i = 0; i < len; i++) {
+      int64_t idx = offset + i;
+      dst[i] = is_bit_set(valid, idx) ? vals[idx] : static_cast<int64_t>(1ULL << 63);
+    }
+  }
+  Rf_setAttrib(vec, R_ClassSymbol, Rf_mkString("integer64"));
+  UNPROTECT(1);
+  return vec;
+}
+
+// Convert a list<int64> (+l with child l) column across batches to an R list of integer64 vectors
+static SEXP convert_list_int64_batches(const std::vector<ArrowArray*>& col_batches,
+                                       int64_t total_rows) {
+  Rcpp::List out(total_rows);
+  int64_t pos = 0;
+  for (size_t b = 0; b < col_batches.size(); b++) {
+    ArrowArray* col = col_batches[b];
+    int64_t len = col->length;
+    int64_t offset = col->offset;
+    int64_t null_count = col->null_count;
+    const uint8_t* valid = static_cast<const uint8_t*>(col->buffers[0]);
+    const int32_t* offsets = static_cast<const int32_t*>(col->buffers[1]);
+
+    ArrowArray* item = col->children[0];
+    int64_t item_offset = item->offset;
+    int64_t item_null_count = item->null_count;
+    const uint8_t* item_valid = static_cast<const uint8_t*>(item->buffers[0]);
+    const int64_t* item_vals = static_cast<const int64_t*>(item->buffers[1]);
+
+    for (int64_t i = 0; i < len; i++) {
+      int64_t idx = offset + i;
+      if (null_count > 0 && valid != nullptr && !is_bit_set(valid, idx)) {
+        out[pos + i] = R_NilValue;
+      } else {
+        int32_t start = offsets[idx];
+        int32_t end = offsets[idx + 1];
+        out[pos + i] = make_int64_sexp(
+          item_vals, item_valid, item_null_count,
+          item_offset + start, end - start
+        );
+      }
+    }
+    pos += len;
+  }
+  return out;
+}
+
+static bool schema_has_list_int64(const ArrowSchema* sch) {
+  if (!sch || !sch->format) return false;
+  if (std::strcmp(sch->format, "+l") == 0 && sch->n_children == 1 &&
+      sch->children[0] && sch->children[0]->format &&
+      std::strcmp(sch->children[0]->format, "l") == 0) {
+    return true;
+  }
+  if (std::strcmp(sch->format, "+s") == 0) {
+    for (int64_t j = 0; j < sch->n_children; j++) {
+      if (schema_has_list_int64(sch->children[j])) return true;
+    }
+  }
+  return false;
+}
+
+static void patch_struct_list_int64(SEXP df_sexp,
+                                    const ArrowSchema* sch,
+                                    const std::vector<ArrowArray*>& struct_batches,
+                                    int64_t total_rows) {
+  if (!sch || !sch->format || std::strcmp(sch->format, "+s") != 0) return;
+  Rcpp::List df(df_sexp);
+  for (int64_t j = 0; j < sch->n_children; j++) {
+    ArrowSchema* ch_sch = sch->children[j];
+    if (!ch_sch || !ch_sch->format) continue;
+    if (std::strcmp(ch_sch->format, "+l") == 0 && ch_sch->n_children == 1 &&
+        ch_sch->children[0] && ch_sch->children[0]->format &&
+        std::strcmp(ch_sch->children[0]->format, "l") == 0) {
+      std::vector<ArrowArray*> ch_batches(struct_batches.size());
+      for (size_t b = 0; b < struct_batches.size(); b++) {
+        ch_batches[b] = struct_batches[b]->children[j];
+      }
+      df[j] = convert_list_int64_batches(ch_batches, total_rows);
+    } else if (std::strcmp(ch_sch->format, "+s") == 0 && schema_has_list_int64(ch_sch)) {
+      std::vector<ArrowArray*> ch_batches(struct_batches.size());
+      for (size_t b = 0; b < struct_batches.size(); b++) {
+        ch_batches[b] = struct_batches[b]->children[j];
+      }
+      patch_struct_list_int64(df[j], ch_sch, ch_batches, total_rows);
+    }
+  }
+}
+
+// Reset any list<int64> ptype inside a struct ptype to list<double> before
+// delegating the struct column to nanoarrow (so nanoarrow <= 0.9.0 does not hit
+// the list<int64> integer64 pointer-offset bug; patch_struct_list_int64 then
+// overwrites the column with the lossless C++ integer64 list).
+static SEXP sanitize_struct_ptype_for_nanoarrow(SEXP ptype_sexp, const ArrowSchema* sch) {
+  if (!sch || !sch->format || std::strcmp(sch->format, "+s") != 0 || !Rf_isNewList(ptype_sexp)) {
+    return ptype_sexp;
+  }
+  SEXP cloned = PROTECT(Rf_shallow_duplicate(ptype_sexp));
+  for (int64_t j = 0; j < sch->n_children; j++) {
+    ArrowSchema* ch_sch = sch->children[j];
+    if (!ch_sch || !ch_sch->format) continue;
+    if (std::strcmp(ch_sch->format, "+l") == 0 && ch_sch->n_children == 1 &&
+        ch_sch->children[0] && ch_sch->children[0]->format &&
+        std::strcmp(ch_sch->children[0]->format, "l") == 0) {
+      SEXP elt = PROTECT(Rf_shallow_duplicate(VECTOR_ELT(cloned, j)));
+      Rf_setAttrib(elt, Rf_install("ptype"), Rf_allocVector(REALSXP, 0));
+      SET_VECTOR_ELT(cloned, j, elt);
+      UNPROTECT(1);
+    } else if (std::strcmp(ch_sch->format, "+s") == 0 && schema_has_list_int64(ch_sch)) {
+      SET_VECTOR_ELT(cloned, j, sanitize_struct_ptype_for_nanoarrow(VECTOR_ELT(cloned, j), ch_sch));
+    }
+  }
+  UNPROTECT(1);
+  return cloned;
+}
+
 // Fast hybrid ArrowArrayStream converter:
-// Directly converts top-level Decimal128 (NUMERIC/BIGNUMERIC -> double) and
-// Int64 (when bigint == "integer" -> integer32 with overflow warning) in C++,
+// Directly converts top-level Decimal128 (NUMERIC/BIGNUMERIC -> double),
+// top-level Int64 (when bigint == "integer" -> integer32 with overflow warning),
+// and list<int64> (+l with child l, both top-level and nested in structs, so
+// REPEATED INT64 is lossless even on CRAN nanoarrow <= 0.9.0) in C++,
 // and delegates remaining columns to nanoarrow::convert_array_stream.
 // [[Rcpp::export(rng=false)]]
 SEXP bqs_convert_stream(SEXP stream_xptr,
                         SEXP ptype_df,
                         std::string bigint,
-                        Rcpp::Function na_convert_stream) {
+                        Rcpp::Function na_convert_stream,
+                        Rcpp::Function na_convert_stream_quiet) {
   struct ArrowArrayStream* stream = nanoarrow_array_stream_from_xptr(stream_xptr);
   struct ArrowSchema schema;
   if (stream->get_schema(stream, &schema) != 0) {
@@ -665,10 +800,13 @@ SEXP bqs_convert_stream(SEXP stream_xptr,
   std::vector<int> dec_cols;
   std::vector<double> dec_scales;
   std::vector<int> int32_cols;
+  std::vector<int> list_int64_cols;
+  std::vector<int> struct_list_int64_cols;
   std::vector<int> other_cols;
 
   for (int64_t j = 0; j < n_cols; j++) {
-    const char* fmt = schema.children[j]->format;
+    ArrowSchema* ch = schema.children[j];
+    const char* fmt = ch->format;
     int scale = 0;
     if (
 #if defined(__SIZEOF_INT128__)
@@ -681,12 +819,19 @@ SEXP bqs_convert_stream(SEXP stream_xptr,
       dec_scales.push_back(std::pow(10.0, -scale));
     } else if (bigint == "integer" && fmt && std::strcmp(fmt, "l") == 0) {
       int32_cols.push_back(j);
+    } else if (fmt && std::strcmp(fmt, "+l") == 0 && ch->n_children == 1 &&
+               ch->children[0] && ch->children[0]->format &&
+               std::strcmp(ch->children[0]->format, "l") == 0) {
+      list_int64_cols.push_back(j);
     } else {
+      if (fmt && std::strcmp(fmt, "+s") == 0 && schema_has_list_int64(ch)) {
+        struct_list_int64_cols.push_back(j);
+      }
       other_cols.push_back(j);
     }
   }
 
-  if (dec_cols.empty() && int32_cols.empty()) {
+  if (dec_cols.empty() && int32_cols.empty() && list_int64_cols.empty() && struct_list_int64_cols.empty()) {
     schema.release(&schema);
     return na_convert_stream(stream_xptr, ptype_df);
   }
@@ -794,6 +939,16 @@ SEXP bqs_convert_stream(SEXP stream_xptr,
     Rf_warning("NAs produced by integer overflow");
   }
 
+  // 2b. Convert top-level list<int64> columns directly in C++
+  for (size_t k = 0; k < list_int64_cols.size(); k++) {
+    int col_idx = list_int64_cols[k];
+    std::vector<ArrowArray*> col_batches(batches.size());
+    for (size_t b = 0; b < batches.size(); b++) {
+      col_batches[b] = batches[b].children[col_idx];
+    }
+    out_cols[col_idx] = convert_list_int64_batches(col_batches, total_rows);
+  }
+
   // 3. Delegate remaining columns to nanoarrow
   if (!other_cols.empty()) {
     Rcpp::List full_ptype(ptype_df);
@@ -801,8 +956,13 @@ SEXP bqs_convert_stream(SEXP stream_xptr,
     Rcpp::CharacterVector full_names = full_ptype.names();
     Rcpp::CharacterVector sub_names(other_cols.size());
     for (size_t j = 0; j < other_cols.size(); j++) {
-      sub_ptype[j] = full_ptype[other_cols[j]];
-      sub_names[j] = full_names[other_cols[j]];
+      int col_idx = other_cols[j];
+      SEXP col_ptype = full_ptype[col_idx];
+      if (schema_has_list_int64(schema.children[col_idx])) {
+        col_ptype = sanitize_struct_ptype_for_nanoarrow(col_ptype, schema.children[col_idx]);
+      }
+      sub_ptype[j] = col_ptype;
+      sub_names[j] = full_names[col_idx];
     }
     sub_ptype.attr("names") = sub_names;
     sub_ptype.attr("class") = "data.frame";
@@ -828,11 +988,25 @@ SEXP bqs_convert_stream(SEXP stream_xptr,
     sub_stream->release = SubStreamData::release;
     sub_stream->private_data = &sub_data;
 
-    Rcpp::List sub_res = na_convert_stream(sub_stream_xptr, sub_ptype, static_cast<double>(total_rows), R_PosInf);
-    UNPROTECT(1);
+    Rcpp::Function& convert_fn = struct_list_int64_cols.empty()
+      ? na_convert_stream
+      : na_convert_stream_quiet;
+    SEXP sub_res_sexp = PROTECT(convert_fn(sub_stream_xptr, sub_ptype, static_cast<double>(total_rows), R_PosInf));
+    Rcpp::List sub_res(sub_res_sexp);
+    UNPROTECT(2);
 
     for (size_t j = 0; j < other_cols.size(); j++) {
       out_cols[other_cols[j]] = sub_res[j];
+    }
+
+    // Patch any struct columns that contain nested list<int64>
+    for (size_t k = 0; k < struct_list_int64_cols.size(); k++) {
+      int col_idx = struct_list_int64_cols[k];
+      std::vector<ArrowArray*> struct_batches(batches.size());
+      for (size_t b = 0; b < batches.size(); b++) {
+        struct_batches[b] = batches[b].children[col_idx];
+      }
+      patch_struct_list_int64(out_cols[col_idx], schema.children[col_idx], struct_batches, total_rows);
     }
   }
 

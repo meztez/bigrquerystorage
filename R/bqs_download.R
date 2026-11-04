@@ -139,7 +139,7 @@ bqs_table_download <- function(
 
   schema <- stream$get_schema()
   to <- int64_ptype(schema)
-  df <- bqs_convert_stream(stream, to, bigint, nanoarrow::convert_array_stream)
+  df <- bqs_convert_stream(stream, to, bigint, nanoarrow::convert_array_stream, convert_stream_no_warnings)
   tb <- parse_postprocess_schema(df, schema, bigint)
 
   # Batches do not support a n_max so we get just enough results before
@@ -362,6 +362,11 @@ needs_postprocess_schema <- function(sch, bigint) {
     return( TRUE )
   }
   FALSE
+}
+
+#' @noRd
+convert_stream_no_warnings <- function(stream, ptype, size, n) {
+  suppressWarnings(nanoarrow::convert_array_stream(stream, ptype, size, n))
 }
 
 #' @noRd

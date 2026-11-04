@@ -12,7 +12,7 @@ License: Apache License (>= 2)
 Depends:
     R (>= 4.1)
 Imports:
-    nanoarrow (>= 0.9.0.9000),
+    nanoarrow (>= 0.6.0),
     rlang,
     assertthat,
     Rcpp,
@@ -38,7 +38,5 @@ SystemRequirements: grpc/protobuf headers and compilers. For example
 		libprotobuf-dev libgrpc++-dev protobuf-compiler-grpc (Debian) or
 		protobuf-devel grpc-devel grpc-plugins (Fedora/RHEL)
 Roxygen: list(markdown = TRUE)
-Remotes:
-    nanoarrow=apache/arrow-nanoarrow/r
 Biarch: TRUE
 Config/roxygen2/version: 8.0.0
