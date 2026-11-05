@@ -1,18 +1,58 @@
 # bigrquerystorage (development version)
 
-* `bqs_table_download()` is now 3x to 8x faster and uses up to 80% less memory:
-  * Requests `ZSTD` Arrow buffer compression by default when supported by `nanoarrow` (`compression = "auto"`), cutting network transfer payload sizes by 3.6x to 8.3x.
-  * Reads multi-stream `ReadSession` responses in parallel across worker threads in C++ when downloading full tables.
-  * Moves Protobuf serialized Arrow record batches via `release_serialized_record_batch()` instead of copying into a growing `std::vector<uint8_t>`.
-  * Accelerates `NUMERIC` / `BIGNUMERIC` (`Decimal128`) and `INT64 -> integer` conversions in C++ directly on the `ArrowArrayStream`, speeding up decimal-heavy tables by ~5x.
-  * Eliminates the redundant `bigrquery::bq_table_fields()` REST API call on every download by deriving post-processing metadata (`DATETIME`, `GEOGRAPHY`, `BYTES`, `INT64`, `STRUCT`, `ARRAY`) directly from the Arrow schema in the gRPC `ReadSession`.
-  * Extends `bqs_auth()` gRPC channel reuse from 30 seconds to 30 minutes (1800 seconds) to avoid unnecessary TLS/HTTP2 handshakes.
-* `bqs_table_download()` gains `type = c("tibble", "data.frame", "data.table", "arrow")`, `max_stream_count`, and `compression = c("auto", "zstd", "lz4", "none")` arguments.
-* Update bundled Google BigQuery Storage v1 and Google API `.proto` definitions (raises max `ReadRows` response size to 128 MB).
-* REPEATED INT64 columns are now also read directly as `bit64::integer64`
-  (instead of going through R's double, which could lose precision for
-  values above 2^53) by converting `list<int64>` columns directly in C++
-  via the Arrow C Data Interface (#86).
+## Performance
+
+* `bqs_table_download()` is much faster than in 1.2.3 (median of two runs on a
+  4-core Linux server):
+  * Nested table `google_analytics_sample.ga_sessions_20170801` (2,556 rows):
+    120 s to 2.3 s.
+  * `samples.gsod`, 18 columns, `year >= 2007` (11.3M rows): 55 s to 5.5 s.
+  * `usa_names.usa_1910_current` (6.3M rows): 3.7 s to 1.9 s.
+* Download:
+  * Requests `ZSTD` Arrow buffer compression by default when supported by
+    `nanoarrow` (`compression = "auto"`), cutting the transfer size of
+    `usa_names` by 3.6x.
+  * Reads the streams of a `ReadSession` in parallel, each worker on its own
+    gRPC channel (HTTP/2 connection). Up to 16 streams are read concurrently
+    by default; set `options(bigrquerystorage.threads = n)` to change it.
+  * `CreateReadSession` requests `preferred_min_stream_count` so the server
+    returns enough streams to read in parallel.
+  * Reads are also parallel when `n_max` is set, and stop as soon as enough
+    rows have been received.
+  * Parallel downloads can be interrupted and show a progress bar.
+  * Moves the serialized Arrow record batches out of the Protobuf responses
+    instead of copying them.
+  * Reuses the gRPC client for 30 minutes instead of 30 seconds, avoiding new
+    TLS/HTTP2 handshakes.
+* Conversion to R:
+  * Decodes and decompresses the Arrow record batches of each stream in
+    parallel instead of on the R thread.
+  * Converts `NUMERIC` (`Decimal128`) columns, and `INT64` columns when
+    `bigint = "integer"`, directly in C++.
+  * Post-processes `STRUCT` / `RECORD` and `REPEATED` columns in C++ instead of
+    evaluating R code for every row, and converts all nested `INT64` values
+    with a single `bigint` conversion (an overflow warning is reported once,
+    not once per row).
+  * Derives the post-processing metadata (`DATETIME`, `GEOGRAPHY`, `BYTES`,
+    `INT64`, `STRUCT`, `ARRAY`) from the Arrow schema of the `ReadSession`
+    instead of calling `bigrquery::bq_table_fields()` on every download.
+
+## New features
+
+* `bqs_table_download()` gains `type = c("tibble", "data.frame", "data.table",
+  "arrow")`, `max_stream_count` and `compression = c("auto", "zstd", "lz4",
+  "none")` arguments.
+* Update the bundled Google BigQuery Storage v1 and Google API `.proto`
+  definitions (raises the maximum `ReadRows` response size to 128 MB).
+
+## Bug fixes
+
+* `REPEATED INT64` columns are read directly as `bit64::integer64` instead of
+  going through R's double, which could lose precision above 2^53 (#86).
+* Fix wrong values for `INT64` fields of `REPEATED RECORD` columns, and any
+  `INT64` nested under a `REPEATED` field: `nanoarrow` <= 0.9.0 ignores list
+  offsets when converting them to `bit64::integer64`, which returned shifted
+  or garbage values. They are now rebuilt losslessly from the Arrow buffers.
 
 # bigrquerystorage 1.2.3
 

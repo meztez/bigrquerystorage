@@ -29,6 +29,12 @@
 #' More details about table modifiers and table options are available from the
 #' API Reference documentation. (See [TableModifiers](https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#tablemodifiers) and
 #' [TableReadOptions](https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#tablereadoptions))
+#'
+#' Multi-stream reads are downloaded in parallel, each worker on its own gRPC
+#' connection, and the Arrow record batches of each stream are then decoded in
+#' parallel. Up to 16 streams are read concurrently by default; set
+#' `options(bigrquerystorage.threads = n)` to change the number of download
+#' and decoding threads.
 #' @return By default (`type = "tibble"`), a [tibble::tibble]. Alternatively a
 #'   `data.frame`, `data.table::data.table`, or `nanoarrow_array_stream` according to `type`.
 #' @export
@@ -111,10 +117,11 @@ bqs_table_download <- function(
   )
 
   quiet <- isTRUE(quiet)
+  threads <- as.integer(getOption("bigrquerystorage.threads", 0L))
 
   bqs_auth()
 
-  raws <- bqs_ipc_stream(
+  ipc <- bqs_ipc_stream(
     client = .global$client$ptr,
     project = bqs_table_name[1],
     dataset = bqs_table_name[2],
@@ -128,19 +135,31 @@ bqs_table_download <- function(
     timestamp_nanos = timestamp_nanos,
     quiet = quiet,
     max_stream_count = as.integer(max_stream_count),
-    compression_codec = compression_codec
+    compression_codec = compression_codec,
+    max_threads = threads
   )
 
   rlang::local_options(nanoarrow.warn_unregistered_extension = FALSE)
-  stream <- nanoarrow::read_nanoarrow(raws)
+  # Each read stream is its own IPC buffer, decoded (and decompressed) in parallel
+  if (!length(ipc$streams)) {
+    ipc$streams <- list(ipc$schema)
+  }
+  readers <- lapply(ipc$streams, nanoarrow::read_nanoarrow)
+  ipc$streams <- NULL
+  stream <- bqs_collect_streams(readers, nanoarrow::read_nanoarrow(ipc$schema), threads)
+  rm(readers)
   if (type == "arrow") {
     return(stream)
   }
 
   schema <- stream$get_schema()
   to <- int64_ptype(schema)
-  df <- bqs_convert_stream(stream, to, bigint, nanoarrow::convert_array_stream, convert_stream_no_warnings)
-  tb <- parse_postprocess_schema(df, schema, bigint)
+  # Not bound to a variable so it can be post-processed in place
+  tb <- parse_postprocess_schema(
+    bqs_convert_stream(stream, to, bigint, nanoarrow::convert_array_stream, convert_stream_no_warnings),
+    schema,
+    bigint
+  )
 
   # Batches do not support a n_max so we get just enough results before
   # exiting the streaming loop.
@@ -282,86 +301,27 @@ int64_ptype <- function(schema, ptype = nanoarrow::infer_nanoarrow_ptype(schema)
 
 #' Post-process converted R data.frame using the Arrow schema directly
 #' (eliminates the redundant REST API call to `bigrquery::bq_table_fields()`).
+#' STRUCT become tibbles, REPEATED become lists, DATETIME are UTC, GEOGRAPHY
+#' are `wk::wkt`, BYTES are `blob::blob` and INT64 follow `bigint`. The
+#' schema walk runs in C++ and all INT64 values are converted with one
+#' `as_bigint()` call, instead of R code evaluated for every row of every
+#' REPEATED column.
 #' @noRd
 parse_postprocess_schema <- function(df, schema, bigint) {
+  flags <- bqs_schema_flags(schema)
+  if (flags[["geography"]]) {
+    bqs_check_namespace("wk", "GEOGRAPHY")
+  }
+  if (flags[["bytes"]]) {
+    bqs_check_namespace("blob", "BYTES")
+  }
   as_bigint <- switch(bigint,
     integer = as.integer,
     integer64 = bit64::as.integer64,
     numeric = as.numeric,
     character = as.character
   )
-
-  walk_col <- function(col, sch) {
-    fmt <- sch$format
-    ext <- sch$metadata[["ARROW:extension:name"]]
-    if (identical(fmt, "+s")) {
-      if (is.data.frame(col) && !inherits(col, "tbl_df")) {
-        col <- tibble::new_tibble(col, nrow = nrow(col))
-      }
-      if (is.list(col) && length(col) == length(sch$children)) {
-        col[] <- mapply(walk_col, col, sch$children, SIMPLIFY = FALSE)
-      }
-      return(col)
-    }
-    if (identical(fmt, "+l")) {
-      if (inherits(col, c("arrow_list", "vctrs_list_of"))) {
-        col <- as.list(col)
-      }
-      child_sch <- sch$children[[1]]
-      if (!is.null(ext) && is.null(child_sch$metadata[["ARROW:extension:name"]])) {
-        child_sch$metadata[["ARROW:extension:name"]] <- ext
-      }
-      if (needs_postprocess_schema(child_sch, bigint)) {
-        col[] <- lapply(col, walk_col, sch = child_sch)
-      }
-      return(col)
-    }
-    if (identical(fmt, "l")) {
-      if (bigint == "integer" && is.integer(col)) {
-        return(col)
-      }
-      if (bigint == "integer64" && inherits(col, "integer64")) {
-        return(col)
-      }
-      return(as_bigint(col))
-    }
-    if (identical(ext, "google:sqlType:datetime") || identical(fmt, "tsu:")) {
-      attr(col, "tzone") <- "UTC"
-      return(col)
-    }
-    if (identical(ext, "google:sqlType:geography")) {
-      bqs_check_namespace("wk", "GEOGRAPHY")
-      attr(col, "class") <- c("wk_wkt", "wk_vctr")
-      return(col)
-    }
-    if (identical(fmt, "z")) {
-      bqs_check_namespace("blob", "BYTES")
-      if (!inherits(col, "blob")) {
-        attr(col, "class") <- c("blob", "vctrs_list_of", "vctrs_vctr", "list")
-        attr(col, "ptype") <- raw(0)
-      }
-      return(col)
-    }
-    col
-  }
-
-  walk_col(df, schema)
-}
-
-#' @noRd
-needs_postprocess_schema <- function(sch, bigint) {
-  fmt <- sch$format
-  ext <- sch$metadata[["ARROW:extension:name"]]
-  if (identical(fmt, "l") || identical(fmt, "z") || identical(fmt, "tsu:")) {
-    return(TRUE)
-  }
-  if (identical(ext, "google:sqlType:datetime") || identical(ext, "google:sqlType:geography")) {
-    return(TRUE)
-  }
-  if (identical(fmt, "+s") || identical(fmt, "+l")) {
-    return( TRUE )
-  }
-  FALSE
+  bqs_postprocess(df, schema, bigint, as_bigint)
 }
 
 #' @noRd

@@ -4,6 +4,9 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <condition_variable>
+#include <chrono>
+#include <memory>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -38,7 +41,6 @@
 # pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include "google/cloud/bigquery/storage/v1/storage.grpc.pb.h"
 #include <Rcpp.h>
-#include <nanoarrow/r.h>
 #include "RProgress.h"
 
 using google::cloud::bigquery::storage::v1::ReadSession;
@@ -124,13 +126,81 @@ std::string readfile(std::string filename)
 
 // -- Client class -------------------------------------------------------------
 
+using google::cloud::bigquery::storage::v1::ReadRowsRequest;
+using google::cloud::bigquery::storage::v1::ReadRowsResponse;
+
+// Serialized Arrow record batches received from one read stream
+struct StreamBatches {
+  std::vector<std::string> batches;
+  std::vector<int64_t> rows;
+  size_t bytes = 0;
+
+  void add(ReadRowsResponse* response) {
+    std::string* batch = response->mutable_arrow_record_batch()->release_serialized_record_batch();
+    bytes += batch->size();
+    batches.push_back(std::move(*batch));
+    delete batch;
+    rows.push_back(response->row_count());
+  }
+};
+
+// Shared state of a parallel multi-stream read
+struct ParallelRead {
+  std::atomic<bool> cancel{false};
+  std::atomic<int64_t> rows{0};
+  std::atomic<int64_t> pages{0};
+  std::atomic<int> throttle{0};
+  std::atomic<int> streams_done{0};
+  int64_t n = -1;
+  std::mutex mu;
+  std::vector<grpc::ClientContext*> contexts;
+
+  explicit ParallelRead(int n_workers) : contexts(n_workers, nullptr) {}
+
+  void Register(int worker, grpc::ClientContext* ctx) {
+    std::lock_guard<std::mutex> lock(mu);
+    contexts[worker] = ctx;
+    if (cancel.load()) ctx->TryCancel();
+  }
+  void Unregister(int worker) {
+    std::lock_guard<std::mutex> lock(mu);
+    contexts[worker] = nullptr;
+  }
+  // Stop every worker, including those blocked waiting for the next message
+  void CancelAll() {
+    cancel.store(true);
+    std::lock_guard<std::mutex> lock(mu);
+    for (auto* ctx : contexts) {
+      if (ctx) ctx->TryCancel();
+    }
+  }
+};
+
 class BigQueryReadClient {
 public:
-  BigQueryReadClient(std::shared_ptr<grpc::Channel> channel)
-    : stub_(BigQueryRead::NewStub(channel)) {
+  BigQueryReadClient(std::shared_ptr<grpc::ChannelCredentials> cred,
+                     const std::string& target,
+                     const std::string& service_configuration)
+    : cred_(cred), target_(target), service_configuration_(service_configuration) {
+    EnsureChannels(1);
   }
   void SetClientInfo(const std::string &client_info) {
     client_info_ = client_info;
+  }
+
+  // Keep a pool of channels so concurrent ReadRows calls each get their own
+  // HTTP/2 connection instead of being multiplexed on a single one. Channels
+  // need distinct arguments, otherwise gRPC shares the underlying subchannel.
+  void EnsureChannels(size_t n) {
+    while (stubs_.size() < n) {
+      grpc::ChannelArguments channel_arguments;
+      channel_arguments.SetMaxReceiveMessageSize(134217728);
+      channel_arguments.SetServiceConfigJSON(service_configuration_);
+      channel_arguments.SetInt("grpc.use_local_subchannel_pool", 1);
+      channel_arguments.SetInt("bigrquerystorage.channel_id", static_cast<int>(stubs_.size()));
+      stubs_.push_back(BigQueryRead::NewStub(
+        grpc::CreateCustomChannel(target_, cred_, channel_arguments)));
+    }
   }
 
   // Creation read sessions
@@ -144,7 +214,8 @@ public:
                                 const std::string& row_restriction,
                                 const std::double_t& sample_percentage,
                                 const int32_t max_stream_count = 0,
-                                const int32_t compression_codec = 0
+                                const int32_t compression_codec = 0,
+                                const int32_t preferred_min_stream_count = 0
   ) {
     google::cloud::bigquery::storage::v1::CreateReadSessionRequest method_request;
     ReadSession *read_session = method_request.mutable_read_session();
@@ -183,6 +254,9 @@ public:
     if (max_stream_count > 0) {
       method_request.set_max_stream_count(max_stream_count);
     }
+    if (preferred_min_stream_count > 0) {
+      method_request.set_preferred_min_stream_count(preferred_min_stream_count);
+    }
     method_request.set_parent("projects/" + parent);
     grpc::ClientContext context;
     context.AddMetadata("x-goog-request-params",
@@ -191,7 +265,7 @@ public:
     ReadSession method_response;
 
     // The actual RPC.
-    grpc::Status status = stub_->
+    grpc::Status status = stubs_[0]->
       CreateReadSession(&context, method_request, &method_response);
     if (!status.ok()) {
       std::string err;
@@ -204,8 +278,7 @@ public:
 
   // Read rows from a stream (single-stream path with progress bar)
   void ReadRows(const std::string& stream,
-                std::vector<std::string>* batches,
-                size_t* stream_bytes,
+                StreamBatches* out,
                 std::int64_t& n,
                 long int& rows_count,
                 long int& pages_count,
@@ -217,20 +290,17 @@ public:
     context.AddMetadata("x-goog-request-params", "read_stream=" + stream);
     context.AddMetadata("x-goog-api-client", client_info_);
 
-    google::cloud::bigquery::storage::v1::ReadRowsRequest method_request;
+    ReadRowsRequest method_request;
     method_request.set_read_stream(stream);
     method_request.set_offset(0);
 
-    google::cloud::bigquery::storage::v1::ReadRowsResponse method_response;
+    ReadRowsResponse method_response;
 
-    std::unique_ptr<grpc::ClientReader<google::cloud::bigquery::storage::v1::ReadRowsResponse> > reader(
-        stub_->ReadRows(&context, method_request));
+    std::unique_ptr<grpc::ClientReader<ReadRowsResponse> > reader(
+        stubs_[0]->ReadRows(&context, method_request));
 
     while (reader->Read(&method_response)) {
-      std::string* batch = method_response.mutable_arrow_record_batch()->release_serialized_record_batch();
-      *stream_bytes += batch->size();
-      batches->push_back(std::move(*batch));
-      delete batch;
+      out->add(&method_response);
 
       method_request.set_offset(
         method_request.offset() + method_response.row_count());
@@ -260,7 +330,13 @@ public:
         }
       }
       if (pages_count % 100 == 0L) {
-        Rcpp::checkUserInterrupt();
+        try {
+          Rcpp::checkUserInterrupt();
+        } catch (...) {
+          context.TryCancel();
+          reader->Finish();
+          throw;
+        }
       }
     }
     grpc::Status status = reader->Finish();
@@ -276,43 +352,47 @@ public:
     }
   }
 
-  // Read rows from a stream on a worker thread (no R API calls)
-  void ReadRowsWorker(const std::string& stream,
-                      std::vector<std::string>* batches,
-                      size_t* stream_bytes,
-                      long int* stream_rows,
-                      long int* stream_pages,
-                      std::atomic<bool>* cancel_flag,
+  // Read rows from a stream on a worker thread (no R API calls). Each worker
+  // uses its own channel.
+  void ReadRowsWorker(int worker,
+                      const std::string& stream,
+                      StreamBatches* out,
+                      ParallelRead* state,
                       std::string* error_msg) {
     grpc::ClientContext context;
     context.AddMetadata("x-goog-request-params", "read_stream=" + stream);
     context.AddMetadata("x-goog-api-client", client_info_);
 
-    google::cloud::bigquery::storage::v1::ReadRowsRequest method_request;
+    ReadRowsRequest method_request;
     method_request.set_read_stream(stream);
     method_request.set_offset(0);
 
-    google::cloud::bigquery::storage::v1::ReadRowsResponse method_response;
-    std::unique_ptr<grpc::ClientReader<google::cloud::bigquery::storage::v1::ReadRowsResponse> > reader(
-        stub_->ReadRows(&context, method_request));
+    ReadRowsResponse method_response;
+    state->Register(worker, &context);
+    std::unique_ptr<grpc::ClientReader<ReadRowsResponse> > reader(
+        stubs_[worker % stubs_.size()]->ReadRows(&context, method_request));
 
     while (reader->Read(&method_response)) {
-      if (cancel_flag->load(std::memory_order_relaxed)) {
-        context.TryCancel();
+      int64_t batch_rows = method_response.row_count();
+      out->add(&method_response);
+      if (method_response.has_throttle_state()) {
+        state->throttle.store(method_response.throttle_state().throttle_percent());
+      }
+      state->pages.fetch_add(1);
+      int64_t total = state->rows.fetch_add(batch_rows) + batch_rows;
+      if (state->n > 0 && total >= state->n) {
+        state->CancelAll();
         break;
       }
-      std::string* batch = method_response.mutable_arrow_record_batch()->release_serialized_record_batch();
-      *stream_bytes += batch->size();
-      batches->push_back(std::move(*batch));
-      delete batch;
-
-      *stream_rows += method_response.row_count();
-      *stream_pages += 1;
+      if (state->cancel.load()) {
+        break;
+      }
     }
     grpc::Status status = reader->Finish();
-    if (!status.ok() && !(cancel_flag->load(std::memory_order_relaxed) && status.error_code() == grpc::StatusCode::CANCELLED)) {
+    state->Unregister(worker);
+    if (!status.ok() && !(state->cancel.load() && status.error_code() == grpc::StatusCode::CANCELLED)) {
       *error_msg = std::string("grpc method ReadRows error -> ") + status.error_message();
-      cancel_flag->store(true, std::memory_order_relaxed);
+      state->CancelAll();
     }
   }
 
@@ -331,7 +411,7 @@ public:
     google::cloud::bigquery::storage::v1::SplitReadStreamResponse method_response;
 
     // The actual RPC.
-    grpc::Status status = stub_->
+    grpc::Status status = stubs_[0]->
       SplitReadStream(&context, method_request, &method_response);
     if (!status.ok()) {
       std::string err;
@@ -344,7 +424,10 @@ public:
             method_response.remainder_stream().name()};
   }
 private:
-  std::unique_ptr<BigQueryRead::Stub> stub_;
+  std::shared_ptr<grpc::ChannelCredentials> cred_;
+  std::string target_;
+  std::string service_configuration_;
+  std::vector<std::unique_ptr<BigQueryRead::Stub>> stubs_;
   std::string client_info_;
 };
 
@@ -401,12 +484,8 @@ SEXP bqs_read_client(std::shared_ptr<grpc::ChannelCredentials> cred,
                      std::string service_configuration,
                      std::string target) {
 
-  grpc::ChannelArguments channel_arguments;
-  channel_arguments.SetMaxReceiveMessageSize(134217728);
-  channel_arguments.SetServiceConfigJSON(service_configuration);
-
   BigQueryReadClient *client = new BigQueryReadClient(
-    grpc::CreateCustomChannel(target, cred, channel_arguments)
+    cred, target, service_configuration
   );
 
   client->SetClientInfo(client_info);
@@ -446,6 +525,16 @@ SEXP bqs_client(std::string client_info,
 
 }
 
+// Default number of concurrent ReadRows streams. Workers mostly wait on the
+// network, so this is not tied to the number of CPU cores.
+static const int BQS_DEFAULT_THREADS = 16;
+
+// Download a table with the BigQuery Storage Read API.
+//
+// Returns a list with `schema` (the serialized Arrow schema) and `streams`, a
+// list with one Arrow IPC buffer (schema + record batches) per read stream so
+// the batches can be decoded in parallel. When `n` > 0, batches beyond the
+// first `n` rows are dropped.
 // [[Rcpp::export(rng=false)]]
 SEXP bqs_ipc_stream(SEXP client,
                     std::string project,
@@ -460,16 +549,24 @@ SEXP bqs_ipc_stream(SEXP client,
                     std::int32_t timestamp_nanos = 0,
                     bool quiet = false,
                     int32_t max_stream_count = 0,
-                    int32_t compression_codec = 0) {
+                    int32_t compression_codec = 0,
+                    int32_t max_threads = 0) {
 
   Rcpp::XPtr<BigQueryReadClient> client_ptr(client);
 
   long int rows_count = 0;
   long int pages_count = 0;
 
+  int target_threads = max_threads > 0 ? max_threads : BQS_DEFAULT_THREADS;
+
   int32_t requested_streams = max_stream_count;
   if (n > 0 && n <= 100000 && requested_streams == 0) {
     requested_streams = 1;
+  }
+  // Ask for at least as many streams as workers so the download can be parallel
+  int32_t preferred_min_streams = target_threads;
+  if (requested_streams > 0) {
+    preferred_min_streams = std::min(requested_streams, preferred_min_streams);
   }
 
   // Retrieve ReadSession
@@ -484,76 +581,106 @@ SEXP bqs_ipc_stream(SEXP client,
     row_restriction,
     sample_percentage,
     requested_streams,
-    compression_codec);
+    compression_codec,
+    preferred_min_streams);
 
   int n_streams = read_session.streams_size();
   const std::string& schema_bytes = read_session.arrow_schema().serialized_schema();
 
-  std::vector<std::vector<std::string>> stream_batches(std::max(1, n_streams));
-  std::vector<size_t> stream_bytes(std::max(1, n_streams), 0);
+  std::vector<StreamBatches> stream_batches(std::max(1, n_streams));
 
-  if (n_streams <= 1 || n > 0) {
-    RProgress::RProgress pb(
-        "\033[42m\033[30mStreaming (:percent)\033[39m\033[49m [:bar] eta[:eta|:elapsed] throt[:extra]");
-    pb.set_cursor_char(">");
+  RProgress::RProgress pb(
+      "\033[42m\033[30mStreaming (:percent)\033[39m\033[49m [:bar] eta[:eta|:elapsed] throt[:extra]");
+  pb.set_cursor_char(">");
+
+  if (n_streams <= 1) {
     if (n > 0) {
       pb.set_total(n);
     } else {
       pb.set_total(100 * std::max(1, n_streams));
     }
-
     for (int i = 0; i < n_streams; i++) {
       client_ptr->ReadRows(read_session.streams(i).name(),
                            &stream_batches[i],
-                           &stream_bytes[i],
                            n, rows_count, pages_count, quiet,
                            &pb, i == n_streams - 1);
-      if (n > 0 && rows_count >= n) {
-        break;
-      }
     }
   } else {
-    // Parallel multi-stream read for full table / unrestricted downloads
-    unsigned int hw_threads = std::thread::hardware_concurrency();
-    if (hw_threads == 0) hw_threads = 4;
-    int num_threads = std::min(n_streams, static_cast<int>(std::min(hw_threads, 16u)));
+    // Parallel multi-stream read, one channel per worker
+    int num_threads = std::min(n_streams, target_threads);
+    client_ptr->EnsureChannels(num_threads);
 
-    std::vector<long int> per_stream_rows(n_streams, 0);
-    std::vector<long int> per_stream_pages(n_streams, 0);
-    std::vector<std::string> per_stream_errors(n_streams);
+    ParallelRead state(num_threads);
+    state.n = n;
+    std::vector<std::string> errors(n_streams);
     std::atomic<int> next_stream(0);
-    std::atomic<bool> cancel_flag(false);
+    std::atomic<int> running(num_threads);
+    std::mutex done_mu;
+    std::condition_variable done_cv;
 
     std::vector<std::thread> workers;
     workers.reserve(num_threads);
     for (int t = 0; t < num_threads; t++) {
-      workers.emplace_back([&]() {
-        while (!cancel_flag.load(std::memory_order_relaxed)) {
-          int idx = next_stream.fetch_add(1, std::memory_order_relaxed);
+      workers.emplace_back([&, t]() {
+        while (!state.cancel.load()) {
+          int idx = next_stream.fetch_add(1);
           if (idx >= n_streams) break;
-          client_ptr->ReadRowsWorker(
-            read_session.streams(idx).name(),
-            &stream_batches[idx],
-            &stream_bytes[idx],
-            &per_stream_rows[idx],
-            &per_stream_pages[idx],
-            &cancel_flag,
-            &per_stream_errors[idx]
-          );
+          client_ptr->ReadRowsWorker(t, read_session.streams(idx).name(),
+                                     &stream_batches[idx], &state, &errors[idx]);
+          state.streams_done.fetch_add(1);
         }
+        std::lock_guard<std::mutex> lock(done_mu);
+        running.fetch_sub(1);
+        done_cv.notify_all();
       });
     }
 
-    for (auto& w : workers) {
-      w.join();
+    // Progress is based on the estimated row count when available
+    double expected_rows = static_cast<double>(read_session.estimated_row_count());
+    if (n > 0 && (expected_rows <= 0 || n < expected_rows)) {
+      expected_rows = static_cast<double>(n);
     }
+    pb.set_total(100);
+
+    auto join_all = [&]() {
+      for (auto& w : workers) {
+        if (w.joinable()) w.join();
+      }
+    };
+
+    while (true) {
+      {
+        std::unique_lock<std::mutex> lock(done_mu);
+        done_cv.wait_for(lock, std::chrono::milliseconds(100),
+                         [&]() { return running.load() == 0; });
+      }
+      if (running.load() == 0) break;
+      try {
+        Rcpp::checkUserInterrupt();
+      } catch (...) {
+        state.CancelAll();
+        join_all();
+        throw;
+      }
+      if (!quiet) {
+        double ratio = expected_rows > 0
+          ? static_cast<double>(state.rows.load()) / expected_rows
+          : static_cast<double>(state.streams_done.load()) / n_streams;
+        pb.set_extra(state.throttle.load());
+        pb.update(std::min(0.99, std::max(0.0, ratio)));
+      }
+    }
+    join_all();
 
     for (int i = 0; i < n_streams; i++) {
-      if (!per_stream_errors[i].empty()) {
-        Rcpp::stop(per_stream_errors[i].c_str());
+      if (!errors[i].empty()) {
+        Rcpp::stop(errors[i].c_str());
       }
-      rows_count += per_stream_rows[i];
-      pages_count += per_stream_pages[i];
+    }
+    rows_count = static_cast<long int>(state.rows.load());
+    pages_count = static_cast<long int>(state.pages.load());
+    if (!quiet) {
+      pb.update(1);
     }
   }
 
@@ -561,462 +688,40 @@ SEXP bqs_ipc_stream(SEXP client,
     REprintf("Streamed %ld rows in %ld messages.\n", rows_count, pages_count);
   }
 
-  size_t total_bytes = schema_bytes.size();
+  // One IPC buffer per stream: the schema followed by its record batches,
+  // keeping only what is needed to return the first `n` rows.
+  Rcpp::List streams_out;
+  int64_t kept_rows = 0;
   for (int i = 0; i < n_streams; i++) {
-    total_bytes += stream_bytes[i];
-  }
-
-  Rcpp::RawVector out(total_bytes);
-  uint8_t* dst = RAW(out);
-  std::memcpy(dst, schema_bytes.data(), schema_bytes.size());
-  dst += schema_bytes.size();
-  for (int i = 0; i < n_streams; i++) {
-    for (const auto& batch : stream_batches[i]) {
-      std::memcpy(dst, batch.data(), batch.size());
-      dst += batch.size();
+    StreamBatches& sb = stream_batches[i];
+    size_t n_keep = 0;
+    size_t bytes = schema_bytes.size();
+    while (n_keep < sb.batches.size() && !(n > 0 && kept_rows >= n)) {
+      kept_rows += sb.rows[n_keep];
+      bytes += sb.batches[n_keep].size();
+      n_keep++;
     }
-  }
-
-  return out;
-}
-
-// -- Fast Arrow C Stream conversion helpers -----------------------------------
-
-static bool parse_decimal128_scale(const char* fmt, int* scale_out) {
-  if (!fmt || fmt[0] != 'd' || fmt[1] != ':') return false;
-  const char* comma = std::strchr(fmt + 2, ',');
-  if (!comma) return false;
-  const char* comma2 = std::strchr(comma + 1, ',');
-  if (comma2) {
-    int bitwidth = std::atoi(comma2 + 1);
-    if (bitwidth != 128) return false;
-  }
-  *scale_out = std::atoi(comma + 1);
-  return true;
-}
-
-static void noop_release_schema(struct ArrowSchema* s) {
-  s->release = NULL;
-}
-
-struct SubStreamData {
-  ArrowSchema root_schema;
-  std::vector<ArrowSchema*> child_schema_ptrs;
-  std::vector<ArrowArray>* batches;
-  std::vector<int> keep_cols;
-  size_t batch_idx = 0;
-
-  static int get_schema(struct ArrowArrayStream* s, struct ArrowSchema* out) {
-    SubStreamData* self = static_cast<SubStreamData*>(s->private_data);
-    *out = self->root_schema;
-    out->release = noop_release_schema;
-    return 0;
-  }
-
-  static int get_next(struct ArrowArrayStream* s, struct ArrowArray* out) {
-    SubStreamData* self = static_cast<SubStreamData*>(s->private_data);
-    if (self->batch_idx >= self->batches->size()) {
-      out->release = NULL;
-      return 0;
-    }
-    ArrowArray& src = (*self->batches)[self->batch_idx++];
-    size_t k = self->keep_cols.size();
-    ArrowArray** children = static_cast<ArrowArray**>(malloc(k * sizeof(ArrowArray*)));
-    for (size_t j = 0; j < k; j++) {
-      children[j] = src.children[self->keep_cols[j]];
-    }
-    out->length = src.length;
-    out->null_count = src.null_count;
-    out->offset = src.offset;
-    out->n_buffers = src.n_buffers;
-    out->n_children = k;
-    out->buffers = src.buffers;
-    out->children = children;
-    out->dictionary = NULL;
-    out->private_data = children;
-    out->release = [](struct ArrowArray* a) {
-      if (a->private_data) free(a->private_data);
-      a->release = NULL;
-    };
-    return 0;
-  }
-
-  static const char* get_last_error(struct ArrowArrayStream*) { return NULL; }
-  static void release(struct ArrowArrayStream* s) { s->release = NULL; }
-};
-
-static inline bool is_bit_set(const uint8_t* valid, int64_t idx) {
-  return (valid[idx >> 3] >> (idx & 7)) & 1;
-}
-
-static SEXP make_int64_sexp(const int64_t* vals,
-                            const uint8_t* valid,
-                            int64_t null_count,
-                            int64_t offset,
-                            int64_t len) {
-  SEXP vec = PROTECT(Rf_allocVector(REALSXP, len));
-  int64_t* dst = reinterpret_cast<int64_t*>(REAL(vec));
-  if (null_count == 0 || valid == nullptr) {
-    if (len > 0) {
-      std::memcpy(dst, vals + offset, len * sizeof(int64_t));
-    }
-  } else {
-    for (int64_t i = 0; i < len; i++) {
-      int64_t idx = offset + i;
-      dst[i] = is_bit_set(valid, idx) ? vals[idx] : static_cast<int64_t>(1ULL << 63);
-    }
-  }
-  Rf_setAttrib(vec, R_ClassSymbol, Rf_mkString("integer64"));
-  UNPROTECT(1);
-  return vec;
-}
-
-// Convert a list<int64> (+l with child l) column across batches to an R list of integer64 vectors
-static SEXP convert_list_int64_batches(const std::vector<ArrowArray*>& col_batches,
-                                       int64_t total_rows) {
-  Rcpp::List out(total_rows);
-  int64_t pos = 0;
-  for (size_t b = 0; b < col_batches.size(); b++) {
-    ArrowArray* col = col_batches[b];
-    int64_t len = col->length;
-    int64_t offset = col->offset;
-    int64_t null_count = col->null_count;
-    const uint8_t* valid = static_cast<const uint8_t*>(col->buffers[0]);
-    const int32_t* offsets = static_cast<const int32_t*>(col->buffers[1]);
-
-    ArrowArray* item = col->children[0];
-    int64_t item_offset = item->offset;
-    int64_t item_null_count = item->null_count;
-    const uint8_t* item_valid = static_cast<const uint8_t*>(item->buffers[0]);
-    const int64_t* item_vals = static_cast<const int64_t*>(item->buffers[1]);
-
-    for (int64_t i = 0; i < len; i++) {
-      int64_t idx = offset + i;
-      if (null_count > 0 && valid != nullptr && !is_bit_set(valid, idx)) {
-        out[pos + i] = R_NilValue;
-      } else {
-        int32_t start = offsets[idx];
-        int32_t end = offsets[idx + 1];
-        out[pos + i] = make_int64_sexp(
-          item_vals, item_valid, item_null_count,
-          item_offset + start, end - start
-        );
+    if (n_keep > 0) {
+      Rcpp::RawVector buf(bytes);
+      uint8_t* dst = RAW(buf);
+      std::memcpy(dst, schema_bytes.data(), schema_bytes.size());
+      dst += schema_bytes.size();
+      for (size_t k = 0; k < n_keep; k++) {
+        std::memcpy(dst, sb.batches[k].data(), sb.batches[k].size());
+        dst += sb.batches[k].size();
       }
+      streams_out.push_back(buf);
     }
-    pos += len;
+    std::vector<std::string>().swap(sb.batches);
   }
-  return out;
+
+  Rcpp::RawVector schema_out(schema_bytes.size());
+  if (!schema_bytes.empty()) {
+    std::memcpy(RAW(schema_out), schema_bytes.data(), schema_bytes.size());
+  }
+
+  return Rcpp::List::create(
+    Rcpp::Named("schema") = schema_out,
+    Rcpp::Named("streams") = streams_out
+  );
 }
-
-static bool schema_has_list_int64(const ArrowSchema* sch) {
-  if (!sch || !sch->format) return false;
-  if (std::strcmp(sch->format, "+l") == 0 && sch->n_children == 1 &&
-      sch->children[0] && sch->children[0]->format &&
-      std::strcmp(sch->children[0]->format, "l") == 0) {
-    return true;
-  }
-  if (std::strcmp(sch->format, "+s") == 0) {
-    for (int64_t j = 0; j < sch->n_children; j++) {
-      if (schema_has_list_int64(sch->children[j])) return true;
-    }
-  }
-  return false;
-}
-
-static void patch_struct_list_int64(SEXP df_sexp,
-                                    const ArrowSchema* sch,
-                                    const std::vector<ArrowArray*>& struct_batches,
-                                    int64_t total_rows) {
-  if (!sch || !sch->format || std::strcmp(sch->format, "+s") != 0) return;
-  Rcpp::List df(df_sexp);
-  for (int64_t j = 0; j < sch->n_children; j++) {
-    ArrowSchema* ch_sch = sch->children[j];
-    if (!ch_sch || !ch_sch->format) continue;
-    if (std::strcmp(ch_sch->format, "+l") == 0 && ch_sch->n_children == 1 &&
-        ch_sch->children[0] && ch_sch->children[0]->format &&
-        std::strcmp(ch_sch->children[0]->format, "l") == 0) {
-      std::vector<ArrowArray*> ch_batches(struct_batches.size());
-      for (size_t b = 0; b < struct_batches.size(); b++) {
-        ch_batches[b] = struct_batches[b]->children[j];
-      }
-      df[j] = convert_list_int64_batches(ch_batches, total_rows);
-    } else if (std::strcmp(ch_sch->format, "+s") == 0 && schema_has_list_int64(ch_sch)) {
-      std::vector<ArrowArray*> ch_batches(struct_batches.size());
-      for (size_t b = 0; b < struct_batches.size(); b++) {
-        ch_batches[b] = struct_batches[b]->children[j];
-      }
-      patch_struct_list_int64(df[j], ch_sch, ch_batches, total_rows);
-    }
-  }
-}
-
-// Reset any list<int64> ptype inside a struct ptype to list<double> before
-// delegating the struct column to nanoarrow (so nanoarrow <= 0.9.0 does not hit
-// the list<int64> integer64 pointer-offset bug; patch_struct_list_int64 then
-// overwrites the column with the lossless C++ integer64 list).
-static SEXP sanitize_struct_ptype_for_nanoarrow(SEXP ptype_sexp, const ArrowSchema* sch) {
-  if (!sch || !sch->format || std::strcmp(sch->format, "+s") != 0 || !Rf_isNewList(ptype_sexp)) {
-    return ptype_sexp;
-  }
-  SEXP cloned = PROTECT(Rf_shallow_duplicate(ptype_sexp));
-  for (int64_t j = 0; j < sch->n_children; j++) {
-    ArrowSchema* ch_sch = sch->children[j];
-    if (!ch_sch || !ch_sch->format) continue;
-    if (std::strcmp(ch_sch->format, "+l") == 0 && ch_sch->n_children == 1 &&
-        ch_sch->children[0] && ch_sch->children[0]->format &&
-        std::strcmp(ch_sch->children[0]->format, "l") == 0) {
-      SEXP elt = PROTECT(Rf_shallow_duplicate(VECTOR_ELT(cloned, j)));
-      Rf_setAttrib(elt, Rf_install("ptype"), Rf_allocVector(REALSXP, 0));
-      SET_VECTOR_ELT(cloned, j, elt);
-      UNPROTECT(1);
-    } else if (std::strcmp(ch_sch->format, "+s") == 0 && schema_has_list_int64(ch_sch)) {
-      SET_VECTOR_ELT(cloned, j, sanitize_struct_ptype_for_nanoarrow(VECTOR_ELT(cloned, j), ch_sch));
-    }
-  }
-  UNPROTECT(1);
-  return cloned;
-}
-
-// Fast hybrid ArrowArrayStream converter:
-// Directly converts top-level Decimal128 (NUMERIC/BIGNUMERIC -> double),
-// top-level Int64 (when bigint == "integer" -> integer32 with overflow warning),
-// and list<int64> (+l with child l, both top-level and nested in structs, so
-// REPEATED INT64 is lossless even on CRAN nanoarrow <= 0.9.0) in C++,
-// and delegates remaining columns to nanoarrow::convert_array_stream.
-// [[Rcpp::export(rng=false)]]
-SEXP bqs_convert_stream(SEXP stream_xptr,
-                        SEXP ptype_df,
-                        std::string bigint,
-                        Rcpp::Function na_convert_stream,
-                        Rcpp::Function na_convert_stream_quiet) {
-  struct ArrowArrayStream* stream = nanoarrow_array_stream_from_xptr(stream_xptr);
-  struct ArrowSchema schema;
-  if (stream->get_schema(stream, &schema) != 0) {
-    const char* err = stream->get_last_error ? stream->get_last_error(stream) : "Failed to get schema from ArrowArrayStream";
-    Rcpp::stop(err ? err : "Failed to get schema from ArrowArrayStream");
-  }
-
-  int64_t n_cols = schema.n_children;
-  std::vector<int> dec_cols;
-  std::vector<double> dec_scales;
-  std::vector<int> int32_cols;
-  std::vector<int> list_int64_cols;
-  std::vector<int> struct_list_int64_cols;
-  std::vector<int> other_cols;
-
-  for (int64_t j = 0; j < n_cols; j++) {
-    ArrowSchema* ch = schema.children[j];
-    const char* fmt = ch->format;
-    int scale = 0;
-    if (
-#if defined(__SIZEOF_INT128__)
-        parse_decimal128_scale(fmt, &scale)
-#else
-        false
-#endif
-    ) {
-      dec_cols.push_back(j);
-      dec_scales.push_back(std::pow(10.0, -scale));
-    } else if (bigint == "integer" && fmt && std::strcmp(fmt, "l") == 0) {
-      int32_cols.push_back(j);
-    } else if (fmt && std::strcmp(fmt, "+l") == 0 && ch->n_children == 1 &&
-               ch->children[0] && ch->children[0]->format &&
-               std::strcmp(ch->children[0]->format, "l") == 0) {
-      list_int64_cols.push_back(j);
-    } else {
-      if (fmt && std::strcmp(fmt, "+s") == 0 && schema_has_list_int64(ch)) {
-        struct_list_int64_cols.push_back(j);
-      }
-      other_cols.push_back(j);
-    }
-  }
-
-  if (dec_cols.empty() && int32_cols.empty() && list_int64_cols.empty() && struct_list_int64_cols.empty()) {
-    schema.release(&schema);
-    return na_convert_stream(stream_xptr, ptype_df);
-  }
-
-  std::vector<ArrowArray> batches;
-  int64_t total_rows = 0;
-  while (true) {
-    ArrowArray arr;
-    arr.release = NULL;
-    int rc = stream->get_next(stream, &arr);
-    if (rc != 0) {
-      const char* err = stream->get_last_error ? stream->get_last_error(stream) : "Failed to read next batch from ArrowArrayStream";
-      std::string err_str = err ? err : "Failed to read next batch from ArrowArrayStream";
-      for (auto& b : batches) b.release(&b);
-      schema.release(&schema);
-      Rcpp::stop(err_str.c_str());
-    }
-    if (arr.release == NULL) break;
-    total_rows += arr.length;
-    batches.push_back(arr);
-  }
-
-  Rcpp::List out_cols(n_cols);
-
-#if defined(__SIZEOF_INT128__)
-  // 1. Convert Decimal128 columns directly in C++
-  for (size_t k = 0; k < dec_cols.size(); k++) {
-    int col_idx = dec_cols[k];
-    double scale_mult = dec_scales[k];
-    Rcpp::NumericVector col_vec(total_rows);
-    double* out_ptr = REAL(col_vec);
-    int64_t pos = 0;
-    for (size_t b = 0; b < batches.size(); b++) {
-      ArrowArray* child = batches[b].children[col_idx];
-      int64_t len = child->length;
-      int64_t offset = child->offset;
-      int64_t null_count = child->null_count;
-      const uint8_t* valid = static_cast<const uint8_t*>(child->buffers[0]);
-      const __int128* vals = static_cast<const __int128*>(child->buffers[1]);
-      if (null_count == 0 || valid == nullptr) {
-        for (int64_t i = 0; i < len; i++) {
-          out_ptr[pos + i] = static_cast<double>(vals[offset + i]) * scale_mult;
-        }
-      } else {
-        for (int64_t i = 0; i < len; i++) {
-          int64_t idx = offset + i;
-          if ((valid[idx >> 3] >> (idx & 7)) & 1) {
-            out_ptr[pos + i] = static_cast<double>(vals[idx]) * scale_mult;
-          } else {
-            out_ptr[pos + i] = NA_REAL;
-          }
-        }
-      }
-      pos += len;
-    }
-    out_cols[col_idx] = col_vec;
-  }
-#endif
-
-  // 2. Convert top-level int64 -> integer32 directly in C++ when bigint == "integer"
-  bool any_int_overflow = false;
-  for (size_t k = 0; k < int32_cols.size(); k++) {
-    int col_idx = int32_cols[k];
-    Rcpp::IntegerVector col_vec(total_rows);
-    int* out_ptr = INTEGER(col_vec);
-    int64_t pos = 0;
-    for (size_t b = 0; b < batches.size(); b++) {
-      ArrowArray* child = batches[b].children[col_idx];
-      int64_t len = child->length;
-      int64_t offset = child->offset;
-      int64_t null_count = child->null_count;
-      const uint8_t* valid = static_cast<const uint8_t*>(child->buffers[0]);
-      const int64_t* vals = static_cast<const int64_t*>(child->buffers[1]);
-      if (null_count == 0 || valid == nullptr) {
-        for (int64_t i = 0; i < len; i++) {
-          int64_t v = vals[offset + i];
-          if (v < -2147483647LL || v > 2147483647LL) {
-            out_ptr[pos + i] = NA_INTEGER;
-            any_int_overflow = true;
-          } else {
-            out_ptr[pos + i] = static_cast<int>(v);
-          }
-        }
-      } else {
-        for (int64_t i = 0; i < len; i++) {
-          int64_t idx = offset + i;
-          if ((valid[idx >> 3] >> (idx & 7)) & 1) {
-            int64_t v = vals[idx];
-            if (v < -2147483647LL || v > 2147483647LL) {
-              out_ptr[pos + i] = NA_INTEGER;
-              any_int_overflow = true;
-            } else {
-              out_ptr[pos + i] = static_cast<int>(v);
-            }
-          } else {
-            out_ptr[pos + i] = NA_INTEGER;
-          }
-        }
-      }
-      pos += len;
-    }
-    out_cols[col_idx] = col_vec;
-  }
-  if (any_int_overflow) {
-    Rf_warning("NAs produced by integer overflow");
-  }
-
-  // 2b. Convert top-level list<int64> columns directly in C++
-  for (size_t k = 0; k < list_int64_cols.size(); k++) {
-    int col_idx = list_int64_cols[k];
-    std::vector<ArrowArray*> col_batches(batches.size());
-    for (size_t b = 0; b < batches.size(); b++) {
-      col_batches[b] = batches[b].children[col_idx];
-    }
-    out_cols[col_idx] = convert_list_int64_batches(col_batches, total_rows);
-  }
-
-  // 3. Delegate remaining columns to nanoarrow
-  if (!other_cols.empty()) {
-    Rcpp::List full_ptype(ptype_df);
-    Rcpp::List sub_ptype(other_cols.size());
-    Rcpp::CharacterVector full_names = full_ptype.names();
-    Rcpp::CharacterVector sub_names(other_cols.size());
-    for (size_t j = 0; j < other_cols.size(); j++) {
-      int col_idx = other_cols[j];
-      SEXP col_ptype = full_ptype[col_idx];
-      if (schema_has_list_int64(schema.children[col_idx])) {
-        col_ptype = sanitize_struct_ptype_for_nanoarrow(col_ptype, schema.children[col_idx]);
-      }
-      sub_ptype[j] = col_ptype;
-      sub_names[j] = full_names[col_idx];
-    }
-    sub_ptype.attr("names") = sub_names;
-    sub_ptype.attr("class") = "data.frame";
-    sub_ptype.attr("row.names") = Rcpp::IntegerVector::create(NA_INTEGER, 0);
-
-    SubStreamData sub_data;
-    sub_data.batches = &batches;
-    sub_data.keep_cols = other_cols;
-    sub_data.child_schema_ptrs.resize(other_cols.size());
-    for (size_t j = 0; j < other_cols.size(); j++) {
-      sub_data.child_schema_ptrs[j] = schema.children[other_cols[j]];
-    }
-    sub_data.root_schema = schema;
-    sub_data.root_schema.n_children = other_cols.size();
-    sub_data.root_schema.children = sub_data.child_schema_ptrs.data();
-    sub_data.root_schema.release = noop_release_schema;
-
-    SEXP sub_stream_xptr = PROTECT(nanoarrow_array_stream_owning_xptr());
-    struct ArrowArrayStream* sub_stream = reinterpret_cast<struct ArrowArrayStream*>(R_ExternalPtrAddr(sub_stream_xptr));
-    sub_stream->get_schema = SubStreamData::get_schema;
-    sub_stream->get_next = SubStreamData::get_next;
-    sub_stream->get_last_error = SubStreamData::get_last_error;
-    sub_stream->release = SubStreamData::release;
-    sub_stream->private_data = &sub_data;
-
-    Rcpp::Function& convert_fn = struct_list_int64_cols.empty()
-      ? na_convert_stream
-      : na_convert_stream_quiet;
-    SEXP sub_res_sexp = PROTECT(convert_fn(sub_stream_xptr, sub_ptype, static_cast<double>(total_rows), R_PosInf));
-    Rcpp::List sub_res(sub_res_sexp);
-    UNPROTECT(2);
-
-    for (size_t j = 0; j < other_cols.size(); j++) {
-      out_cols[other_cols[j]] = sub_res[j];
-    }
-
-    // Patch any struct columns that contain nested list<int64>
-    for (size_t k = 0; k < struct_list_int64_cols.size(); k++) {
-      int col_idx = struct_list_int64_cols[k];
-      std::vector<ArrowArray*> struct_batches(batches.size());
-      for (size_t b = 0; b < batches.size(); b++) {
-        struct_batches[b] = batches[b].children[col_idx];
-      }
-      patch_struct_list_int64(out_cols[col_idx], schema.children[col_idx], struct_batches, total_rows);
-    }
-  }
-
-  for (auto& b : batches) b.release(&b);
-  schema.release(&schema);
-
-  Rcpp::List full_ptype(ptype_df);
-  out_cols.attr("names") = full_ptype.names();
-  out_cols.attr("class") = "data.frame";
-  out_cols.attr("row.names") = Rcpp::IntegerVector::create(NA_INTEGER, -static_cast<int>(total_rows));
-  return out_cols;
-}
-
