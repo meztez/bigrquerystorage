@@ -70,4 +70,10 @@ It is most suitable for results of larger queries (>100 MB, say).
 More details about table modifiers and table options are available from the
 API Reference documentation. (See \href{https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#tablemodifiers}{TableModifiers} and
 \href{https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#tablereadoptions}{TableReadOptions})
+
+Multi-stream reads are downloaded in parallel, each worker on its own gRPC
+connection, and the Arrow record batches of each stream are then decoded in
+parallel. Up to 16 streams are read concurrently by default; set
+\code{options(bigrquerystorage.threads = n)} to change the number of download
+and decoding threads.
 }
