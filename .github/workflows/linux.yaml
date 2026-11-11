@@ -6,13 +6,15 @@ on:
     inputs:
       distros:
         description: |
-          Distros, default is all, possible values: alpine-3.16,
-          alpine-3.17, alpine-3.18, alpine-3.19, alpine-edge, debian-10,
-          debian-11, debian-12, debian-unstable, fedora-36, fedora-37,
-          fedora-38, rocky-9, ubuntu-22.04.
+          Distros, default is all, possible values: alpine-3.19,
+          alpine-3.20, alpine-3.21, alpine-edge, debian-11, debian-12,
+          debian-unstable, fedora-40, fedora-41, rocky-9, ubuntu-22.04,
+          ubuntu-24.04.
         required: false
         default: 'all'
         type: string
+
+permissions: read-all
 
 jobs:
   setup-matrix:
@@ -20,7 +22,7 @@ jobs:
     outputs:
       distros: ${{ steps.setup-matrix.outputs.distros }}
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     - name: Set up matrix of builds
       id: setup-matrix
       run: |
@@ -36,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     name: ${{ matrix.distro }}
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - name: Build package
       run: |
@@ -45,3 +47,4 @@ jobs:
     - name: Test loading package
       run: |
         docker run bqs:${{ matrix.distro }} R -q -e 'library(bigrquerystorage)'
+

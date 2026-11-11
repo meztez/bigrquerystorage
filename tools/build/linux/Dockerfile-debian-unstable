@@ -20,7 +20,7 @@ RUN R -q -e 'pak::local_install_deps(upgrade = FALSE)'
 # -------------------------------------------------------------------------
 # FIXME: We don't need this once grpc is in the system requirements db
 RUN apt-get install -y libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc \
-                       pkg-config
+                       libzstd-dev liblz4-dev pkg-config
 
 # -------------------------------------------------------------------------
 # Call R CMD build first, so we get rid of Makevars, .o, .so, etc.

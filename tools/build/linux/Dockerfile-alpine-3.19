@@ -18,7 +18,7 @@ RUN apk del openssl-dev cmake linux-headers
 
 # -------------------------------------------------------------------------
 # FIXME: We don't need this once grpc is in the system requirements db
-RUN apk add grpc-dev protobuf-dev re2-dev c-ares-dev
+RUN apk add grpc-dev protobuf-dev re2-dev c-ares-dev zstd-dev lz4-dev
 
 # -------------------------------------------------------------------------
 # Call R CMD build first, so we get rid of Makevars, .o, .so, etc.

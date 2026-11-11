@@ -19,7 +19,7 @@ RUN yum remove -y openssl-devel
 
 # -------------------------------------------------------------------------
 # FIXME: We don't need this once grpc is in the system requirements db
-RUN dnf install -y grpc-devel pkgconf
+RUN dnf install -y grpc-devel pkgconf libzstd-devel lz4-devel
 
 # -------------------------------------------------------------------------
 # Call R CMD build first, so we get rid of Makevars, .o, .so, etc.
