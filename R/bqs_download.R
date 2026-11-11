@@ -58,7 +58,11 @@ bqs_table_download <- function(
     max_stream_count = 0L,
     compression = c("auto", "zstd", "lz4", "none")) {
   # Parameters validation
-  bqs_table_name <- unlist(strsplit(unlist(x), "\\.|:"))
+  if (inherits(x, "bq_table")) {
+    bqs_table_name <- c(x$project, x$dataset, x$table)
+  } else {
+    bqs_table_name <- unlist(strsplit(unlist(x), "\\.|:"))
+  }
   assertthat::assert_that(length(bqs_table_name) >= 3)
   assertthat::assert_that(is.character(row_restriction), length(row_restriction) == 1)
   assertthat::assert_that(is.character(selected_fields))

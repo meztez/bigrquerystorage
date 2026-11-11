@@ -183,6 +183,7 @@ public:
                      const std::string& service_configuration)
     : cred_(cred), target_(target), service_configuration_(service_configuration) {
     EnsureChannels(1);
+    EnsureWriteChannels(1);
   }
   void SetClientInfo(const std::string &client_info) {
     client_info_ = client_info;
@@ -200,6 +201,164 @@ public:
       channel_arguments.SetInt("bigrquerystorage.channel_id", static_cast<int>(stubs_.size()));
       stubs_.push_back(BigQueryRead::NewStub(
         grpc::CreateCustomChannel(target_, cred_, channel_arguments)));
+    }
+  }
+
+  void EnsureWriteChannels(size_t n) {
+    while (write_stubs_.size() < n) {
+      grpc::ChannelArguments channel_arguments;
+      channel_arguments.SetMaxReceiveMessageSize(134217728);
+      channel_arguments.SetMaxSendMessageSize(134217728);
+      channel_arguments.SetServiceConfigJSON(service_configuration_);
+      channel_arguments.SetInt("grpc.use_local_subchannel_pool", 1);
+      channel_arguments.SetInt("bigrquerystorage.write_channel_id", static_cast<int>(write_stubs_.size()));
+      write_stubs_.push_back(google::cloud::bigquery::storage::v1::BigQueryWrite::NewStub(
+        grpc::CreateCustomChannel(target_, cred_, channel_arguments)));
+    }
+  }
+
+  google::cloud::bigquery::storage::v1::WriteStream CreateWriteStream(
+      const std::string& parent,
+      google::cloud::bigquery::storage::v1::WriteStream_Type stream_type) {
+    google::cloud::bigquery::storage::v1::CreateWriteStreamRequest req;
+    req.set_parent(parent);
+    req.mutable_write_stream()->set_type(stream_type);
+
+    grpc::ClientContext context;
+    context.AddMetadata("x-goog-request-params", "parent=" + parent);
+    context.AddMetadata("x-goog-api-client", client_info_);
+
+    google::cloud::bigquery::storage::v1::WriteStream resp;
+    grpc::Status status = write_stubs_[0]->CreateWriteStream(&context, req, &resp);
+    if (!status.ok()) {
+      std::string err = "gRPC method CreateWriteStream error -> " + status.error_message();
+      Rcpp::stop(err.c_str());
+    }
+    return resp;
+  }
+
+  int64_t FinalizeWriteStream(const std::string& stream_name) {
+    google::cloud::bigquery::storage::v1::FinalizeWriteStreamRequest req;
+    req.set_name(stream_name);
+
+    grpc::ClientContext context;
+    context.AddMetadata("x-goog-request-params", "name=" + stream_name);
+    context.AddMetadata("x-goog-api-client", client_info_);
+
+    google::cloud::bigquery::storage::v1::FinalizeWriteStreamResponse resp;
+    grpc::Status status = write_stubs_[0]->FinalizeWriteStream(&context, req, &resp);
+    if (!status.ok()) {
+      std::string err = "gRPC method FinalizeWriteStream error -> " + status.error_message();
+      Rcpp::stop(err.c_str());
+    }
+    return resp.row_count();
+  }
+
+  void BatchCommitWriteStreams(const std::string& parent,
+                               const std::vector<std::string>& stream_names) {
+    google::cloud::bigquery::storage::v1::BatchCommitWriteStreamsRequest req;
+    req.set_parent(parent);
+    for (const auto& s : stream_names) {
+      req.add_write_streams(s);
+    }
+
+    grpc::ClientContext context;
+    context.AddMetadata("x-goog-request-params", "parent=" + parent);
+    context.AddMetadata("x-goog-api-client", client_info_);
+
+    google::cloud::bigquery::storage::v1::BatchCommitWriteStreamsResponse resp;
+    grpc::Status status = write_stubs_[0]->BatchCommitWriteStreams(&context, req, &resp);
+    if (!status.ok()) {
+      std::string err = "gRPC method BatchCommitWriteStreams error -> " + status.error_message();
+      Rcpp::stop(err.c_str());
+    }
+    if (!resp.has_commit_time() || resp.stream_errors_size() > 0) {
+      std::string err = "gRPC method BatchCommitWriteStreams failed";
+      if (resp.stream_errors_size() > 0) {
+        err += ": " + resp.stream_errors(0).error_message();
+      }
+      Rcpp::stop(err.c_str());
+    }
+  }
+
+  void AppendArrowBatches(const std::string& stream_name,
+                          const std::string& schema_bytes,
+                          const std::vector<std::string>& batches,
+                          bool quiet) {
+    if (batches.empty()) return;
+
+    grpc::ClientContext context;
+    context.AddMetadata("x-goog-request-params", "write_stream=" + stream_name);
+    context.AddMetadata("x-goog-api-client", client_info_);
+
+    RProgress::RProgress pb(
+        "\033[42m\033[30mUploading (:percent)\033[39m\033[49m [:bar] eta[:eta|:elapsed]");
+    pb.set_cursor_char(">");
+    pb.set_total(static_cast<double>(batches.size()));
+
+    auto stream = write_stubs_[0]->AppendRows(&context);
+
+    std::atomic<bool> write_failed{false};
+    std::string resp_error;
+    std::atomic<size_t> acked{0};
+
+    std::thread reader_thread([&]() {
+      google::cloud::bigquery::storage::v1::AppendRowsResponse resp;
+      while (stream->Read(&resp)) {
+        if (resp.has_error()) {
+          std::string err = "gRPC method AppendRows row error (" +
+            std::to_string(resp.error().code()) + ") -> " + resp.error().message();
+          for (int j = 0; j < resp.row_errors_size() && j < 5; j++) {
+            err += "\n  Row " + std::to_string(resp.row_errors(j).index()) + ": " +
+              resp.row_errors(j).message();
+          }
+          resp_error = err;
+          write_failed.store(true);
+          context.TryCancel();
+          break;
+        }
+        acked.fetch_add(1);
+      }
+    });
+
+    try {
+      for (size_t i = 0; i < batches.size(); i++) {
+        if (write_failed.load()) break;
+        Rcpp::checkUserInterrupt();
+
+        google::cloud::bigquery::storage::v1::AppendRowsRequest req;
+        if (i == 0) {
+          req.set_write_stream(stream_name);
+          req.mutable_arrow_rows()->mutable_writer_schema()->set_serialized_schema(schema_bytes);
+        }
+        req.mutable_arrow_rows()->mutable_rows()->set_serialized_record_batch(batches[i]);
+        if (!stream->Write(req)) {
+          break;
+        }
+        if (!quiet) {
+          pb.update(std::min(0.99, static_cast<double>(acked.load()) / batches.size()));
+        }
+      }
+      stream->WritesDone();
+    } catch (...) {
+      context.TryCancel();
+      if (reader_thread.joinable()) reader_thread.join();
+      stream->Finish();
+      throw;
+    }
+
+    if (reader_thread.joinable()) reader_thread.join();
+    grpc::Status status = stream->Finish();
+
+    if (!resp_error.empty()) {
+      Rcpp::stop(resp_error.c_str());
+    }
+    if (!status.ok()) {
+      std::string err = "gRPC method AppendRows error -> " + status.error_message();
+      Rcpp::stop(err.c_str());
+    }
+    if (!quiet) {
+      pb.update(1);
     }
   }
 
@@ -428,6 +587,7 @@ private:
   std::string target_;
   std::string service_configuration_;
   std::vector<std::unique_ptr<BigQueryRead::Stub>> stubs_;
+  std::vector<std::unique_ptr<google::cloud::bigquery::storage::v1::BigQueryWrite::Stub>> write_stubs_;
   std::string client_info_;
 };
 
@@ -725,3 +885,130 @@ SEXP bqs_ipc_stream(SEXP client,
     Rcpp::Named("streams") = streams_out
   );
 }
+
+// Parse an Arrow IPC stream buffer into the serialized Schema message,
+// individual serialized RecordBatch messages, and total row count.
+static int64_t split_arrow_ipc_stream(const uint8_t* data,
+                                      size_t len,
+                                      std::string* schema_out,
+                                      std::vector<std::string>* batches_out) {
+  int64_t total_rows = 0;
+  size_t pos = 0;
+  while (pos + 8 <= len) {
+    uint32_t continuation = 0;
+    int32_t meta_len = 0;
+    std::memcpy(&continuation, data + pos, 4);
+    if (continuation == 0xFFFFFFFFu) {
+      std::memcpy(&meta_len, data + pos + 4, 4);
+      if (meta_len <= 0) {
+        break; // EOS marker (0xFFFFFFFF 0x00000000)
+      }
+    } else {
+      meta_len = static_cast<int32_t>(continuation);
+    }
+    if (pos + 8 + static_cast<size_t>(meta_len) > len) {
+      Rcpp::stop("Invalid Arrow IPC stream: truncated metadata.");
+    }
+    const uint8_t* fb = data + pos + 8;
+    int32_t root_off = 0;
+    std::memcpy(&root_off, fb, 4);
+    int32_t vtable_rel = 0;
+    std::memcpy(&vtable_rel, fb + root_off, 4);
+    int32_t vtable_off = root_off - vtable_rel;
+    uint16_t vtable_len = 0;
+    std::memcpy(&vtable_len, fb + vtable_off, 2);
+
+    uint8_t header_type = 0;
+    if (vtable_len >= 8) {
+      uint16_t ht_off = 0;
+      std::memcpy(&ht_off, fb + vtable_off + 6, 2);
+      if (ht_off > 0) {
+        header_type = fb[root_off + ht_off];
+      }
+    }
+    int64_t body_len = 0;
+    if (vtable_len >= 12) {
+      uint16_t bl_off = 0;
+      std::memcpy(&bl_off, fb + vtable_off + 10, 2);
+      if (bl_off > 0) {
+        std::memcpy(&body_len, fb + root_off + bl_off, 8);
+      }
+    }
+    size_t msg_len = 8 + static_cast<size_t>(meta_len) + static_cast<size_t>(body_len);
+    if (pos + msg_len > len) {
+      Rcpp::stop("Invalid Arrow IPC stream: truncated message body.");
+    }
+    if (header_type == 1) {
+      schema_out->assign(reinterpret_cast<const char*>(data + pos), msg_len);
+    } else if (header_type == 3) {
+      batches_out->emplace_back(reinterpret_cast<const char*>(data + pos), msg_len);
+      // Extract RecordBatch.length (field 0 of RecordBatch table, header is field 2 of Message)
+      if (vtable_len >= 10) {
+        uint16_t hdr_off = 0;
+        std::memcpy(&hdr_off, fb + vtable_off + 8, 2);
+        if (hdr_off > 0) {
+          int32_t hdr_uoff = 0;
+          std::memcpy(&hdr_uoff, fb + root_off + hdr_off, 4);
+          int32_t rb_off = root_off + hdr_off + hdr_uoff;
+          int32_t rb_vt_rel = 0;
+          std::memcpy(&rb_vt_rel, fb + rb_off, 4);
+          int32_t rb_vt_off = rb_off - rb_vt_rel;
+          uint16_t rb_vt_len = 0;
+          std::memcpy(&rb_vt_len, fb + rb_vt_off, 2);
+          if (rb_vt_len >= 6) {
+            uint16_t len_off = 0;
+            std::memcpy(&len_off, fb + rb_vt_off + 4, 2);
+            if (len_off > 0) {
+              int64_t rb_rows = 0;
+              std::memcpy(&rb_rows, fb + rb_off + len_off, 8);
+              total_rows += rb_rows;
+            }
+          }
+        }
+      }
+    }
+    pos += msg_len;
+  }
+  return total_rows;
+}
+
+// [[Rcpp::export(rng=false)]]
+double bqs_ipc_write(SEXP client,
+                     std::string project,
+                     std::string dataset,
+                     std::string table,
+                     Rcpp::RawVector ipc_bytes,
+                     std::string stream_type = "PENDING",
+                     bool quiet = false) {
+  Rcpp::XPtr<BigQueryReadClient> client_ptr(client);
+  std::string parent = "projects/" + project + "/datasets/" + dataset + "/tables/" + table;
+
+  std::string schema_bytes;
+  std::vector<std::string> batches;
+  int64_t total_rows = split_arrow_ipc_stream(RAW(ipc_bytes), ipc_bytes.size(), &schema_bytes, &batches);
+  if (batches.empty()) {
+    return 0;
+  }
+
+  int64_t committed_rows = total_rows;
+  if (stream_type == "DEFAULT") {
+    std::string stream_name = parent + "/streams/_default";
+    client_ptr->AppendArrowBatches(stream_name, schema_bytes, batches, quiet);
+  } else {
+    auto ws = client_ptr->CreateWriteStream(
+      parent,
+      google::cloud::bigquery::storage::v1::WriteStream_Type_PENDING
+    );
+    std::string stream_name = ws.name();
+    client_ptr->AppendArrowBatches(stream_name, schema_bytes, batches, quiet);
+    committed_rows = client_ptr->FinalizeWriteStream(stream_name);
+    client_ptr->BatchCommitWriteStreams(parent, {stream_name});
+  }
+
+  if (!quiet) {
+    REprintf("Uploaded %lld rows in %zu messages.\n",
+             static_cast<long long>(committed_rows), batches.size());
+  }
+  return static_cast<double>(committed_rows);
+}
+

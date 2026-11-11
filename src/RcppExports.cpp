@@ -76,6 +76,22 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// bqs_ipc_write
+double bqs_ipc_write(SEXP client, std::string project, std::string dataset, std::string table, Rcpp::RawVector ipc_bytes, std::string stream_type, bool quiet);
+RcppExport SEXP _bigrquerystorage_bqs_ipc_write(SEXP clientSEXP, SEXP projectSEXP, SEXP datasetSEXP, SEXP tableSEXP, SEXP ipc_bytesSEXP, SEXP stream_typeSEXP, SEXP quietSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< SEXP >::type client(clientSEXP);
+    Rcpp::traits::input_parameter< std::string >::type project(projectSEXP);
+    Rcpp::traits::input_parameter< std::string >::type dataset(datasetSEXP);
+    Rcpp::traits::input_parameter< std::string >::type table(tableSEXP);
+    Rcpp::traits::input_parameter< Rcpp::RawVector >::type ipc_bytes(ipc_bytesSEXP);
+    Rcpp::traits::input_parameter< std::string >::type stream_type(stream_typeSEXP);
+    Rcpp::traits::input_parameter< bool >::type quiet(quietSEXP);
+    rcpp_result_gen = Rcpp::wrap(bqs_ipc_write(client, project, dataset, table, ipc_bytes, stream_type, quiet));
+    return rcpp_result_gen;
+END_RCPP
+}
 // bqs_convert_stream
 SEXP bqs_convert_stream(SEXP stream_xptr, SEXP ptype_df, std::string bigint, Rcpp::Function na_convert_stream, Rcpp::Function na_convert_stream_quiet);
 RcppExport SEXP _bigrquerystorage_bqs_convert_stream(SEXP stream_xptrSEXP, SEXP ptype_dfSEXP, SEXP bigintSEXP, SEXP na_convert_streamSEXP, SEXP na_convert_stream_quietSEXP) {
@@ -125,6 +141,18 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// bqs_encode_decimal
+Rcpp::List bqs_encode_decimal(SEXP x, int scale, int bitwidth);
+RcppExport SEXP _bigrquerystorage_bqs_encode_decimal(SEXP xSEXP, SEXP scaleSEXP, SEXP bitwidthSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< SEXP >::type x(xSEXP);
+    Rcpp::traits::input_parameter< int >::type scale(scaleSEXP);
+    Rcpp::traits::input_parameter< int >::type bitwidth(bitwidthSEXP);
+    rcpp_result_gen = Rcpp::wrap(bqs_encode_decimal(x, scale, bitwidth));
+    return rcpp_result_gen;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_bigrquerystorage_bqs_set_log_verbosity", (DL_FUNC) &_bigrquerystorage_bqs_set_log_verbosity, 1},
@@ -132,10 +160,12 @@ static const R_CallMethodDef CallEntries[] = {
     {"_bigrquerystorage_grpc_version", (DL_FUNC) &_bigrquerystorage_grpc_version, 0},
     {"_bigrquerystorage_bqs_client", (DL_FUNC) &_bigrquerystorage_bqs_client, 6},
     {"_bigrquerystorage_bqs_ipc_stream", (DL_FUNC) &_bigrquerystorage_bqs_ipc_stream, 15},
+    {"_bigrquerystorage_bqs_ipc_write", (DL_FUNC) &_bigrquerystorage_bqs_ipc_write, 7},
     {"_bigrquerystorage_bqs_convert_stream", (DL_FUNC) &_bigrquerystorage_bqs_convert_stream, 5},
     {"_bigrquerystorage_bqs_schema_flags", (DL_FUNC) &_bigrquerystorage_bqs_schema_flags, 1},
     {"_bigrquerystorage_bqs_postprocess", (DL_FUNC) &_bigrquerystorage_bqs_postprocess, 4},
     {"_bigrquerystorage_bqs_collect_streams", (DL_FUNC) &_bigrquerystorage_bqs_collect_streams, 3},
+    {"_bigrquerystorage_bqs_encode_decimal", (DL_FUNC) &_bigrquerystorage_bqs_encode_decimal, 3},
     {NULL, NULL, 0}
 };
 

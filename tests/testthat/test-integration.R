@@ -279,3 +279,109 @@ test_that("type, compression, and Decimal128 fast path work", {
   }
 })
 
+# Upload (BigQueryWrite) --------------------------------------------------
+
+test_that("bqs_table_upload supports all types, nested structs, repeated fields, and dispositions", {
+  auth_fn()
+
+  ds <- bigrquery::bq_test_dataset()
+
+  df <- tibble::tibble(
+    int_col = c(1L, 2L, NA_integer_),
+    int64_col = bit64::as.integer64(c("9223372036854775295", "-42", NA)),
+    dbl_col = c(1.5, -2.5, NA_real_),
+    lgl_col = c(TRUE, FALSE, NA),
+    chr_col = c("hello", "\U0001f603", NA_character_),
+    fct_col = factor(c("a", "b", NA)),
+    bytes_col = blob::as_blob(list(as.raw(c(1, 2)), as.raw(c(3, 4, 5)), NULL)),
+    date_col = as.Date(c("2024-01-01", "2024-01-02", NA)),
+    time_col = hms::hms(hours = c(1, 2, NA), minutes = c(3, 4, NA), seconds = c(5.5, 6.5, NA)),
+    ts_col = as.POSIXct(c("2024-01-01 01:02:03", "2024-01-02 04:05:06", NA), tz = "UTC"),
+    geo_col = wk::wkt(c("POINT (30 10)", "POINT (15 5)", NA)),
+    struct_col = tibble::tibble(
+      x = c(10L, 11L, NA_integer_),
+      y = c("u", "v", NA_character_),
+      big = bit64::as.integer64(c("9223372036854775295", "-9007199254740993", NA)),
+      nested_s = tibble::tibble(deep_big = bit64::as.integer64(c("9223372036854775295", "-9007199254740993", NA)))
+    ),
+    rep_int_col = list(1:3, integer(0), 4:5),
+    rep_struct_col = list(
+      tibble::tibble(a = bit64::as.integer64(c("9223372036854775295", "2")), b = c("p", "q")),
+      tibble::tibble(a = bit64::as.integer64(character(0)), b = character(0)),
+      tibble::tibble(a = bit64::as.integer64("-9007199254740993"), b = "r")
+    )
+  )
+
+  tb <- bigrquery::bq_table(ds, "test_upload_all")
+
+  # CREATE_NEVER fails when table does not exist
+  expect_error(
+    bqs_table_upload(tb, df, create_disposition = "CREATE_NEVER", quiet = TRUE),
+    "CREATE_NEVER"
+  )
+
+  # CREATE_IF_NEEDED creates table and uploads rows
+  bqs_table_upload(tb, df, quiet = TRUE)
+  out <- bqs_table_download(tb, tb$project, bigint = "integer64", quiet = TRUE)
+  expect_equal(nrow(out), 3L)
+  expect_identical(out$int64_col, df$int64_col)
+  expect_identical(out$chr_col, df$chr_col)
+  expect_identical(out$fct_col, as.character(df$fct_col))
+  expect_identical(out$bytes_col, df$bytes_col)
+  expect_identical(out$date_col, df$date_col)
+  expect_equal(out$time_col, df$time_col)
+  expect_equal(out$ts_col, df$ts_col)
+  expect_identical(out$struct_col$y, df$struct_col$y)
+  expect_identical(out$struct_col$big, df$struct_col$big)
+  expect_identical(out$struct_col$nested_s$deep_big, df$struct_col$nested_s$deep_big)
+  expect_identical(out$rep_int_col[[1]], bit64::as.integer64(1:3))
+  expect_identical(out$rep_struct_col[[1]]$a, df$rep_struct_col[[1]]$a)
+  expect_identical(out$rep_struct_col[[3]]$a, df$rep_struct_col[[3]]$a)
+  expect_identical(out$rep_struct_col[[1]]$b, c("p", "q"))
+
+  # WRITE_EMPTY fails on non-empty table
+  expect_error(
+    bqs_table_upload(tb, df[1, ], write_disposition = "WRITE_EMPTY", quiet = TRUE),
+    "WRITE_EMPTY"
+  )
+
+  # WRITE_APPEND appends rows
+  bqs_table_upload(tb, df[1, ], write_disposition = "WRITE_APPEND", quiet = TRUE)
+  expect_equal(nrow(bqs_table_download(tb, tb$project, bigint = "integer64", quiet = TRUE)), 4L)
+
+  # WRITE_TRUNCATE replaces rows
+  bqs_table_upload(tb, df[1:2, ], write_disposition = "WRITE_TRUNCATE", quiet = TRUE)
+  expect_equal(nrow(bqs_table_download(tb, tb$project, bigint = "integer64", quiet = TRUE)), 2L)
+})
+
+test_that("bqs_table_upload supports NUMERIC, BIGNUMERIC, DATETIME, and arrow stream input", {
+  auth_fn()
+
+  ds <- bigrquery::bq_test_dataset()
+
+  tb_num <- bigrquery::bq_table(ds, "test_upload_num")
+  df_num <- tibble::tibble(
+    num_col = c(12345.6789, -67.89, NA_real_),
+    bn_col = c("12345.6789", "-0.5", NA_character_),
+    dt_col = as.POSIXct(c("2024-01-01 01:02:03", "2024-01-02 04:05:06", NA), tz = "UTC")
+  )
+  fields_num <- list(
+    bigrquery::bq_field("num_col", "NUMERIC"),
+    bigrquery::bq_field("bn_col", "BIGNUMERIC"),
+    bigrquery::bq_field("dt_col", "DATETIME")
+  )
+  bqs_table_upload(tb_num, df_num, fields = fields_num, quiet = TRUE)
+  out_num <- bqs_table_download(tb_num, tb_num$project, quiet = TRUE)
+  expect_equal(out_num$num_col, df_num$num_col)
+  expect_equal(out_num$bn_col, c(12345.6789, -0.5, NA_real_))
+  expect_equal(out_num$dt_col, df_num$dt_col)
+
+  # Upload directly from a nanoarrow_array_stream
+  stream <- bqs_table_download(tb_num, tb_num$project, type = "arrow", quiet = TRUE)
+  tb_arrow <- bigrquery::bq_table(ds, "test_upload_arrow")
+  bqs_table_upload(tb_arrow, stream, quiet = TRUE)
+  out_arrow <- bqs_table_download(tb_arrow, tb_arrow$project, quiet = TRUE)
+  expect_equal(out_arrow, out_num)
+})
+
+

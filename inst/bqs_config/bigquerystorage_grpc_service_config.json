@@ -56,6 +56,61 @@
           "UNAVAILABLE"
         ]
       }
+    },
+    {
+      "name": [
+        {
+          "service": "google.cloud.bigquery.storage.v1.BigQueryWrite",
+          "method": "CreateWriteStream"
+        },
+        {
+          "service": "google.cloud.bigquery.storage.v1.BigQueryWrite",
+          "method": "FinalizeWriteStream"
+        },
+        {
+          "service": "google.cloud.bigquery.storage.v1.BigQueryWrite",
+          "method": "BatchCommitWriteStreams"
+        },
+        {
+          "service": "google.cloud.bigquery.storage.v1.BigQueryWrite",
+          "method": "FlushRows"
+        },
+        {
+          "service": "google.cloud.bigquery.storage.v1.BigQueryWrite",
+          "method": "GetWriteStream"
+        }
+      ],
+      "timeout": "600s",
+      "retryPolicy": {
+        "maxAttempts": 3,
+        "initialBackoff": "0.100s",
+        "maxBackoff": "60s",
+        "backoffMultiplier": 1.3,
+        "retryableStatusCodes": [
+          "DEADLINE_EXCEEDED",
+          "UNAVAILABLE"
+        ]
+      }
+    },
+    {
+      "name": [
+        {
+          "service": "google.cloud.bigquery.storage.v1.BigQueryWrite",
+          "method": "AppendRows"
+        }
+      ],
+      "timeout": "86400s",
+      "maxRequestMessageBytes": "20971520",
+      "maxResponseMessageBytes": "10485760",
+      "retryPolicy": {
+        "maxAttempts": 3,
+        "initialBackoff": "0.100s",
+        "maxBackoff": "60s",
+        "backoffMultiplier": 1.3,
+        "retryableStatusCodes": [
+          "UNAVAILABLE"
+        ]
+      }
     }
   ]
 }

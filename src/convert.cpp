@@ -365,7 +365,7 @@ SEXP bqs_convert_stream(SEXP stream_xptr,
       int64_t offset = child->offset;
       int64_t null_count = child->null_count;
       const uint8_t* valid = static_cast<const uint8_t*>(child->buffers[0]);
-      const __int128* vals = static_cast<const __int128*>(child->buffers[1]);
+      __extension__ const __int128* vals = static_cast<const __int128*>(child->buffers[1]);
       if (null_count == 0 || valid == nullptr) {
         for (int64_t i = 0; i < len; i++) {
           out_ptr[pos + i] = static_cast<double>(vals[offset + i]) * scale_mult;
@@ -952,3 +952,195 @@ SEXP bqs_collect_streams(Rcpp::List readers, SEXP schema_reader, int n_threads) 
   }
   return out;
 }
+
+// -- Decimal128 / Decimal256 encoding for upload ------------------------------
+
+namespace {
+
+static bool parse_decimal_string(const char* s,
+                                 int scale,
+                                 int bitwidth,
+                                 uint8_t* out_bytes) {
+  int byte_width = bitwidth / 8;
+  std::memset(out_bytes, 0, byte_width);
+  if (!s) return false;
+  while (*s == ' ' || *s == '\t') s++;
+  if (*s == '\0') return false;
+
+  bool neg = false;
+  if (*s == '-') {
+    neg = true;
+    s++;
+  } else if (*s == '+') {
+    s++;
+  }
+
+  // Accumulate decimal digits into a little-endian uint32 limb array (8 limbs = 256 bits)
+  uint32_t limbs[8] = {0};
+  auto mul10_add = [&](uint32_t digit) {
+    uint64_t carry = digit;
+    for (int i = 0; i < 8; i++) {
+      uint64_t cur = static_cast<uint64_t>(limbs[i]) * 10ULL + carry;
+      limbs[i] = static_cast<uint32_t>(cur & 0xFFFFFFFFULL);
+      carry = cur >> 32;
+    }
+  };
+
+  bool seen_dot = false;
+  bool seen_digit = false;
+  int frac_digits = 0;
+  for (; *s != '\0'; s++) {
+    char c = *s;
+    if (c == '.') {
+      if (seen_dot) return false;
+      seen_dot = true;
+      continue;
+    }
+    if (c < '0' || c > '9') break;
+    seen_digit = true;
+    if (seen_dot) {
+      if (frac_digits < scale) {
+        mul10_add(static_cast<uint32_t>(c - '0'));
+        frac_digits++;
+      } else if (frac_digits == scale) {
+        // Round half away from zero on next digit
+        if (c >= '5') {
+          uint64_t carry = 1;
+          for (int i = 0; i < 8 && carry; i++) {
+            uint64_t cur = static_cast<uint64_t>(limbs[i]) + carry;
+            limbs[i] = static_cast<uint32_t>(cur & 0xFFFFFFFFULL);
+            carry = cur >> 32;
+          }
+        }
+        frac_digits++;
+      }
+    } else {
+      mul10_add(static_cast<uint32_t>(c - '0'));
+    }
+  }
+  if (!seen_digit) return false;
+  while (frac_digits < scale) {
+    mul10_add(0);
+    frac_digits++;
+  }
+
+  if (neg) {
+    // Two's complement negate across all 8 limbs
+    uint64_t carry = 1;
+    for (int i = 0; i < 8; i++) {
+      uint64_t cur = static_cast<uint64_t>(~limbs[i]) + carry;
+      limbs[i] = static_cast<uint32_t>(cur & 0xFFFFFFFFULL);
+      carry = cur >> 32;
+    }
+  }
+
+  std::memcpy(out_bytes, limbs, byte_width);
+  return true;
+}
+
+static void encode_double_to_decimal(double v,
+                                     int scale,
+                                     int bitwidth,
+                                     uint8_t* out_bytes) {
+  int byte_width = bitwidth / 8;
+  if (!R_finite(v)) {
+    std::memset(out_bytes, 0, byte_width);
+    return;
+  }
+#if defined(__SIZEOF_INT128__)
+  if (scale <= 9) {
+    double scaled = std::round(v * std::pow(10.0, scale));
+    __extension__ __int128 val = static_cast<__int128>(scaled);
+    std::memcpy(out_bytes, &val, 16);
+    if (byte_width == 32) {
+      std::memset(out_bytes + 16, val < 0 ? 0xFF : 0x00, 16);
+    }
+    return;
+  }
+#endif
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "%.*f", std::min(scale, 15), v);
+  parse_decimal_string(buf, scale, bitwidth, out_bytes);
+}
+
+} // namespace
+
+// Convert an R numeric, integer, integer64, or character vector to a
+// little-endian Decimal128 (bitwidth=128) or Decimal256 (bitwidth=256) buffer
+// and accompanying validity bitmap buffer.
+// [[Rcpp::export(rng=false)]]
+Rcpp::List bqs_encode_decimal(SEXP x, int scale = 9, int bitwidth = 128) {
+  if (bitwidth != 128 && bitwidth != 256) {
+    Rcpp::stop("bitwidth must be 128 or 256.");
+  }
+  int byte_width = bitwidth / 8;
+  R_xlen_t n = XLENGTH(x);
+  Rcpp::RawVector data_buf(n * byte_width);
+  uint8_t* dst = RAW(data_buf);
+
+  R_xlen_t valid_bytes = (n + 7) / 8;
+  Rcpp::RawVector valid_buf(valid_bytes);
+  uint8_t* valid = RAW(valid_buf);
+  std::memset(valid, 0, valid_bytes);
+  R_xlen_t null_count = 0;
+
+  bool is_i64 = Rf_inherits(x, "integer64") && TYPEOF(x) == REALSXP;
+
+  if (is_i64) {
+    const int64_t* vals = reinterpret_cast<const int64_t*>(REAL(x));
+    for (R_xlen_t i = 0; i < n; i++) {
+      int64_t v = vals[i];
+      if (v == static_cast<int64_t>(1ULL << 63)) {
+        null_count++;
+      } else {
+        valid[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+        char s[32];
+        std::snprintf(s, sizeof(s), "%lld", static_cast<long long>(v));
+        parse_decimal_string(s, scale, bitwidth, dst + i * byte_width);
+      }
+    }
+  } else if (TYPEOF(x) == REALSXP) {
+    const double* vals = REAL(x);
+    for (R_xlen_t i = 0; i < n; i++) {
+      double v = vals[i];
+      if (ISNA(v) || ISNAN(v)) {
+        null_count++;
+      } else {
+        valid[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+        encode_double_to_decimal(v, scale, bitwidth, dst + i * byte_width);
+      }
+    }
+  } else if (TYPEOF(x) == INTSXP) {
+    const int* vals = INTEGER(x);
+    for (R_xlen_t i = 0; i < n; i++) {
+      int v = vals[i];
+      if (v == NA_INTEGER) {
+        null_count++;
+      } else {
+        valid[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+        encode_double_to_decimal(static_cast<double>(v), scale, bitwidth, dst + i * byte_width);
+      }
+    }
+  } else if (TYPEOF(x) == STRSXP) {
+    for (R_xlen_t i = 0; i < n; i++) {
+      SEXP elt = STRING_ELT(x, i);
+      if (elt == NA_STRING) {
+        null_count++;
+      } else if (parse_decimal_string(CHAR(elt), scale, bitwidth, dst + i * byte_width)) {
+        valid[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+      } else {
+        null_count++;
+      }
+    }
+  } else {
+    Rcpp::stop("Unsupported vector type for NUMERIC/BIGNUMERIC conversion.");
+  }
+
+  return Rcpp::List::create(
+    Rcpp::Named("data") = data_buf,
+    Rcpp::Named("validity") = null_count > 0 ? SEXP(valid_buf) : R_NilValue,
+    Rcpp::Named("null_count") = static_cast<int>(null_count),
+    Rcpp::Named("length") = static_cast<int>(n)
+  );
+}
+

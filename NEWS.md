@@ -1,5 +1,24 @@
 # bigrquerystorage (development version)
 
+## New features
+
+* Add `bqs_table_upload()` implementing the `BigQueryWrite` gRPC interface using
+  Arrow `RecordBatch` serialization (`AppendRows` with `ArrowData`):
+  * Supports `PENDING` streams (atomic multi-batch commit via
+    `CreateWriteStream`, `FinalizeWriteStream`, and `BatchCommitWriteStreams`)
+    and `DEFAULT` streams (`_default`).
+  * Supports `create_disposition = c("CREATE_IF_NEEDED", "CREATE_NEVER")` and
+    `write_disposition = c("WRITE_APPEND", "WRITE_EMPTY", "WRITE_TRUNCATE")` so
+    upstream `bigrquery::bq_table_upload()` can delegate directly to
+    `bqs_table_upload()`.
+  * Accepts `data.frame`, `tibble`, `data.table`, `nanoarrow_array`, and
+    `nanoarrow_array_stream` inputs, with full support for `INT64`
+    (`bit64::integer64`), `NUMERIC` (`Decimal128`), `BIGNUMERIC` (`Decimal256`),
+    `DATE`, `TIME` (`hms`), `DATETIME`, `TIMESTAMP`, `BYTES` (`blob`),
+    `GEOGRAPHY` (`wk::wkt`), nested `STRUCT` / `RECORD`, and `REPEATED` columns.
+* `bqs_table_download()` now accepts a `bigrquery::bq_table` object directly in
+  `x` in addition to character table references.
+
 # bigrquerystorage 1.3.0
 
 ## Performance

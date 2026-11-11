@@ -21,6 +21,10 @@ bqs_ipc_stream <- function(client, project, dataset, table, parent, n, selected_
     .Call(`_bigrquerystorage_bqs_ipc_stream`, client, project, dataset, table, parent, n, selected_fields, row_restriction, sample_percentage, timestamp_seconds, timestamp_nanos, quiet, max_stream_count, compression_codec, max_threads)
 }
 
+bqs_ipc_write <- function(client, project, dataset, table, ipc_bytes, stream_type = "PENDING", quiet = FALSE) {
+    .Call(`_bigrquerystorage_bqs_ipc_write`, client, project, dataset, table, ipc_bytes, stream_type, quiet)
+}
+
 bqs_convert_stream <- function(stream_xptr, ptype_df, bigint, na_convert_stream, na_convert_stream_quiet) {
     .Call(`_bigrquerystorage_bqs_convert_stream`, stream_xptr, ptype_df, bigint, na_convert_stream, na_convert_stream_quiet)
 }
@@ -35,5 +39,9 @@ bqs_postprocess <- function(df, schema_xptr, bigint, as_bigint) {
 
 bqs_collect_streams <- function(readers, schema_reader, n_threads) {
     .Call(`_bigrquerystorage_bqs_collect_streams`, readers, schema_reader, n_threads)
+}
+
+bqs_encode_decimal <- function(x, scale = 9L, bitwidth = 128L) {
+    .Call(`_bigrquerystorage_bqs_encode_decimal`, x, scale, bitwidth)
 }
 

@@ -102,3 +102,143 @@ test_that("bqs_collect_streams decodes several IPC buffers in reader order", {
     data.frame(x = 1:6, y = c("a", "b", "c", "d", "e", "f"))
   )
 })
+
+test_that("bqs_infer_bq_fields and bqs_df_to_arrow_array handle nested and special types", {
+  df <- tibble::tibble(
+    int_col = c(1L, NA_integer_),
+    int64_col = bit64::as.integer64(c("9223372036854775295", NA)),
+    dbl_col = c(1.5, NA_real_),
+    lgl_col = c(TRUE, NA),
+    chr_col = c("abc", NA_character_),
+    fct_col = factor(c("x", NA)),
+    date_col = as.Date(c("2024-01-01", NA)),
+    time_col = hms::hms(hours = c(1, NA)),
+    ts_col = as.POSIXct(c("2024-01-01 01:02:03", NA), tz = "UTC"),
+    struct_col = tibble::tibble(a = 1:2, b = c("u", "v")),
+    rep_int_col = list(1:3, integer(0)),
+    rep_struct_col = list(
+      tibble::tibble(x = 1:2, y = c("p", "q")),
+      tibble::tibble(x = integer(0), y = character(0))
+    )
+  )
+
+  fields <- bqs_infer_bq_fields(df)
+  types <- stats::setNames(
+    vapply(fields, `[[`, character(1), "type"),
+    vapply(fields, `[[`, character(1), "name")
+  )
+  modes <- stats::setNames(
+    vapply(fields, `[[`, character(1), "mode"),
+    vapply(fields, `[[`, character(1), "name")
+  )
+
+  expect_identical(types[["int_col"]], "INT64")
+  expect_identical(types[["int64_col"]], "INT64")
+  expect_identical(types[["dbl_col"]], "FLOAT64")
+  expect_identical(types[["lgl_col"]], "BOOL")
+  expect_identical(types[["chr_col"]], "STRING")
+  expect_identical(types[["fct_col"]], "STRING")
+  expect_identical(types[["date_col"]], "DATE")
+  expect_identical(types[["time_col"]], "TIME")
+  expect_identical(types[["ts_col"]], "TIMESTAMP")
+  expect_identical(types[["struct_col"]], "RECORD")
+  expect_identical(types[["rep_int_col"]], "INT64")
+  expect_identical(modes[["rep_int_col"]], "REPEATED")
+  expect_identical(types[["rep_struct_col"]], "RECORD")
+  expect_identical(modes[["rep_struct_col"]], "REPEATED")
+
+  arr <- bqs_df_to_arrow_array(df, fields)
+  sch <- infer_nanoarrow_schema(arr)
+  expect_identical(sch$children$fct_col$format, "u")
+  expect_identical(sch$children$time_col$format, "ttu")
+  expect_identical(sch$children$ts_col$format, "tsu:UTC")
+  expect_identical(sch$children$rep_int_col$format, "+l")
+  expect_identical(sch$children$rep_struct_col$format, "+l")
+  expect_identical(sch$children$rep_struct_col$children$item$format, "+s")
+
+  ipc <- bqs_serialize_to_ipc(df, fields, row_batch_size = 1L)
+  expect_true(length(ipc) > 0)
+  reader <- read_nanoarrow(ipc)
+  b1 <- reader$get_next()
+  b2 <- reader$get_next()
+  expect_equal(b1$length, 1L)
+  expect_equal(b2$length, 1L)
+  expect_null(reader$get_next())
+})
+
+test_that("bqs_encode_decimal encodes Decimal128 and Decimal256 with NAs", {
+  num_fields <- list(
+    list(name = "num", type = "NUMERIC", mode = "NULLABLE"),
+    list(name = "bnum", type = "BIGNUMERIC", mode = "NULLABLE"),
+    list(name = "dt", type = "DATETIME", mode = "NULLABLE")
+  )
+  df <- tibble::tibble(
+    num = c(12345.6789, -67.89, NA_real_),
+    bnum = c("12345678901234567890.123456789", "-0.5", NA_character_),
+    dt = as.POSIXct(c("2024-01-01 01:02:03", "2024-01-02 04:05:06", NA), tz = "UTC")
+  )
+  arr <- bqs_df_to_arrow_array(df, num_fields)
+  sch <- infer_nanoarrow_schema(arr)
+  expect_identical(sch$children$num$format, "d:38,9")
+  expect_identical(sch$children$bnum$format, "d:76,38,256")
+  expect_identical(sch$children$dt$format, "tsu:")
+
+  res <- convert_download(arr, "integer")
+  expect_equal(res$num, c(12345.6789, -67.89, NA_real_))
+})
+
+test_that("nested INT64 in STRUCT, REPEATED RECORD, and plain data.frames serialize losslessly", {
+  big_vals <- bit64::as.integer64(c("9223372036854775295", "-9007199254740993", NA))
+
+  inner_df <- data.frame(big = big_vals, txt = c("a", "b", "c"))
+  outer_df <- data.frame(id = 1:3)
+  outer_df$s <- inner_df
+  outer_df$rep_s <- list(
+    data.frame(
+      a = bit64::as.integer64(c("9223372036854775295", "2")),
+      b = c("x", "y")
+    ),
+    data.frame(a = bit64::as.integer64(character(0)), b = character(0)),
+    data.frame(
+      a = bit64::as.integer64(c("-9007199254740993", NA)),
+      b = c("z", "w")
+    )
+  )
+
+  fields <- bqs_infer_bq_fields(outer_df)
+  ipc <- bqs_serialize_to_ipc(outer_df, fields, row_batch_size = 2L)
+  stream <- read_nanoarrow(ipc)
+  sch <- stream$get_schema()
+  out <- parse_postprocess_schema(
+    bqs_convert_stream(stream, int64_ptype(sch), "integer64", nanoarrow::convert_array_stream, convert_stream_no_warnings),
+    sch,
+    "integer64"
+  )
+  expect_identical(out$s$big, big_vals)
+  expect_identical(out$rep_s[[1]]$a, bit64::as.integer64(c("9223372036854775295", "2")))
+  expect_identical(out$rep_s[[2]]$a, bit64::as.integer64(character(0)))
+  expect_identical(out$rep_s[[3]]$a, bit64::as.integer64(c("-9007199254740993", NA)))
+
+  # Deeply nested REPEATED RECORD with nested STRUCT and nested REPEATED INT64
+  df_deep <- tibble::tibble(
+    rep_s = list(
+      tibble::tibble(
+        a = bit64::as.integer64(character(0)),
+        sub = tibble::tibble(k = bit64::as.integer64(character(0))),
+        rep_b = list()
+      ),
+      tibble::tibble(
+        a = bit64::as.integer64(c("9223372036854775295", "-9007199254740993")),
+        sub = tibble::tibble(k = bit64::as.integer64(c("9223372036854775295", "10"))),
+        rep_b = list(bit64::as.integer64(c("9223372036854775295", "11")), bit64::as.integer64("-9007199254740993"))
+      )
+    )
+  )
+  fields_deep <- bqs_infer_bq_fields(df_deep)
+  arr_deep <- bqs_df_to_arrow_array(df_deep, fields_deep)
+  out_deep <- convert_download(arr_deep, "integer64")
+  expect_identical(out_deep$rep_s[[2]]$a, df_deep$rep_s[[2]]$a)
+  expect_identical(out_deep$rep_s[[2]]$sub$k, df_deep$rep_s[[2]]$sub$k)
+  expect_identical(out_deep$rep_s[[2]]$rep_b, df_deep$rep_s[[2]]$rep_b)
+})
+

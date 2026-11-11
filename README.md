@@ -1,59 +1,82 @@
----
-output: github_document
----
 
 <!-- README.md is generated from README.Rmd. Please edit that file -->
-
-
 
 # bigrquerystorage
 
 <!-- badges: start -->
+
 [![CRAN_Status_Badge](https://www.r-pkg.org/badges/version/bigrquerystorage)](https://cran.r-project.org/package=bigrquerystorage)
 [![R-CMD-check](https://github.com/meztez/bigrquerystorage/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/meztez/bigrquerystorage/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
-![Comparing bq_table_download from bigrquery to bgs_table_download from bigrquerystorage](./docs/bigrquerystorage.gif)
+<figure>
+<img src="./docs/bigrquerystorage.gif"
+alt="Comparing bq_table_download from bigrquery to bgs_table_download from bigrquerystorage" />
+<figcaption aria-hidden="true">Comparing bq_table_download from
+bigrquery to bgs_table_download from bigrquerystorage</figcaption>
+</figure>
 
-Use [BigQuery Storage API](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1) from R.
+Use [BigQuery Storage
+API](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1)
+from R.
 
-The main utility is to replace `bigrquery::bq_table_download` method.
+The main utility is to replace `bigrquery::bq_table_download` and
+`bigrquery::bq_table_upload` methods.
 
-It supports [BigQueryRead interface](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigqueryread).
-Support for [BigQueryWrite interface](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigquerywrite) may be added in a future release.
+It supports both
+[BigQueryRead](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigqueryread)
+and
+[BigQueryWrite](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigquerywrite)
+interfaces.
 
 ## Advantages over BigQuery REST API
 
-BigQuery Storage API is not rate limited and per project quota do not apply. It is an rpc protocol
-and provides faster downloads for big results sets.
+BigQuery Storage API is not rate limited and per project quota do not
+apply. It is an rpc protocol and provides faster downloads and uploads
+using native binary Apache Arrow serialization instead of JSON.
+
+### Performance ( vs `bigrquery` JSON API)
+
+| Operation | Dataset | `bigrquery` (JSON) | `bigrquerystorage` (Arrow gRPC) | Speedup |
+|:---|:---|---:|---:|---:|
+| **Download** | `usa_names.usa_1910_current` (6.3M rows, 5 cols) | ~45.0 s | **1.9 s** | **~24x** |
+| **Download** | `samples.gsod` (`year >= 2007`, 11.3M rows, 18 cols) | \>120.0 s | **5.5 s** | **\>20x** |
+| **Download** | Synthetic table (500k rows, 6 cols) | 15.5 s | **1.2 s** | **13.4x** |
+| **Upload** | Synthetic table (500k rows, 6 cols) | 9.7 s | **3.2 s** | **3.0x** |
+| **Upload** | Synthetic table (1M rows, 6 cols) | 18.0 s | **5.0 s** | **3.6x** |
 
 ## Details
 
-This implementation uses a C++ gRPC client combined with the `nanoarrow` R package to transform
-the Arrow IPC stream into an R `tibble`, `data.frame`, `data.table`, or `nanoarrow_array_stream`.
+This implementation uses a C++ gRPC client combined with the `nanoarrow`
+R package to transform Arrow IPC streams to and from R `tibble`,
+`data.frame`, `data.table`, or `nanoarrow_array_stream`.
 
-`bqs_table_download` is the main function of this package. Other functions are helpers to
-facilitate authentication and debugging.
+`bqs_table_download` and `bqs_table_upload` are the main functions of
+this package. Other functions are helpers to facilitate authentication
+and debugging.
 
 ## Installation
 
 #### CRAN
+
 ``` r
 install.packages("bigrquerystorage")
 ```
 
 #### Github
-```r
+
+``` r
 remotes::install_github("meztez/bigrquerystorage")
 ```
 
 ### System requirements:
+
 - [gRPC](https://github.com/grpc/grpc)
 - [protoc](https://github.com/protocolbuffers/protobuf)
 
 #### Debian 11 & 12 / Ubuntu 22.04
 
-```sh
+``` sh
 # install protoc and grpc
 apt-get install -y libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc \
                    pkg-config
@@ -61,20 +84,25 @@ apt-get install -y libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc \
 
 #### Fedora 36 & 37 & 38 / Rocky Linux 9
 
-```sh
+``` sh
 # install grpc, protoc is automatically installed
 dnf install -y grpc-devel pkgconf
 ```
 
-<details><summary>Other Linux distributions</summary>
+<details>
 
-Please
-[let us know](https://github.com/meztez/bigrquerystorage/issues/new/choose)
-if these instructions do not work any more.
+<summary>
+
+Other Linux distributions
+</summary>
+
+Please [let us
+know](https://github.com/meztez/bigrquerystorage/issues/new/choose) if
+these instructions do not work any more.
 
 ##### Alpine Linux
 
-```sh
+``` sh
 apk add grpc-dev protobuf-dev re2-dev c-ares-dev
 ```
 
@@ -85,7 +113,7 @@ installation of the arrow package fails.
 
 Needs the buster-backports repository.
 
-```sh
+``` sh
 echo "deb https://deb.debian.org/debian buster-backports main" >> \
     /etc/apt/sources.list.d/backports.list && \
     apt-get update && \
@@ -94,17 +122,18 @@ apt-get install -y 'libgrpc\+\+-dev'/buster-backports \
     libprotobuf-dev/buster-backports \
     protobuf-compiler/buster-backports pkg-config
 ```
+
 ##### OpenSUSE
 
-In OpenSUSE 15.4 and 15.5 the version of the grpc package is too old,
-so installation fails. You can potentially compile a newer version of
-grpc from source.
+In OpenSUSE 15.4 and 15.5 the version of the grpc package is too old, so
+installation fails. You can potentially compile a newer version of grpc
+from source.
 
 ##### Ubuntu 20.04
 
-In Ubuntu 20.04 the version of the grpc package is too old,
-so installation fails. You can potentially compile a newer version of
-grpc from source.
+In Ubuntu 20.04 the version of the grpc package is too old, so
+installation fails. You can potentially compile a newer version of grpc
+from source.
 
 ##### CentOS 7 & 8 / RHEL 7 & 8
 
@@ -116,11 +145,11 @@ grpc from source.
 #### macOS
 
 If you use Homebrew you may install the `grpc` package, plus
-`pkg-config`. If you don't have Homebrew installed, the package will
+`pkg-config`. If you don’t have Homebrew installed, the package will
 download static builds of the system dependencies during installation.
 This works with macOS Big Sur, or later, on Intel and Arm64 machines.
 
-```sh
+``` sh
 brew install grpc pkg-config
 ```
 
@@ -134,9 +163,8 @@ Only, R 4.3.x (with Rtools43) or later is currently supported.
 
 ## Example
 
-This is a basic example which shows you how to solve a common problem. BigQuery Storage API requires
-a billing project.
-
+This is a basic example which shows you how to solve a common problem.
+BigQuery Storage API requires a billing project.
 
 ``` r
 
@@ -168,14 +196,21 @@ sprintf(
   length(unique(rows$name)),
   paste(unique(rows$state), collapse = " ")
 )
+
+# Upload a data frame using the BigQuery Storage Write API
+bqs_table_upload(
+  x = paste0(project_id, ".my_dataset.my_table"),
+  values = mtcars,
+  create_disposition = "CREATE_IF_NEEDED",
+  write_disposition = "WRITE_TRUNCATE"
+)
 ```
 
 ## Authentication
 
 Done using Google Application Default Credentials (ADC) or by recycling
-`bigrquery` authentication. Auth will be done automatically the first time
-a request is made.
-
+`bigrquery` authentication. Auth will be done automatically the first
+time a request is made.
 
 ``` r
 bqs_auth()
@@ -184,6 +219,9 @@ bqs_deauth()
 
 ## Stability
 
-Does not support AVRO output format. Report any issues to the project [issue tracker](https://github.com/meztez/bigrquerystorage/issues/new/choose).
+Does not support AVRO output format. Report any issues to the project
+[issue
+tracker](https://github.com/meztez/bigrquerystorage/issues/new/choose).
 
-Full gRPC debug trace with `bigrquerystorage:::bqs_set_log_verbosity(0)`.
+Full gRPC debug trace with
+`bigrquerystorage:::bqs_set_log_verbosity(0)`.
