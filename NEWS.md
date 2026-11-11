@@ -1,5 +1,7 @@
 # bigrquerystorage (development version)
 
+# bigrquerystorage 1.3.0
+
 ## Performance
 
 * `bqs_table_download()` is much faster than in 1.2.3 (median of two runs on a
