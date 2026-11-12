@@ -37,7 +37,9 @@
 #include <grpcpp/grpcpp.h>
 #include "google/cloud/bigquery/storage/v1/stream.pb.h"
 #include "google/cloud/bigquery/storage/v1/storage.pb.h"
+#ifdef __clang__
 # pragma GCC diagnostic ignored "-Winconsistent-missing-override"
+#endif
 # pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include "google/cloud/bigquery/storage/v1/storage.grpc.pb.h"
 #include <Rcpp.h>

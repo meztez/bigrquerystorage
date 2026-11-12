@@ -365,16 +365,20 @@ SEXP bqs_convert_stream(SEXP stream_xptr,
       int64_t offset = child->offset;
       int64_t null_count = child->null_count;
       const uint8_t* valid = static_cast<const uint8_t*>(child->buffers[0]);
-      __extension__ const __int128* vals = static_cast<const __int128*>(child->buffers[1]);
+      const uint8_t* raw_vals = static_cast<const uint8_t*>(child->buffers[1]);
       if (null_count == 0 || valid == nullptr) {
         for (int64_t i = 0; i < len; i++) {
-          out_ptr[pos + i] = static_cast<double>(vals[offset + i]) * scale_mult;
+          __extension__ __int128 v;
+          std::memcpy(&v, raw_vals + (offset + i) * 16, 16);
+          out_ptr[pos + i] = static_cast<double>(v) * scale_mult;
         }
       } else {
         for (int64_t i = 0; i < len; i++) {
           int64_t idx = offset + i;
           if ((valid[idx >> 3] >> (idx & 7)) & 1) {
-            out_ptr[pos + i] = static_cast<double>(vals[idx]) * scale_mult;
+            __extension__ __int128 v;
+            std::memcpy(&v, raw_vals + idx * 16, 16);
+            out_ptr[pos + i] = static_cast<double>(v) * scale_mult;
           } else {
             out_ptr[pos + i] = NA_REAL;
           }

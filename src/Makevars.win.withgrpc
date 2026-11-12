@@ -20,6 +20,8 @@ protos: winlibs
 	(cd ../src/protos;\
 	protoc --experimental_allow_proto3_optional --cpp_out=../../src $(PROTO_FILES);\
 	protoc --plugin=protoc-gen-grpc=$$(which grpc_cpp_plugin.exe) --grpc_out=../../src $(GRPC_FILES))
+	find ./google -type f -name '*.pb.*' -exec sed -i 's/PROTOBUF_DEPRECATED//g' {} \;
+	find ./google -type f -name '*.pb.h' -exec sed -i 's/#pragma/# pragma/g' {} \;
 	sed -i "s/OPTION/OPTIONFIX/g" google/api/field_behavior.pb.h
 
 winlibs:
