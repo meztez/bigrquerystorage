@@ -226,16 +226,23 @@ public:
     req.set_parent(parent);
     req.mutable_write_stream()->set_type(stream_type);
 
-    grpc::ClientContext context;
-    context.AddMetadata("x-goog-request-params", "parent=" + parent);
-    context.AddMetadata("x-goog-api-client", client_info_);
-
     google::cloud::bigquery::storage::v1::WriteStream resp;
-    grpc::Status status = write_stubs_[0]->CreateWriteStream(&context, req, &resp);
-    if (!status.ok()) {
-      std::string err = "gRPC method CreateWriteStream error -> " + status.error_message();
-      Rcpp::stop(err.c_str());
+    grpc::Status status;
+    for (int attempt = 0; attempt < 5; attempt++) {
+      grpc::ClientContext context;
+      context.AddMetadata("x-goog-request-params", "parent=" + parent);
+      context.AddMetadata("x-goog-api-client", client_info_);
+      status = write_stubs_[0]->CreateWriteStream(&context, req, &resp);
+      if (status.ok()) {
+        return resp;
+      }
+      if (status.error_code() != grpc::StatusCode::NOT_FOUND || attempt == 4) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(200 * (1 << attempt)));
     }
+    std::string err = "gRPC method CreateWriteStream error -> " + status.error_message();
+    Rcpp::stop(err.c_str());
     return resp;
   }
 
