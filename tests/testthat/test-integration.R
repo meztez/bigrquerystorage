@@ -384,4 +384,61 @@ test_that("bqs_table_upload supports NUMERIC, BIGNUMERIC, DATETIME, and arrow st
   expect_equal(out_arrow, out_num)
 })
 
+test_that("bqs_table_upload supports multi-stream parallel ZSTD uploads across AUTO, PENDING, and DEFAULT", {
+  auth_fn()
+
+  ds <- bigrquery::bq_test_dataset()
+  n <- 20000L
+  df_multi <- tibble::tibble(
+    id = seq_len(n),
+    val = seq_len(n) * 1.25,
+    flag = seq_len(n) %% 2L == 0L,
+    grp = rep(c("alpha", "beta", "gamma", "delta"), length.out = n)
+  )
+
+  # Multi-stream PENDING with ZSTD/auto compression
+  tb_pend <- bigrquery::bq_table(ds, "test_upload_multi_pending")
+  bqs_table_upload(
+    tb_pend,
+    df_multi,
+    stream_type = "PENDING",
+    max_stream_count = 4L,
+    row_batch_size = 2500L,
+    compression = "auto",
+    quiet = TRUE
+  )
+  out_pend <- bqs_table_download(tb_pend, tb_pend$project, quiet = TRUE)
+  out_pend <- out_pend[order(out_pend$id), ]
+  expect_equal(nrow(out_pend), n)
+  expect_identical(out_pend$id, df_multi$id)
+  expect_equal(out_pend$val, df_multi$val)
+  expect_identical(out_pend$flag, df_multi$flag)
+  expect_identical(out_pend$grp, df_multi$grp)
+
+  # Multi-stream AUTO (uses DEFAULT on brand-new table) + uncompressed WRITE_APPEND (uses PENDING)
+  tb_auto <- bigrquery::bq_table(ds, "test_upload_multi_auto")
+  bqs_table_upload(
+    tb_auto,
+    df_multi[1:10000, ],
+    stream_type = "AUTO",
+    max_stream_count = 3L,
+    row_batch_size = 2500L,
+    quiet = TRUE
+  )
+  bqs_table_upload(
+    tb_auto,
+    df_multi[10001:20000, ],
+    write_disposition = "WRITE_APPEND",
+    stream_type = "AUTO",
+    max_stream_count = 3L,
+    row_batch_size = 2500L,
+    compression = "none",
+    quiet = TRUE
+  )
+  out_auto <- bqs_table_download(tb_auto, tb_auto$project, quiet = TRUE)
+  out_auto <- out_auto[order(out_auto$id), ]
+  expect_equal(nrow(out_auto), n)
+  expect_identical(out_auto$id, df_multi$id)
+})
+
 

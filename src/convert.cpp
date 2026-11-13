@@ -15,6 +15,7 @@
 #include <vector>
 #include <Rcpp.h>
 #include <nanoarrow/r.h>
+#include "bqs_arrow_ipc.h"
 
 // -- Fast Arrow C Stream conversion helpers -----------------------------------
 
@@ -1146,5 +1147,710 @@ Rcpp::List bqs_encode_decimal(SEXP x, int scale = 9, int bitwidth = 128) {
     Rcpp::Named("null_count") = static_cast<int>(null_count),
     Rcpp::Named("length") = static_cast<int>(n)
   );
+}
+
+// -- Fast R data.frame -> Arrow C Data Interface & IPC Encoding ---------------
+
+namespace {
+
+struct OwnedSchemaPriv {
+  std::string format;
+  std::string name;
+};
+
+static void release_owned_schema(struct ArrowSchema* s) {
+  if (!s || !s->release) return;
+  if (s->children) {
+    for (int64_t i = 0; i < s->n_children; i++) {
+      if (s->children[i]) {
+        if (s->children[i]->release) s->children[i]->release(s->children[i]);
+        free(s->children[i]);
+      }
+    }
+    free(s->children);
+  }
+  if (s->dictionary) {
+    if (s->dictionary->release) s->dictionary->release(s->dictionary);
+    free(s->dictionary);
+  }
+  delete static_cast<OwnedSchemaPriv*>(s->private_data);
+  s->release = nullptr;
+}
+
+static SEXP make_leaf_schema_xptr(const char* fmt, const char* nm) {
+  SEXP xptr = PROTECT(nanoarrow_schema_owning_xptr());
+  struct ArrowSchema* s = nanoarrow_output_schema_from_xptr(xptr);
+  OwnedSchemaPriv* priv = new OwnedSchemaPriv{fmt, nm};
+  s->format = priv->format.c_str();
+  s->name = priv->name.c_str();
+  s->metadata = nullptr;
+  s->flags = ARROW_FLAG_NULLABLE;
+  s->n_children = 0;
+  s->children = nullptr;
+  s->dictionary = nullptr;
+  s->private_data = priv;
+  s->release = release_owned_schema;
+  UNPROTECT(1);
+  return xptr;
+}
+
+struct OwnedArrayPriv {
+  const void* buffers[3] = {nullptr, nullptr, nullptr};
+  std::vector<uint8_t> validity;
+  std::vector<uint8_t> buf1;
+  std::vector<uint8_t> buf2;
+};
+
+static void release_owned_array(struct ArrowArray* a) {
+  if (!a || !a->release) return;
+  if (a->children) {
+    for (int64_t i = 0; i < a->n_children; i++) {
+      if (a->children[i]) {
+        if (a->children[i]->release) a->children[i]->release(a->children[i]);
+        free(a->children[i]);
+      }
+    }
+    free(a->children);
+  }
+  delete static_cast<OwnedArrayPriv*>(a->private_data);
+  a->release = nullptr;
+}
+
+enum FastColKind {
+  FCOL_UNSUPPORTED = 0,
+  FCOL_INT32_ZC,
+  FCOL_INT64_ZC,
+  FCOL_FLOAT64_ZC,
+  FCOL_FLOAT64_FROM_INT,
+  FCOL_BOOL,
+  FCOL_DATE_INT_ZC,
+  FCOL_DATE_DBL,
+  FCOL_POSIXCT_TS,
+  FCOL_POSIXCT_DT,
+  FCOL_UTF8,
+  FCOL_FACTOR
+};
+
+struct FastColTask {
+  int col_idx = 0;
+  FastColKind kind = FCOL_UNSUPPORTED;
+  const void* r_ptr = nullptr;
+  int64_t n = 0;
+  int64_t null_count = 0;
+  OwnedArrayPriv* priv = nullptr;
+};
+
+static void execute_numeric_col_task(FastColTask& t) {
+  const int64_t n = t.n;
+  OwnedArrayPriv* priv = t.priv;
+
+  switch (t.kind) {
+    case FCOL_INT32_ZC:
+    case FCOL_DATE_INT_ZC: {
+      const int* src = static_cast<const int*>(t.r_ptr);
+      int64_t nulls = 0;
+      for (int64_t i = 0; i < n; i++) {
+        if (src[i] == NA_INTEGER) nulls++;
+      }
+      t.null_count = nulls;
+      if (nulls > 0) {
+        priv->validity.assign(static_cast<size_t>((n + 7) >> 3), 0);
+        uint8_t* v = priv->validity.data();
+        for (int64_t i = 0; i < n; i++) {
+          if (src[i] != NA_INTEGER) v[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+        }
+        priv->buffers[0] = v;
+      }
+      priv->buffers[1] = src;
+      break;
+    }
+    case FCOL_INT64_ZC: {
+      const int64_t* src = static_cast<const int64_t*>(t.r_ptr);
+      const int64_t na_i64 = static_cast<int64_t>(1ULL << 63);
+      int64_t nulls = 0;
+      for (int64_t i = 0; i < n; i++) {
+        if (src[i] == na_i64) nulls++;
+      }
+      t.null_count = nulls;
+      if (nulls > 0) {
+        priv->validity.assign(static_cast<size_t>((n + 7) >> 3), 0);
+        uint8_t* v = priv->validity.data();
+        for (int64_t i = 0; i < n; i++) {
+          if (src[i] != na_i64) v[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+        }
+        priv->buffers[0] = v;
+      }
+      priv->buffers[1] = src;
+      break;
+    }
+    case FCOL_FLOAT64_ZC: {
+      const double* src = static_cast<const double*>(t.r_ptr);
+      int64_t nulls = 0;
+      for (int64_t i = 0; i < n; i++) {
+        if (std::isnan(src[i])) nulls++;
+      }
+      t.null_count = nulls;
+      if (nulls > 0) {
+        priv->validity.assign(static_cast<size_t>((n + 7) >> 3), 0);
+        uint8_t* v = priv->validity.data();
+        for (int64_t i = 0; i < n; i++) {
+          if (!std::isnan(src[i])) v[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+        }
+        priv->buffers[0] = v;
+      }
+      priv->buffers[1] = src;
+      break;
+    }
+    case FCOL_FLOAT64_FROM_INT: {
+      const int* src = static_cast<const int*>(t.r_ptr);
+      priv->buf1.resize(static_cast<size_t>(n) * sizeof(double));
+      double* dst = reinterpret_cast<double*>(priv->buf1.data());
+      int64_t nulls = 0;
+      for (int64_t i = 0; i < n; i++) {
+        if (src[i] == NA_INTEGER) {
+          dst[i] = 0.0;
+          nulls++;
+        } else {
+          dst[i] = static_cast<double>(src[i]);
+        }
+      }
+      t.null_count = nulls;
+      if (nulls > 0) {
+        priv->validity.assign(static_cast<size_t>((n + 7) >> 3), 0);
+        uint8_t* v = priv->validity.data();
+        for (int64_t i = 0; i < n; i++) {
+          if (src[i] != NA_INTEGER) v[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+        }
+        priv->buffers[0] = v;
+      }
+      priv->buffers[1] = dst;
+      break;
+    }
+    case FCOL_BOOL: {
+      const int* src = static_cast<const int*>(t.r_ptr);
+      size_t nbytes = static_cast<size_t>((n + 7) >> 3);
+      priv->buf1.assign(nbytes, 0);
+      uint8_t* dbits = priv->buf1.data();
+      int64_t nulls = 0;
+      for (int64_t i = 0; i < n; i++) {
+        int val = src[i];
+        if (val == NA_LOGICAL) {
+          nulls++;
+        } else if (val != 0) {
+          dbits[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+        }
+      }
+      t.null_count = nulls;
+      if (nulls > 0) {
+        priv->validity.assign(nbytes, 0);
+        uint8_t* v = priv->validity.data();
+        for (int64_t i = 0; i < n; i++) {
+          if (src[i] != NA_LOGICAL) v[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+        }
+        priv->buffers[0] = v;
+      }
+      priv->buffers[1] = dbits;
+      break;
+    }
+    case FCOL_DATE_DBL: {
+      const double* src = static_cast<const double*>(t.r_ptr);
+      priv->buf1.resize(static_cast<size_t>(n) * sizeof(int32_t));
+      int32_t* dst = reinterpret_cast<int32_t*>(priv->buf1.data());
+      int64_t nulls = 0;
+      for (int64_t i = 0; i < n; i++) {
+        double v = src[i];
+        if (std::isnan(v)) {
+          dst[i] = 0;
+          nulls++;
+        } else {
+          dst[i] = static_cast<int32_t>(std::floor(v));
+        }
+      }
+      t.null_count = nulls;
+      if (nulls > 0) {
+        priv->validity.assign(static_cast<size_t>((n + 7) >> 3), 0);
+        uint8_t* v = priv->validity.data();
+        for (int64_t i = 0; i < n; i++) {
+          if (!std::isnan(src[i])) v[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+        }
+        priv->buffers[0] = v;
+      }
+      priv->buffers[1] = dst;
+      break;
+    }
+    case FCOL_POSIXCT_TS:
+    case FCOL_POSIXCT_DT: {
+      const double* src = static_cast<const double*>(t.r_ptr);
+      priv->buf1.resize(static_cast<size_t>(n) * sizeof(int64_t));
+      int64_t* dst = reinterpret_cast<int64_t*>(priv->buf1.data());
+      int64_t nulls = 0;
+      for (int64_t i = 0; i < n; i++) {
+        double v = src[i];
+        if (std::isnan(v)) {
+          dst[i] = 0;
+          nulls++;
+        } else {
+          dst[i] = static_cast<int64_t>(std::llround(v * 1000000.0));
+        }
+      }
+      t.null_count = nulls;
+      if (nulls > 0) {
+        priv->validity.assign(static_cast<size_t>((n + 7) >> 3), 0);
+        uint8_t* v = priv->validity.data();
+        for (int64_t i = 0; i < n; i++) {
+          if (!std::isnan(src[i])) v[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+        }
+        priv->buffers[0] = v;
+      }
+      priv->buffers[1] = dst;
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+static bool build_utf8_col_main_thread(SEXP col,
+                                       int64_t n,
+                                       OwnedArrayPriv* priv,
+                                       int64_t* null_count_out,
+                                       std::string* fmt_out) {
+  int64_t total_bytes = 0;
+  int64_t nulls = 0;
+  bool any_needs_translate = false;
+
+  for (int64_t i = 0; i < n; i++) {
+    SEXP elt = STRING_ELT(col, i);
+    if (elt == NA_STRING) {
+      nulls++;
+    } else {
+      cetype_t ce = Rf_getCharCE(elt);
+      if (ce == CE_UTF8 || ce == CE_BYTES) {
+        total_bytes += XLENGTH(elt);
+      } else {
+        const void* vmax = vmaxget();
+        const char* u = Rf_translateCharUTF8(elt);
+        if (u == CHAR(elt)) {
+          total_bytes += XLENGTH(elt);
+        } else {
+          any_needs_translate = true;
+          total_bytes += static_cast<int64_t>(std::strlen(u));
+        }
+        vmaxset(vmax);
+      }
+    }
+  }
+
+  *null_count_out = nulls;
+  if (nulls > 0) {
+    priv->validity.assign(static_cast<size_t>((n + 7) >> 3), 0);
+  }
+  uint8_t* vbits = nulls > 0 ? priv->validity.data() : nullptr;
+
+  bool use_large = total_bytes > 2147483647LL;
+  *fmt_out = use_large ? "U" : "u";
+  priv->buf2.resize(static_cast<size_t>(total_bytes));
+  uint8_t* data_dst = priv->buf2.data();
+
+  if (!use_large) {
+    priv->buf1.resize(static_cast<size_t>(n + 1) * sizeof(int32_t));
+    int32_t* offs = reinterpret_cast<int32_t*>(priv->buf1.data());
+    int32_t pos = 0;
+    offs[0] = 0;
+    if (!any_needs_translate) {
+      for (int64_t i = 0; i < n; i++) {
+        SEXP elt = STRING_ELT(col, i);
+        if (elt != NA_STRING) {
+          if (vbits) vbits[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+          int32_t len = static_cast<int32_t>(XLENGTH(elt));
+          if (len > 0) {
+            std::memcpy(data_dst + pos, CHAR(elt), static_cast<size_t>(len));
+            pos += len;
+          }
+        }
+        offs[i + 1] = pos;
+      }
+    } else {
+      for (int64_t i = 0; i < n; i++) {
+        SEXP elt = STRING_ELT(col, i);
+        if (elt != NA_STRING) {
+          if (vbits) vbits[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+          const void* vmax = vmaxget();
+          const char* u = Rf_translateCharUTF8(elt);
+          int32_t len = (u == CHAR(elt)) ? static_cast<int32_t>(XLENGTH(elt))
+                                         : static_cast<int32_t>(std::strlen(u));
+          if (len > 0) {
+            std::memcpy(data_dst + pos, u, static_cast<size_t>(len));
+            pos += len;
+          }
+          vmaxset(vmax);
+        }
+        offs[i + 1] = pos;
+      }
+    }
+  } else {
+    priv->buf1.resize(static_cast<size_t>(n + 1) * sizeof(int64_t));
+    int64_t* offs = reinterpret_cast<int64_t*>(priv->buf1.data());
+    int64_t pos = 0;
+    offs[0] = 0;
+    for (int64_t i = 0; i < n; i++) {
+      SEXP elt = STRING_ELT(col, i);
+      if (elt != NA_STRING) {
+        if (vbits) vbits[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+        const void* vmax = vmaxget();
+        const char* u = Rf_translateCharUTF8(elt);
+        int64_t len = (u == CHAR(elt)) ? static_cast<int64_t>(XLENGTH(elt))
+                                       : static_cast<int64_t>(std::strlen(u));
+        if (len > 0) {
+          std::memcpy(data_dst + pos, u, static_cast<size_t>(len));
+          pos += len;
+        }
+        vmaxset(vmax);
+      }
+      offs[i + 1] = pos;
+    }
+  }
+
+  priv->buffers[0] = vbits;
+  priv->buffers[1] = priv->buf1.data();
+  priv->buffers[2] = priv->buf2.data();
+  return true;
+}
+
+static bool build_factor_col_main_thread(SEXP col,
+                                         int64_t n,
+                                         OwnedArrayPriv* priv,
+                                         int64_t* null_count_out,
+                                         std::string* fmt_out) {
+  SEXP levels = Rf_getAttrib(col, R_LevelsSymbol);
+  if (TYPEOF(levels) != STRSXP) return false;
+  int n_levels = Rf_length(levels);
+  std::vector<std::string> lvl_strs(static_cast<size_t>(n_levels));
+  for (int k = 0; k < n_levels; k++) {
+    SEXP elt = STRING_ELT(levels, k);
+    if (elt != NA_STRING) {
+      const void* vmax = vmaxget();
+      const char* u = Rf_translateCharUTF8(elt);
+      lvl_strs[static_cast<size_t>(k)] = std::string(u);
+      vmaxset(vmax);
+    }
+  }
+
+  const int* codes = INTEGER(col);
+  int64_t total_bytes = 0;
+  int64_t nulls = 0;
+  for (int64_t i = 0; i < n; i++) {
+    int c = codes[i];
+    if (c == NA_INTEGER || c < 1 || c > n_levels) {
+      nulls++;
+    } else {
+      total_bytes += static_cast<int64_t>(lvl_strs[static_cast<size_t>(c - 1)].size());
+    }
+  }
+
+  if (total_bytes > 2147483647LL) return false;
+  *fmt_out = "u";
+  *null_count_out = nulls;
+  if (nulls > 0) {
+    priv->validity.assign(static_cast<size_t>((n + 7) >> 3), 0);
+  }
+  uint8_t* vbits = nulls > 0 ? priv->validity.data() : nullptr;
+
+  priv->buf1.resize(static_cast<size_t>(n + 1) * sizeof(int32_t));
+  priv->buf2.resize(static_cast<size_t>(total_bytes));
+  int32_t* offs = reinterpret_cast<int32_t*>(priv->buf1.data());
+  uint8_t* data_dst = priv->buf2.data();
+  int32_t pos = 0;
+  offs[0] = 0;
+
+  for (int64_t i = 0; i < n; i++) {
+    int c = codes[i];
+    if (c != NA_INTEGER && c >= 1 && c <= n_levels) {
+      if (vbits) vbits[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+      const std::string& s = lvl_strs[static_cast<size_t>(c - 1)];
+      int32_t len = static_cast<int32_t>(s.size());
+      if (len > 0) {
+        std::memcpy(data_dst + pos, s.data(), static_cast<size_t>(len));
+        pos += len;
+      }
+    }
+    offs[i + 1] = pos;
+  }
+
+  priv->buffers[0] = vbits;
+  priv->buffers[1] = priv->buf1.data();
+  priv->buffers[2] = priv->buf2.data();
+  return true;
+}
+
+} // namespace
+
+// [[Rcpp::export(rng=false)]]
+bool bqs_has_zstd() {
+  return bqs_ipc::has_zstd_support();
+}
+
+// [[Rcpp::export(rng=false)]]
+bool bqs_can_fast_encode(SEXP schema_xptr) {
+  struct ArrowSchema* sch = nanoarrow_schema_from_xptr(schema_xptr);
+  return bqs_ipc::can_fast_encode_schema(sch);
+}
+
+// Fast zero-copy + multi-threaded conversion of standard flat data.frame columns
+// to nanoarrow_array + nanoarrow_schema external pointers. Unsupported/nested
+// columns return R_NilValue so R falls back cleanly to bqs_col_to_arrow_array().
+// [[Rcpp::export(rng=false)]]
+Rcpp::List bqs_fast_df_columns(Rcpp::List df,
+                               Rcpp::CharacterVector col_names,
+                               Rcpp::CharacterVector target_types,
+                               Rcpp::CharacterVector target_modes,
+                               int n_rows,
+                               int n_threads = 0) {
+  int p = df.size();
+  Rcpp::List out_arrays(p);
+  Rcpp::List out_schemas(p);
+  if (p == 0) {
+    return Rcpp::List::create(
+      Rcpp::Named("arrays") = out_arrays,
+      Rcpp::Named("schemas") = out_schemas
+    );
+  }
+
+  std::vector<FastColTask> numeric_tasks;
+  numeric_tasks.reserve(static_cast<size_t>(p));
+  std::vector<SEXP> zc_sexps(static_cast<size_t>(p), R_NilValue);
+  std::vector<std::string> col_formats(static_cast<size_t>(p));
+  std::vector<int> n_bufs_vec(static_cast<size_t>(p), 2);
+  std::vector<OwnedArrayPriv*> privs(static_cast<size_t>(p), nullptr);
+  std::vector<int64_t> null_counts(static_cast<size_t>(p), 0);
+
+  for (int j = 0; j < p; j++) {
+    SEXP col = df[j];
+    std::string mode = Rcpp::as<std::string>(target_modes[j]);
+    std::string type = Rcpp::as<std::string>(target_types[j]);
+    if (mode == "REPEATED" || TYPEOF(col) == VECSXP || Rf_inherits(col, "data.frame")) {
+      out_arrays[j] = R_NilValue;
+      out_schemas[j] = R_NilValue;
+      continue;
+    }
+
+    FastColKind kind = FCOL_UNSUPPORTED;
+    std::string fmt;
+    int n_bufs = 2;
+    bool zero_copy = false;
+
+    if (TYPEOF(col) == INTSXP && Rf_isFactor(col) && (type.empty() || type == "STRING")) {
+      OwnedArrayPriv* priv = new OwnedArrayPriv();
+      int64_t nc = 0;
+      if (build_factor_col_main_thread(col, n_rows, priv, &nc, &fmt)) {
+        privs[static_cast<size_t>(j)] = priv;
+        null_counts[static_cast<size_t>(j)] = nc;
+        col_formats[static_cast<size_t>(j)] = fmt;
+        n_bufs_vec[static_cast<size_t>(j)] = 3;
+        continue;
+      }
+      delete priv;
+    } else if (TYPEOF(col) == STRSXP &&
+               (!Rf_isObject(col) || Rf_inherits(col, "wk_wkt")) &&
+               (type.empty() || type == "STRING" || type == "GEOGRAPHY")) {
+      OwnedArrayPriv* priv = new OwnedArrayPriv();
+      int64_t nc = 0;
+      build_utf8_col_main_thread(col, n_rows, priv, &nc, &fmt);
+      privs[static_cast<size_t>(j)] = priv;
+      null_counts[static_cast<size_t>(j)] = nc;
+      col_formats[static_cast<size_t>(j)] = fmt;
+      n_bufs_vec[static_cast<size_t>(j)] = 3;
+      continue;
+    } else if (TYPEOF(col) == INTSXP && Rf_inherits(col, "Date") &&
+               (type.empty() || type == "DATE")) {
+      kind = FCOL_DATE_INT_ZC;
+      fmt = "tdD";
+      zero_copy = true;
+    } else if (TYPEOF(col) == REALSXP && Rf_inherits(col, "Date") &&
+               (type.empty() || type == "DATE")) {
+      kind = FCOL_DATE_DBL;
+      fmt = "tdD";
+    } else if (TYPEOF(col) == REALSXP && Rf_inherits(col, "POSIXct") &&
+               (type.empty() || type == "TIMESTAMP" || type == "DATETIME")) {
+      kind = (type == "DATETIME") ? FCOL_POSIXCT_DT : FCOL_POSIXCT_TS;
+      fmt = (type == "DATETIME") ? "tsu:" : "tsu:UTC";
+    } else if (TYPEOF(col) == REALSXP && Rf_inherits(col, "integer64") &&
+               (type.empty() || type == "INT64")) {
+      kind = FCOL_INT64_ZC;
+      fmt = "l";
+      zero_copy = true;
+    } else if (TYPEOF(col) == INTSXP && !Rf_isObject(col)) {
+      if (type.empty() || type == "INT64") {
+        kind = FCOL_INT32_ZC;
+        fmt = "i";
+        zero_copy = true;
+      } else if (type == "FLOAT64") {
+        kind = FCOL_FLOAT64_FROM_INT;
+        fmt = "g";
+      }
+    } else if (TYPEOF(col) == REALSXP && !Rf_isObject(col) &&
+               (type.empty() || type == "FLOAT64")) {
+      kind = FCOL_FLOAT64_ZC;
+      fmt = "g";
+      zero_copy = true;
+    } else if (TYPEOF(col) == LGLSXP && !Rf_isObject(col) &&
+               (type.empty() || type == "BOOL")) {
+      kind = FCOL_BOOL;
+      fmt = "b";
+    }
+
+    if (kind == FCOL_UNSUPPORTED) {
+      out_arrays[j] = R_NilValue;
+      out_schemas[j] = R_NilValue;
+      continue;
+    }
+
+    OwnedArrayPriv* priv = new OwnedArrayPriv();
+    privs[static_cast<size_t>(j)] = priv;
+    col_formats[static_cast<size_t>(j)] = fmt;
+    n_bufs_vec[static_cast<size_t>(j)] = n_bufs;
+    if (zero_copy) zc_sexps[static_cast<size_t>(j)] = col;
+
+    FastColTask t;
+    t.col_idx = j;
+    t.kind = kind;
+    t.n = n_rows;
+    t.priv = priv;
+    if (TYPEOF(col) == INTSXP) t.r_ptr = INTEGER(col);
+    else if (TYPEOF(col) == REALSXP) t.r_ptr = REAL(col);
+    else if (TYPEOF(col) == LGLSXP) t.r_ptr = LOGICAL(col);
+    numeric_tasks.push_back(t);
+  }
+
+  // Run numeric/bitmap scans & conversions in parallel across C++ threads
+  if (!numeric_tasks.empty()) {
+    if (n_threads <= 0) {
+      unsigned int hw = std::thread::hardware_concurrency();
+      n_threads = hw > 0 ? static_cast<int>(std::min(hw, 16u)) : 4;
+    }
+    size_t m = numeric_tasks.size();
+    int n_workers = (static_cast<int64_t>(n_rows) * static_cast<int64_t>(m) >= 65536)
+                      ? static_cast<int>(std::min<size_t>(static_cast<size_t>(std::max(1, n_threads)), m))
+                      : 1;
+    if (n_workers <= 1) {
+      for (size_t k = 0; k < m; k++) execute_numeric_col_task(numeric_tasks[k]);
+    } else {
+      std::atomic<size_t> next_k{0};
+      auto worker = [&]() {
+        while (true) {
+          size_t k = next_k.fetch_add(1);
+          if (k >= m) break;
+          execute_numeric_col_task(numeric_tasks[k]);
+        }
+      };
+      std::vector<std::thread> pool;
+      pool.reserve(static_cast<size_t>(n_workers - 1));
+      for (int w = 1; w < n_workers; w++) pool.emplace_back(worker);
+      worker();
+      for (auto& th : pool) th.join();
+    }
+    for (const auto& t : numeric_tasks) {
+      null_counts[static_cast<size_t>(t.col_idx)] = t.null_count;
+    }
+  }
+
+  // Wrap completed columns into nanoarrow_schema + nanoarrow_array XPtrs on main thread
+  for (int j = 0; j < p; j++) {
+    OwnedArrayPriv* priv = privs[static_cast<size_t>(j)];
+    if (!priv) continue;
+
+    std::string nm = Rcpp::as<std::string>(col_names[j]);
+    SEXP sch_xptr = PROTECT(make_leaf_schema_xptr(col_formats[static_cast<size_t>(j)].c_str(), nm.c_str()));
+    SEXP arr_xptr = PROTECT(nanoarrow_array_owning_xptr());
+    struct ArrowArray* arr = nanoarrow_output_array_from_xptr(arr_xptr);
+
+    arr->length = n_rows;
+    arr->null_count = null_counts[static_cast<size_t>(j)];
+    arr->offset = 0;
+    arr->n_buffers = n_bufs_vec[static_cast<size_t>(j)];
+    arr->n_children = 0;
+    arr->buffers = priv->buffers;
+    arr->children = nullptr;
+    arr->dictionary = nullptr;
+    arr->private_data = priv;
+    arr->release = release_owned_array;
+
+    if (zc_sexps[static_cast<size_t>(j)] != R_NilValue) {
+      R_SetExternalPtrProtected(arr_xptr, zc_sexps[static_cast<size_t>(j)]);
+    }
+    R_SetExternalPtrTag(arr_xptr, sch_xptr);
+
+    out_arrays[j] = arr_xptr;
+    out_schemas[j] = sch_xptr;
+    UNPROTECT(2);
+  }
+
+  return Rcpp::List::create(
+    Rcpp::Named("arrays") = out_arrays,
+    Rcpp::Named("schemas") = out_schemas
+  );
+}
+
+// Encode a single root ArrowArray + ArrowSchema + serialized Schema IPC message
+// into a complete Arrow IPC stream RawVector in C++ (parallel across batches).
+// [[Rcpp::export(rng=false)]]
+Rcpp::RawVector bqs_encode_arrow_ipc_raw(SEXP schema_xptr,
+                                         SEXP array_xptr,
+                                         Rcpp::RawVector schema_ipc,
+                                         int row_batch_size,
+                                         bool use_zstd = false,
+                                         int n_threads = 0) {
+  struct ArrowSchema* schema = nanoarrow_schema_from_xptr(schema_xptr);
+  struct ArrowArray* arr = nanoarrow_array_from_xptr(array_xptr);
+  if (arr->length <= 0) {
+    return Rcpp::RawVector(0);
+  }
+
+  std::vector<ArrowArray> src_arrays(1);
+  src_arrays[0] = *arr; // Shallow view; not released here
+
+  std::vector<bqs_ipc::BatchSliceSpec> specs;
+  int64_t n = arr->length;
+  int64_t step = std::max<int64_t>(1, row_batch_size);
+  for (int64_t s = 0; s < n; s += step) {
+    specs.push_back({0u, s, std::min<int64_t>(step, n - s)});
+  }
+
+  std::vector<std::string> batches;
+  std::string err;
+  if (!bqs_ipc::encode_batches_parallel(schema, src_arrays, specs, use_zstd, n_threads, &batches, &err)) {
+    Rcpp::stop(err.c_str());
+  }
+
+  // Strip trailing 8-byte EOS marker from schema_ipc if present
+  size_t sch_len = static_cast<size_t>(schema_ipc.size());
+  if (sch_len >= 8) {
+    uint32_t cont = 0;
+    int32_t mlen = 0;
+    std::memcpy(&cont, RAW(schema_ipc) + sch_len - 8, 4);
+    std::memcpy(&mlen, RAW(schema_ipc) + sch_len - 4, 4);
+    if (cont == 0xFFFFFFFFu && mlen == 0) {
+      sch_len -= 8;
+    }
+  }
+
+  size_t total_size = sch_len + 8; // +8 for EOS marker
+  for (const auto& b : batches) total_size += b.size();
+
+  Rcpp::RawVector out(total_size);
+  uint8_t* dst = RAW(out);
+  if (sch_len > 0) {
+    std::memcpy(dst, RAW(schema_ipc), sch_len);
+    dst += sch_len;
+  }
+  for (const auto& b : batches) {
+    std::memcpy(dst, b.data(), b.size());
+    dst += b.size();
+  }
+  const uint32_t eos_cont = 0xFFFFFFFFu;
+  const int32_t eos_len = 0;
+  std::memcpy(dst, &eos_cont, 4);
+  std::memcpy(dst + 4, &eos_len, 4);
+  return out;
 }
 

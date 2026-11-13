@@ -64,8 +64,24 @@ CXXFLAGS=`${R_HOME}/bin/R CMD config CXXFLAGS`
 echo "Using default C++ compiler: $CXX $CXXFLAGS"
 fi
 
-# Test configuration
+# Optional ZSTD support for Arrow IPC upload buffer compression
 CPPFLAGS=`${R_HOME}/bin/R CMD config CPPFLAGS`
+if [ `command -v pkg-config` ] && pkg-config --exists libzstd; then
+  ZSTD_CFLAGS=`pkg-config --cflags --silence-errors libzstd`
+  ZSTD_LIBS=`pkg-config --libs libzstd`
+  PKG_CFLAGS="$PKG_CFLAGS $ZSTD_CFLAGS -DHAVE_BQS_ZSTD"
+  PKG_LIBS="$PKG_LIBS $ZSTD_LIBS"
+  echo "Found libzstd via pkg-config: $ZSTD_LIBS"
+else
+  echo "#include <zstd.h>" | ${CXX} -E ${CPPFLAGS} ${PKG_CFLAGS} ${CXXFLAGS} -xc++ - >/dev/null 2>&1
+  if [ $? -eq 0 ]; then
+    PKG_CFLAGS="$PKG_CFLAGS -DHAVE_BQS_ZSTD"
+    PKG_LIBS="$PKG_LIBS -lzstd"
+    echo "Found zstd.h, enabling -lzstd"
+  fi
+fi
+
+# Test configuration
 echo "#include $PKG_TEST_HEADER" | ${CXX} -E ${CPPFLAGS} ${PKG_CFLAGS} ${CXXFLAGS} -xc++ - >/dev/null 2>configure.log
 
 # Customize the error

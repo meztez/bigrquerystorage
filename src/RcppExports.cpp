@@ -76,9 +76,19 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// bqs_warm_write_channels
+void bqs_warm_write_channels(SEXP client, int n_channels);
+RcppExport SEXP _bigrquerystorage_bqs_warm_write_channels(SEXP clientSEXP, SEXP n_channelsSEXP) {
+BEGIN_RCPP
+    Rcpp::traits::input_parameter< SEXP >::type client(clientSEXP);
+    Rcpp::traits::input_parameter< int >::type n_channels(n_channelsSEXP);
+    bqs_warm_write_channels(client, n_channels);
+    return R_NilValue;
+END_RCPP
+}
 // bqs_ipc_write
-double bqs_ipc_write(SEXP client, std::string project, std::string dataset, std::string table, Rcpp::RawVector ipc_bytes, std::string stream_type, bool quiet);
-RcppExport SEXP _bigrquerystorage_bqs_ipc_write(SEXP clientSEXP, SEXP projectSEXP, SEXP datasetSEXP, SEXP tableSEXP, SEXP ipc_bytesSEXP, SEXP stream_typeSEXP, SEXP quietSEXP) {
+double bqs_ipc_write(SEXP client, std::string project, std::string dataset, std::string table, Rcpp::RawVector ipc_bytes, std::string stream_type, bool quiet, int max_stream_count, int max_threads);
+RcppExport SEXP _bigrquerystorage_bqs_ipc_write(SEXP clientSEXP, SEXP projectSEXP, SEXP datasetSEXP, SEXP tableSEXP, SEXP ipc_bytesSEXP, SEXP stream_typeSEXP, SEXP quietSEXP, SEXP max_stream_countSEXP, SEXP max_threadsSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::traits::input_parameter< SEXP >::type client(clientSEXP);
@@ -88,7 +98,30 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< Rcpp::RawVector >::type ipc_bytes(ipc_bytesSEXP);
     Rcpp::traits::input_parameter< std::string >::type stream_type(stream_typeSEXP);
     Rcpp::traits::input_parameter< bool >::type quiet(quietSEXP);
-    rcpp_result_gen = Rcpp::wrap(bqs_ipc_write(client, project, dataset, table, ipc_bytes, stream_type, quiet));
+    Rcpp::traits::input_parameter< int >::type max_stream_count(max_stream_countSEXP);
+    Rcpp::traits::input_parameter< int >::type max_threads(max_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(bqs_ipc_write(client, project, dataset, table, ipc_bytes, stream_type, quiet, max_stream_count, max_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bqs_arrow_write
+double bqs_arrow_write(SEXP client, std::string project, std::string dataset, std::string table, SEXP stream_xptr, Rcpp::RawVector schema_ipc, int row_batch_size, std::string stream_type, bool use_zstd, bool quiet, int max_stream_count, int max_threads);
+RcppExport SEXP _bigrquerystorage_bqs_arrow_write(SEXP clientSEXP, SEXP projectSEXP, SEXP datasetSEXP, SEXP tableSEXP, SEXP stream_xptrSEXP, SEXP schema_ipcSEXP, SEXP row_batch_sizeSEXP, SEXP stream_typeSEXP, SEXP use_zstdSEXP, SEXP quietSEXP, SEXP max_stream_countSEXP, SEXP max_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< SEXP >::type client(clientSEXP);
+    Rcpp::traits::input_parameter< std::string >::type project(projectSEXP);
+    Rcpp::traits::input_parameter< std::string >::type dataset(datasetSEXP);
+    Rcpp::traits::input_parameter< std::string >::type table(tableSEXP);
+    Rcpp::traits::input_parameter< SEXP >::type stream_xptr(stream_xptrSEXP);
+    Rcpp::traits::input_parameter< Rcpp::RawVector >::type schema_ipc(schema_ipcSEXP);
+    Rcpp::traits::input_parameter< int >::type row_batch_size(row_batch_sizeSEXP);
+    Rcpp::traits::input_parameter< std::string >::type stream_type(stream_typeSEXP);
+    Rcpp::traits::input_parameter< bool >::type use_zstd(use_zstdSEXP);
+    Rcpp::traits::input_parameter< bool >::type quiet(quietSEXP);
+    Rcpp::traits::input_parameter< int >::type max_stream_count(max_stream_countSEXP);
+    Rcpp::traits::input_parameter< int >::type max_threads(max_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(bqs_arrow_write(client, project, dataset, table, stream_xptr, schema_ipc, row_batch_size, stream_type, use_zstd, quiet, max_stream_count, max_threads));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -153,6 +186,55 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// bqs_has_zstd
+bool bqs_has_zstd();
+RcppExport SEXP _bigrquerystorage_bqs_has_zstd() {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    rcpp_result_gen = Rcpp::wrap(bqs_has_zstd());
+    return rcpp_result_gen;
+END_RCPP
+}
+// bqs_can_fast_encode
+bool bqs_can_fast_encode(SEXP schema_xptr);
+RcppExport SEXP _bigrquerystorage_bqs_can_fast_encode(SEXP schema_xptrSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< SEXP >::type schema_xptr(schema_xptrSEXP);
+    rcpp_result_gen = Rcpp::wrap(bqs_can_fast_encode(schema_xptr));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bqs_fast_df_columns
+Rcpp::List bqs_fast_df_columns(Rcpp::List df, Rcpp::CharacterVector col_names, Rcpp::CharacterVector target_types, Rcpp::CharacterVector target_modes, int n_rows, int n_threads);
+RcppExport SEXP _bigrquerystorage_bqs_fast_df_columns(SEXP dfSEXP, SEXP col_namesSEXP, SEXP target_typesSEXP, SEXP target_modesSEXP, SEXP n_rowsSEXP, SEXP n_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< Rcpp::List >::type df(dfSEXP);
+    Rcpp::traits::input_parameter< Rcpp::CharacterVector >::type col_names(col_namesSEXP);
+    Rcpp::traits::input_parameter< Rcpp::CharacterVector >::type target_types(target_typesSEXP);
+    Rcpp::traits::input_parameter< Rcpp::CharacterVector >::type target_modes(target_modesSEXP);
+    Rcpp::traits::input_parameter< int >::type n_rows(n_rowsSEXP);
+    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(bqs_fast_df_columns(df, col_names, target_types, target_modes, n_rows, n_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bqs_encode_arrow_ipc_raw
+Rcpp::RawVector bqs_encode_arrow_ipc_raw(SEXP schema_xptr, SEXP array_xptr, Rcpp::RawVector schema_ipc, int row_batch_size, bool use_zstd, int n_threads);
+RcppExport SEXP _bigrquerystorage_bqs_encode_arrow_ipc_raw(SEXP schema_xptrSEXP, SEXP array_xptrSEXP, SEXP schema_ipcSEXP, SEXP row_batch_sizeSEXP, SEXP use_zstdSEXP, SEXP n_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< SEXP >::type schema_xptr(schema_xptrSEXP);
+    Rcpp::traits::input_parameter< SEXP >::type array_xptr(array_xptrSEXP);
+    Rcpp::traits::input_parameter< Rcpp::RawVector >::type schema_ipc(schema_ipcSEXP);
+    Rcpp::traits::input_parameter< int >::type row_batch_size(row_batch_sizeSEXP);
+    Rcpp::traits::input_parameter< bool >::type use_zstd(use_zstdSEXP);
+    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(bqs_encode_arrow_ipc_raw(schema_xptr, array_xptr, schema_ipc, row_batch_size, use_zstd, n_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_bigrquerystorage_bqs_set_log_verbosity", (DL_FUNC) &_bigrquerystorage_bqs_set_log_verbosity, 1},
@@ -160,12 +242,18 @@ static const R_CallMethodDef CallEntries[] = {
     {"_bigrquerystorage_grpc_version", (DL_FUNC) &_bigrquerystorage_grpc_version, 0},
     {"_bigrquerystorage_bqs_client", (DL_FUNC) &_bigrquerystorage_bqs_client, 6},
     {"_bigrquerystorage_bqs_ipc_stream", (DL_FUNC) &_bigrquerystorage_bqs_ipc_stream, 15},
-    {"_bigrquerystorage_bqs_ipc_write", (DL_FUNC) &_bigrquerystorage_bqs_ipc_write, 7},
+    {"_bigrquerystorage_bqs_warm_write_channels", (DL_FUNC) &_bigrquerystorage_bqs_warm_write_channels, 2},
+    {"_bigrquerystorage_bqs_ipc_write", (DL_FUNC) &_bigrquerystorage_bqs_ipc_write, 9},
+    {"_bigrquerystorage_bqs_arrow_write", (DL_FUNC) &_bigrquerystorage_bqs_arrow_write, 12},
     {"_bigrquerystorage_bqs_convert_stream", (DL_FUNC) &_bigrquerystorage_bqs_convert_stream, 5},
     {"_bigrquerystorage_bqs_schema_flags", (DL_FUNC) &_bigrquerystorage_bqs_schema_flags, 1},
     {"_bigrquerystorage_bqs_postprocess", (DL_FUNC) &_bigrquerystorage_bqs_postprocess, 4},
     {"_bigrquerystorage_bqs_collect_streams", (DL_FUNC) &_bigrquerystorage_bqs_collect_streams, 3},
     {"_bigrquerystorage_bqs_encode_decimal", (DL_FUNC) &_bigrquerystorage_bqs_encode_decimal, 3},
+    {"_bigrquerystorage_bqs_has_zstd", (DL_FUNC) &_bigrquerystorage_bqs_has_zstd, 0},
+    {"_bigrquerystorage_bqs_can_fast_encode", (DL_FUNC) &_bigrquerystorage_bqs_can_fast_encode, 1},
+    {"_bigrquerystorage_bqs_fast_df_columns", (DL_FUNC) &_bigrquerystorage_bqs_fast_df_columns, 6},
+    {"_bigrquerystorage_bqs_encode_arrow_ipc_raw", (DL_FUNC) &_bigrquerystorage_bqs_encode_arrow_ipc_raw, 6},
     {NULL, NULL, 0}
 };
 

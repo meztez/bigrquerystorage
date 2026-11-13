@@ -43,7 +43,9 @@
 # pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include "google/cloud/bigquery/storage/v1/storage.grpc.pb.h"
 #include <Rcpp.h>
+#include <nanoarrow/r.h>
 #include "RProgress.h"
+#include "bqs_arrow_ipc.h"
 
 using google::cloud::bigquery::storage::v1::ReadSession;
 using google::cloud::bigquery::storage::v1::BigQueryRead;
@@ -185,7 +187,7 @@ public:
                      const std::string& service_configuration)
     : cred_(cred), target_(target), service_configuration_(service_configuration) {
     EnsureChannels(1);
-    EnsureWriteChannels(1);
+    EnsureWriteChannels(12, true);
   }
   void SetClientInfo(const std::string &client_info) {
     client_info_ = client_info;
@@ -206,61 +208,111 @@ public:
     }
   }
 
-  void EnsureWriteChannels(size_t n) {
+  void EnsureWriteChannels(size_t n, bool warm_connect = true) {
     while (write_stubs_.size() < n) {
       grpc::ChannelArguments channel_arguments;
       channel_arguments.SetMaxReceiveMessageSize(134217728);
       channel_arguments.SetMaxSendMessageSize(134217728);
       channel_arguments.SetServiceConfigJSON(service_configuration_);
       channel_arguments.SetInt("grpc.use_local_subchannel_pool", 1);
+      channel_arguments.SetInt("grpc.http2.bdp_probe", 1);
+      channel_arguments.SetInt("grpc.http2.write_buffer_size", 4 * 1024 * 1024);
       channel_arguments.SetInt("bigrquerystorage.write_channel_id", static_cast<int>(write_stubs_.size()));
-      write_stubs_.push_back(google::cloud::bigquery::storage::v1::BigQueryWrite::NewStub(
-        grpc::CreateCustomChannel(target_, cred_, channel_arguments)));
+      auto channel = grpc::CreateCustomChannel(target_, cred_, channel_arguments);
+      if (warm_connect) {
+        channel->GetState(true);
+      }
+      write_channels_.push_back(channel);
+      write_stubs_.push_back(google::cloud::bigquery::storage::v1::BigQueryWrite::NewStub(channel));
+    }
+    if (warm_connect) {
+      for (size_t i = 0; i < n && i < write_channels_.size(); i++) {
+        write_channels_[i]->GetState(true);
+      }
     }
   }
 
-  google::cloud::bigquery::storage::v1::WriteStream CreateWriteStream(
+  bool CreateWriteStreamWorker(
+      int worker,
       const std::string& parent,
-      google::cloud::bigquery::storage::v1::WriteStream_Type stream_type) {
+      google::cloud::bigquery::storage::v1::WriteStream_Type stream_type,
+      ParallelRead* create_state,
+      const std::atomic<bool>& all_claimed,
+      std::string* stream_name_out,
+      std::string* err_out) {
     google::cloud::bigquery::storage::v1::CreateWriteStreamRequest req;
     req.set_parent(parent);
     req.mutable_write_stream()->set_type(stream_type);
 
+    size_t stub_idx = static_cast<size_t>(worker);
+    auto& stub = write_stubs_[stub_idx % write_stubs_.size()];
     google::cloud::bigquery::storage::v1::WriteStream resp;
     grpc::Status status;
-    for (int attempt = 0; attempt < 5; attempt++) {
+    for (int attempt = 0; attempt < 7; attempt++) {
+      if (create_state->cancel.load() || all_claimed.load()) return false;
       grpc::ClientContext context;
+      context.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(2500));
       context.AddMetadata("x-goog-request-params", "parent=" + parent);
       context.AddMetadata("x-goog-api-client", client_info_);
-      status = write_stubs_[0]->CreateWriteStream(&context, req, &resp);
+      create_state->Register(worker, &context);
+      status = stub->CreateWriteStream(&context, req, &resp);
+      create_state->Unregister(worker);
       if (status.ok()) {
-        return resp;
+        *stream_name_out = resp.name();
+        return true;
       }
-      if (status.error_code() != grpc::StatusCode::NOT_FOUND || attempt == 4) {
+      if (all_claimed.load() ||
+          (create_state->cancel.load() && status.error_code() == grpc::StatusCode::CANCELLED)) {
+        return false;
+      }
+      auto code = status.error_code();
+      if ((code != grpc::StatusCode::NOT_FOUND &&
+           code != grpc::StatusCode::UNAVAILABLE &&
+           code != grpc::StatusCode::DEADLINE_EXCEEDED &&
+           code != grpc::StatusCode::CANCELLED) ||
+          attempt == 6) {
         break;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(200 * (1 << attempt)));
+      int sleep_ms = (code == grpc::StatusCode::DEADLINE_EXCEEDED)
+                       ? 10
+                       : std::min(1000, 50 * (1 << attempt));
+      std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
     }
-    std::string err = "gRPC method CreateWriteStream error -> " + status.error_message();
-    Rcpp::stop(err.c_str());
-    return resp;
+    if (all_claimed.load()) return false;
+    if (err_out) {
+      *err_out = "gRPC method CreateWriteStream error -> " + status.error_message();
+    }
+    return false;
   }
 
-  int64_t FinalizeWriteStream(const std::string& stream_name) {
+  bool FinalizeWriteStreamWorker(size_t stub_idx,
+                                 const std::string& stream_name,
+                                 int64_t* row_count_out,
+                                 std::string* err_out) {
     google::cloud::bigquery::storage::v1::FinalizeWriteStreamRequest req;
     req.set_name(stream_name);
 
-    grpc::ClientContext context;
-    context.AddMetadata("x-goog-request-params", "name=" + stream_name);
-    context.AddMetadata("x-goog-api-client", client_info_);
-
+    auto& stub = write_stubs_[stub_idx % write_stubs_.size()];
     google::cloud::bigquery::storage::v1::FinalizeWriteStreamResponse resp;
-    grpc::Status status = write_stubs_[0]->FinalizeWriteStream(&context, req, &resp);
-    if (!status.ok()) {
-      std::string err = "gRPC method FinalizeWriteStream error -> " + status.error_message();
-      Rcpp::stop(err.c_str());
+    grpc::Status status;
+    for (int attempt = 0; attempt < 3; attempt++) {
+      grpc::ClientContext context;
+      context.AddMetadata("x-goog-request-params", "name=" + stream_name);
+      context.AddMetadata("x-goog-api-client", client_info_);
+      status = stub->FinalizeWriteStream(&context, req, &resp);
+      if (status.ok()) {
+        *row_count_out = resp.row_count();
+        return true;
+      }
+      if (status.error_code() != grpc::StatusCode::UNAVAILABLE || attempt == 2) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100 * (1 << attempt)));
     }
-    return resp.row_count();
+    if (err_out) {
+      *err_out = "gRPC method FinalizeWriteStream error -> " + status.error_message();
+    }
+    return false;
   }
 
   void BatchCommitWriteStreams(const std::string& parent,
@@ -271,12 +323,18 @@ public:
       req.add_write_streams(s);
     }
 
-    grpc::ClientContext context;
-    context.AddMetadata("x-goog-request-params", "parent=" + parent);
-    context.AddMetadata("x-goog-api-client", client_info_);
-
     google::cloud::bigquery::storage::v1::BatchCommitWriteStreamsResponse resp;
-    grpc::Status status = write_stubs_[0]->BatchCommitWriteStreams(&context, req, &resp);
+    grpc::Status status;
+    for (int attempt = 0; attempt < 3; attempt++) {
+      grpc::ClientContext context;
+      context.AddMetadata("x-goog-request-params", "parent=" + parent);
+      context.AddMetadata("x-goog-api-client", client_info_);
+      status = write_stubs_[0]->BatchCommitWriteStreams(&context, req, &resp);
+      if (status.ok() || status.error_code() != grpc::StatusCode::UNAVAILABLE || attempt == 2) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100 * (1 << attempt)));
+    }
     if (!status.ok()) {
       std::string err = "gRPC method BatchCommitWriteStreams error -> " + status.error_message();
       Rcpp::stop(err.c_str());
@@ -290,85 +348,175 @@ public:
     }
   }
 
-  void AppendArrowBatches(const std::string& stream_name,
-                          const std::string& schema_bytes,
-                          const std::vector<std::string>& batches,
-                          bool quiet) {
-    if (batches.empty()) return;
+  // Dynamic work-stealing bounded-window AppendRows worker with transient
+  // NOT_FOUND / UNAVAILABLE retry on freshly created tables.
+  bool AppendArrowBatchesWorkStealing(int worker,
+                                      const std::string& stream_name,
+                                      const std::string& schema_bytes,
+                                      const std::vector<std::string>& batches,
+                                      std::atomic<size_t>* next_batch,
+                                      std::atomic<bool>* all_claimed,
+                                      ParallelRead* create_state,
+                                      ParallelRead* state,
+                                      bool* used_out,
+                                      std::string* err_out) {
+    size_t m = batches.size();
+    size_t first_idx = next_batch->fetch_add(1);
+    if (first_idx >= m) {
+      all_claimed->store(true);
+      create_state->CancelAll();
+      *used_out = false;
+      return true;
+    }
+    if (first_idx + 1 >= m) {
+      all_claimed->store(true);
+      create_state->CancelAll();
+    }
+    *used_out = true;
 
-    grpc::ClientContext context;
-    context.AddMetadata("x-goog-request-params", "write_stream=" + stream_name);
-    context.AddMetadata("x-goog-api-client", client_info_);
+    std::vector<size_t> pending_replay;
+    pending_replay.push_back(first_idx);
 
-    RProgress::RProgress pb(
-        "\033[42m\033[30mUploading (:percent)\033[39m\033[49m [:bar] eta[:eta|:elapsed]");
-    pb.set_cursor_char(">");
-    pb.set_total(static_cast<double>(batches.size()));
+    for (int attempt = 0; attempt < 6; attempt++) {
+      if (state->cancel.load()) return false;
 
-    auto stream = write_stubs_[0]->AppendRows(&context);
+      grpc::ClientContext context;
+      context.AddMetadata("x-goog-request-params", "write_stream=" + stream_name);
+      context.AddMetadata("x-goog-api-client", client_info_);
 
-    std::atomic<bool> write_failed{false};
-    std::string resp_error;
-    std::atomic<size_t> acked{0};
+      state->Register(worker, &context);
+      auto& stub = write_stubs_[static_cast<size_t>(worker) % write_stubs_.size()];
+      auto stream = stub->AppendRows(&context);
 
-    std::thread reader_thread([&]() {
-      google::cloud::bigquery::storage::v1::AppendRowsResponse resp;
-      while (stream->Read(&resp)) {
-        if (resp.has_error()) {
-          std::string err = "gRPC method AppendRows row error (" +
-            std::to_string(resp.error().code()) + ") -> " + resp.error().message();
-          for (int j = 0; j < resp.row_errors_size() && j < 5; j++) {
-            err += "\n  Row " + std::to_string(resp.row_errors(j).index()) + ": " +
-              resp.row_errors(j).message();
+      static const size_t MAX_INFLIGHT = 3;
+      std::mutex win_mu;
+      std::condition_variable win_cv;
+      size_t in_flight = 0;
+      size_t acked_here = 0;
+      bool reader_done = false;
+      std::atomic<bool> local_failed{false};
+      int resp_err_code = 0;
+      std::string resp_error;
+
+      std::thread reader_thread([&]() {
+        google::cloud::bigquery::storage::v1::AppendRowsResponse resp;
+        while (stream->Read(&resp)) {
+          if (resp.has_error()) {
+            resp_err_code = resp.error().code();
+            std::string err = "gRPC method AppendRows row error (" +
+              std::to_string(resp_err_code) + ") -> " + resp.error().message();
+            for (int j = 0; j < resp.row_errors_size() && j < 5; j++) {
+              err += "\n  Row " + std::to_string(resp.row_errors(j).index()) + ": " +
+                resp.row_errors(j).message();
+            }
+            resp_error = err;
+            local_failed.store(true);
+            {
+              std::lock_guard<std::mutex> lk(win_mu);
+              reader_done = true;
+            }
+            win_cv.notify_all();
+            break;
           }
-          resp_error = err;
-          write_failed.store(true);
-          context.TryCancel();
-          break;
+          {
+            std::lock_guard<std::mutex> lk(win_mu);
+            if (in_flight > 0) in_flight--;
+            acked_here++;
+          }
+          win_cv.notify_one();
+          state->pages.fetch_add(1);
         }
-        acked.fetch_add(1);
-      }
-    });
+        {
+          std::lock_guard<std::mutex> lk(win_mu);
+          reader_done = true;
+        }
+        win_cv.notify_all();
+      });
 
-    try {
-      for (size_t i = 0; i < batches.size(); i++) {
-        if (write_failed.load()) break;
-        Rcpp::checkUserInterrupt();
+      bool is_first = true;
+      size_t replay_pos = 0;
+      std::vector<size_t> sent_this_attempt;
 
+      while (true) {
+        size_t idx = 0;
+        {
+          std::unique_lock<std::mutex> lk(win_mu);
+          win_cv.wait(lk, [&]() {
+            return in_flight < MAX_INFLIGHT || reader_done ||
+                   local_failed.load() || state->cancel.load();
+          });
+          if (reader_done || local_failed.load() || state->cancel.load()) {
+            break;
+          }
+          if (replay_pos < pending_replay.size()) {
+            idx = pending_replay[replay_pos++];
+          } else {
+            idx = next_batch->fetch_add(1);
+            if (idx >= m) {
+              all_claimed->store(true);
+              create_state->CancelAll();
+              break;
+            }
+            if (idx + 1 >= m) {
+              all_claimed->store(true);
+              create_state->CancelAll();
+            }
+          }
+          in_flight++;
+        }
+
+        sent_this_attempt.push_back(idx);
         google::cloud::bigquery::storage::v1::AppendRowsRequest req;
-        if (i == 0) {
+        if (is_first) {
           req.set_write_stream(stream_name);
           req.mutable_arrow_rows()->mutable_writer_schema()->set_serialized_schema(schema_bytes);
+          is_first = false;
         }
-        req.mutable_arrow_rows()->mutable_rows()->set_serialized_record_batch(batches[i]);
+        req.mutable_arrow_rows()->mutable_rows()->set_serialized_record_batch(batches[idx]);
+
         if (!stream->Write(req)) {
           break;
         }
-        if (!quiet) {
-          pb.update(std::min(0.99, static_cast<double>(acked.load()) / batches.size()));
-        }
       }
+
       stream->WritesDone();
-    } catch (...) {
-      context.TryCancel();
       if (reader_thread.joinable()) reader_thread.join();
-      stream->Finish();
-      throw;
-    }
+      grpc::Status status = stream->Finish();
+      state->Unregister(worker);
 
-    if (reader_thread.joinable()) reader_thread.join();
-    grpc::Status status = stream->Finish();
+      if (resp_error.empty() && status.ok()) {
+        return !state->cancel.load();
+      }
+      if (state->cancel.load() && status.error_code() == grpc::StatusCode::CANCELLED) {
+        return false;
+      }
 
-    if (!resp_error.empty()) {
-      Rcpp::stop(resp_error.c_str());
+      bool retryable = (acked_here == 0) && (attempt < 5) && (
+        resp_err_code == 5 /* NOT_FOUND */ ||
+        resp_err_code == 14 /* UNAVAILABLE */ ||
+        status.error_code() == grpc::StatusCode::NOT_FOUND ||
+        status.error_code() == grpc::StatusCode::UNAVAILABLE
+      );
+      if (retryable) {
+        // Replay any unacked batches claimed during this attempt
+        for (size_t k = replay_pos; k < pending_replay.size(); k++) {
+          sent_this_attempt.push_back(pending_replay[k]);
+        }
+        pending_replay = std::move(sent_this_attempt);
+        std::this_thread::sleep_for(std::chrono::milliseconds(std::min(1000, 60 * (1 << attempt))));
+        continue;
+      }
+
+      if (!resp_error.empty()) {
+        if (err_out) *err_out = resp_error;
+      } else if (err_out) {
+        *err_out = "gRPC method AppendRows error -> " + status.error_message();
+      }
+      create_state->CancelAll();
+      state->CancelAll();
+      return false;
     }
-    if (!status.ok()) {
-      std::string err = "gRPC method AppendRows error -> " + status.error_message();
-      Rcpp::stop(err.c_str());
-    }
-    if (!quiet) {
-      pb.update(1);
-    }
+    return false;
   }
 
   // Creation read sessions
@@ -596,6 +744,7 @@ private:
   std::string target_;
   std::string service_configuration_;
   std::vector<std::unique_ptr<BigQueryRead::Stub>> stubs_;
+  std::vector<std::shared_ptr<grpc::Channel>> write_channels_;
   std::vector<std::unique_ptr<google::cloud::bigquery::storage::v1::BigQueryWrite::Stub>> write_stubs_;
   std::string client_info_;
 };
@@ -951,7 +1100,6 @@ static int64_t split_arrow_ipc_stream(const uint8_t* data,
       schema_out->assign(reinterpret_cast<const char*>(data + pos), msg_len);
     } else if (header_type == 3) {
       batches_out->emplace_back(reinterpret_cast<const char*>(data + pos), msg_len);
-      // Extract RecordBatch.length (field 0 of RecordBatch table, header is field 2 of Message)
       if (vtable_len >= 10) {
         uint16_t hdr_off = 0;
         std::memcpy(&hdr_off, fb + vtable_off + 8, 2);
@@ -981,6 +1129,164 @@ static int64_t split_arrow_ipc_stream(const uint8_t* data,
   return total_rows;
 }
 
+// Execute work-stealing multi-stream parallel AppendRows (+ Finalize & BatchCommit).
+// Fast streams immediately pull batches without waiting for straggler CreateWriteStreams,
+// and straggler CreateWriteStreams are cancelled as soon as all batches are claimed.
+static int64_t execute_parallel_write(BigQueryReadClient* client_ptr,
+                                      const std::string& parent,
+                                      const std::string& schema_bytes,
+                                      std::vector<std::string>* batches,
+                                      int64_t total_rows,
+                                      const std::string& stream_type,
+                                      int num_streams,
+                                      bool quiet) {
+  size_t m = batches->size();
+  if (m == 0) return 0;
+
+  num_streams = std::max(1, std::min<int>(num_streams, static_cast<int>(m)));
+  client_ptr->EnsureWriteChannels(static_cast<size_t>(num_streams), true);
+
+  bool is_default = (stream_type == "DEFAULT");
+  std::vector<std::string> stream_names(static_cast<size_t>(num_streams));
+  if (is_default) {
+    for (int w = 0; w < num_streams; w++) {
+      stream_names[static_cast<size_t>(w)] = parent + "/streams/_default";
+    }
+  }
+
+  ParallelRead create_state(num_streams);
+  ParallelRead state(num_streams);
+  std::atomic<size_t> next_batch{0};
+  std::atomic<bool> all_claimed{false};
+  std::vector<bool> stream_used(static_cast<size_t>(num_streams), false);
+  std::vector<std::string> errors(static_cast<size_t>(num_streams));
+  std::vector<int64_t> finalized_rows(static_cast<size_t>(num_streams), 0);
+  std::atomic<int> running(num_streams);
+  std::mutex done_mu;
+  std::condition_variable done_cv;
+
+  RProgress::RProgress pb(
+      "\033[42m\033[30mUploading (:percent)\033[39m\033[49m [:bar] eta[:eta|:elapsed]");
+  pb.set_cursor_char(">");
+  pb.set_total(100);
+
+  std::vector<std::thread> workers;
+  workers.reserve(static_cast<size_t>(num_streams));
+  for (int w = 0; w < num_streams; w++) {
+    workers.emplace_back([&, w]() {
+      size_t wu = static_cast<size_t>(w);
+      bool ready = true;
+      if (!is_default) {
+        ready = client_ptr->CreateWriteStreamWorker(
+          w,
+          parent,
+          google::cloud::bigquery::storage::v1::WriteStream_Type_PENDING,
+          &create_state,
+          all_claimed,
+          &stream_names[wu],
+          &errors[wu]);
+        if (!ready && !all_claimed.load() && !state.cancel.load()) {
+          create_state.CancelAll();
+          state.CancelAll();
+        }
+      }
+      if (ready && !state.cancel.load()) {
+        bool used = false;
+        if (!client_ptr->AppendArrowBatchesWorkStealing(
+              w, stream_names[wu], schema_bytes, *batches,
+              &next_batch, &all_claimed, &create_state, &state,
+              &used, &errors[wu])) {
+          create_state.CancelAll();
+          state.CancelAll();
+        }
+        stream_used[wu] = used;
+      }
+      if (!is_default && stream_used[wu] && !state.cancel.load()) {
+        if (!client_ptr->FinalizeWriteStreamWorker(
+              wu, stream_names[wu], &finalized_rows[wu], &errors[wu])) {
+          create_state.CancelAll();
+          state.CancelAll();
+        }
+      }
+      std::lock_guard<std::mutex> lk(done_mu);
+      running.fetch_sub(1);
+      done_cv.notify_all();
+    });
+  }
+
+  auto join_all = [&]() {
+    for (auto& th : workers) {
+      if (th.joinable()) th.join();
+    }
+  };
+
+  while (true) {
+    {
+      std::unique_lock<std::mutex> lk(done_mu);
+      done_cv.wait_for(lk, std::chrono::milliseconds(50), [&]() { return running.load() == 0; });
+    }
+    if (running.load() == 0) break;
+    try {
+      Rcpp::checkUserInterrupt();
+    } catch (...) {
+      create_state.CancelAll();
+      state.CancelAll();
+      join_all();
+      throw;
+    }
+    if (!quiet) {
+      double ratio = static_cast<double>(state.pages.load()) / static_cast<double>(m);
+      pb.update(std::min(0.99, std::max(0.0, ratio)));
+    }
+  }
+  join_all();
+
+  for (int w = 0; w < num_streams; w++) {
+    if (!errors[static_cast<size_t>(w)].empty()) {
+      Rcpp::stop(errors[static_cast<size_t>(w)].c_str());
+    }
+  }
+
+  int64_t committed_rows = total_rows;
+  int used_count = 0;
+  if (!is_default) {
+    committed_rows = 0;
+    std::vector<std::string> commit_streams;
+    commit_streams.reserve(static_cast<size_t>(num_streams));
+    for (int w = 0; w < num_streams; w++) {
+      size_t wu = static_cast<size_t>(w);
+      if (stream_used[wu]) {
+        commit_streams.push_back(stream_names[wu]);
+        committed_rows += finalized_rows[wu];
+      }
+    }
+    used_count = static_cast<int>(commit_streams.size());
+    if (!commit_streams.empty()) {
+      client_ptr->BatchCommitWriteStreams(parent, commit_streams);
+    }
+  } else {
+    for (int w = 0; w < num_streams; w++) {
+      if (stream_used[static_cast<size_t>(w)]) used_count++;
+    }
+  }
+
+  if (!quiet) {
+    pb.update(1);
+    REprintf("Uploaded %lld rows across %d stream(s) in %zu message(s).\n",
+             static_cast<long long>(committed_rows), std::max(1, used_count), m);
+  }
+  return committed_rows;
+}
+
+// Pre-warm write channels asynchronously so TCP/TLS/HTTP2 handshakes overlap
+// with REST table creation and Arrow conversion.
+// [[Rcpp::export(rng=false)]]
+void bqs_warm_write_channels(SEXP client, int n_channels = 0) {
+  Rcpp::XPtr<BigQueryReadClient> client_ptr(client);
+  int target = n_channels > 0 ? n_channels : 10;
+  client_ptr->EnsureWriteChannels(static_cast<size_t>(target), true);
+}
+
 // [[Rcpp::export(rng=false)]]
 double bqs_ipc_write(SEXP client,
                      std::string project,
@@ -988,7 +1294,9 @@ double bqs_ipc_write(SEXP client,
                      std::string table,
                      Rcpp::RawVector ipc_bytes,
                      std::string stream_type = "PENDING",
-                     bool quiet = false) {
+                     bool quiet = false,
+                     int max_stream_count = 0,
+                     int max_threads = 0) {
   Rcpp::XPtr<BigQueryReadClient> client_ptr(client);
   std::string parent = "projects/" + project + "/datasets/" + dataset + "/tables/" + table;
 
@@ -999,25 +1307,153 @@ double bqs_ipc_write(SEXP client,
     return 0;
   }
 
-  int64_t committed_rows = total_rows;
-  if (stream_type == "DEFAULT") {
-    std::string stream_name = parent + "/streams/_default";
-    client_ptr->AppendArrowBatches(stream_name, schema_bytes, batches, quiet);
-  } else {
-    auto ws = client_ptr->CreateWriteStream(
-      parent,
-      google::cloud::bigquery::storage::v1::WriteStream_Type_PENDING
-    );
-    std::string stream_name = ws.name();
-    client_ptr->AppendArrowBatches(stream_name, schema_bytes, batches, quiet);
-    committed_rows = client_ptr->FinalizeWriteStream(stream_name);
-    client_ptr->BatchCommitWriteStreams(parent, {stream_name});
+  int target_threads = max_threads > 0 ? max_threads : 10;
+  if (max_stream_count > 0) {
+    target_threads = max_stream_count;
+  }
+  const size_t min_bytes_per_stream = 3u * 1024u * 1024u;
+  int by_size = std::max(1, static_cast<int>((static_cast<size_t>(ipc_bytes.size()) + min_bytes_per_stream - 1) / min_bytes_per_stream));
+  int num_streams = std::min<int>({target_threads, by_size, static_cast<int>(batches.size())});
+
+  int64_t committed = execute_parallel_write(
+    client_ptr.get(), parent, schema_bytes, &batches, total_rows,
+    stream_type, num_streams, quiet);
+  return static_cast<double>(committed);
+}
+
+// High-throughput direct ArrowArrayStream -> Parallel ZSTD IPC Encode ->
+// Work-Stealing Multi-Stream Parallel AppendRows + Finalize + BatchCommit.
+// [[Rcpp::export(rng=false)]]
+double bqs_arrow_write(SEXP client,
+                       std::string project,
+                       std::string dataset,
+                       std::string table,
+                       SEXP stream_xptr,
+                       Rcpp::RawVector schema_ipc,
+                       int row_batch_size = 100000,
+                       std::string stream_type = "PENDING",
+                       bool use_zstd = true,
+                       bool quiet = false,
+                       int max_stream_count = 0,
+                       int max_threads = 0) {
+  Rcpp::XPtr<BigQueryReadClient> client_ptr(client);
+  std::string parent = "projects/" + project + "/datasets/" + dataset + "/tables/" + table;
+
+  struct ArrowArrayStream* stream = nanoarrow_array_stream_from_xptr(stream_xptr);
+  struct ArrowSchema schema;
+  schema.release = nullptr;
+  if (stream->get_schema(stream, &schema) != 0) {
+    const char* err = stream->get_last_error ? stream->get_last_error(stream) : "Failed to read ArrowSchema";
+    Rcpp::stop(err ? err : "Failed to read ArrowSchema");
   }
 
-  if (!quiet) {
-    REprintf("Uploaded %lld rows in %zu messages.\n",
-             static_cast<long long>(committed_rows), batches.size());
+  std::vector<ArrowArray> src_arrays;
+  int64_t total_rows = 0;
+  int64_t total_uncompressed_bytes = 0;
+  while (true) {
+    ArrowArray arr;
+    arr.release = nullptr;
+    int rc = stream->get_next(stream, &arr);
+    if (rc != 0) {
+      const char* err = stream->get_last_error ? stream->get_last_error(stream) : "Failed to read ArrowArray";
+      std::string err_str = err ? err : "Failed to read ArrowArray";
+      for (auto& a : src_arrays) if (a.release) a.release(&a);
+      if (schema.release) schema.release(&schema);
+      Rcpp::stop(err_str.c_str());
+    }
+    if (arr.release == nullptr) break;
+    if (arr.length > 0) {
+      total_rows += arr.length;
+      total_uncompressed_bytes += bqs_ipc::estimate_batch_bytes(&schema, &arr);
+      src_arrays.push_back(arr);
+    } else {
+      arr.release(&arr);
+    }
   }
-  return static_cast<double>(committed_rows);
+
+  auto cleanup_arrow = [&]() {
+    for (auto& a : src_arrays) {
+      if (a.release) a.release(&a);
+    }
+    src_arrays.clear();
+    if (schema.release) schema.release(&schema);
+  };
+
+  if (total_rows <= 0 || src_arrays.empty()) {
+    cleanup_arrow();
+    return 0;
+  }
+
+  // Strip 8-byte EOS marker from schema_ipc if present
+  size_t sch_len = static_cast<size_t>(schema_ipc.size());
+  if (sch_len >= 8) {
+    uint32_t cont = 0;
+    int32_t mlen = 0;
+    std::memcpy(&cont, RAW(schema_ipc) + sch_len - 8, 4);
+    std::memcpy(&mlen, RAW(schema_ipc) + sch_len - 4, 4);
+    if (cont == 0xFFFFFFFFu && mlen == 0) sch_len -= 8;
+  }
+  std::string schema_bytes(reinterpret_cast<const char*>(RAW(schema_ipc)), sch_len);
+
+  int enc_threads = max_threads > 0 ? max_threads : BQS_DEFAULT_THREADS;
+  int default_cap = (stream_type == "DEFAULT") ? 12 : 10;
+  int max_streams = max_stream_count > 0
+                      ? max_stream_count
+                      : (max_threads > 0 ? max_threads : default_cap);
+
+  // Scale stream concurrency smoothly (~3.5 MB uncompressed per stream):
+  // - < 3.5 MB -> 1 stream
+  // - 22.4 MB  -> 7 streams
+  // - 136.6 MB -> 12 streams (DEFAULT) / 10 streams (PENDING)
+  const int64_t min_bytes_per_stream = 3584LL * 1024LL;
+  int streams_by_bytes = std::max(1, static_cast<int>((total_uncompressed_bytes + min_bytes_per_stream - 1) / min_bytes_per_stream));
+  int streams_by_rows = std::max(1, static_cast<int>(total_rows / 4096));
+  int num_streams = max_stream_count > 0
+                      ? std::max(1, std::min(max_stream_count, streams_by_rows))
+                      : std::max(1, std::min({max_streams, streams_by_bytes, streams_by_rows}));
+
+  // Target >= 2 * num_streams batches (each <= 5 MB uncompressed) so fast streams
+  // dynamically steal work if any single stream experiences higher latency.
+  const int64_t max_batch_bytes = 5LL * 1024LL * 1024LL;
+  double bytes_per_row = std::max(16.0, static_cast<double>(total_uncompressed_bytes) / static_cast<double>(total_rows));
+  int64_t max_rows_by_bytes = std::max<int64_t>(512, static_cast<int64_t>(static_cast<double>(max_batch_bytes) / bytes_per_row));
+  int target_min_batches = (num_streams > 1) ? (num_streams * 2) : 1;
+  int64_t max_rows_for_stealing = std::max<int64_t>(512, (total_rows + target_min_batches - 1) / target_min_batches);
+  int64_t effective_batch_rows = std::min<int64_t>({
+    static_cast<int64_t>(std::max(1, row_batch_size)),
+    max_rows_by_bytes,
+    max_rows_for_stealing
+  });
+  if (effective_batch_rows >= 64) {
+    effective_batch_rows = (effective_batch_rows / 64) * 64;
+  }
+
+  std::vector<bqs_ipc::BatchSliceSpec> specs;
+  for (size_t a_idx = 0; a_idx < src_arrays.size(); a_idx++) {
+    int64_t alen = src_arrays[a_idx].length;
+    for (int64_t s = 0; s < alen; s += effective_batch_rows) {
+      specs.push_back({a_idx, s, std::min<int64_t>(effective_batch_rows, alen - s)});
+    }
+  }
+  num_streams = std::min<int>(num_streams, static_cast<int>(specs.size()));
+  client_ptr->EnsureWriteChannels(static_cast<size_t>(num_streams), true);
+
+  // Encode & ZSTD-compress all RecordBatches in parallel across CPU cores (~15-25 ms),
+  // then immediately release input Arrow memory and launch work-stealing write streams.
+  std::vector<std::string> batches;
+  std::string encode_err;
+  bool enc_ok = bqs_ipc::encode_batches_parallel(
+    &schema, src_arrays, specs, use_zstd, enc_threads, &batches, &encode_err);
+
+  cleanup_arrow();
+
+  if (!enc_ok) {
+    Rcpp::stop(encode_err.c_str());
+  }
+
+  int64_t committed = execute_parallel_write(
+    client_ptr.get(), parent, schema_bytes, &batches, total_rows,
+    stream_type, num_streams, quiet);
+  return static_cast<double>(committed);
 }
 

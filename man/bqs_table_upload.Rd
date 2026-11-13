@@ -10,9 +10,11 @@ bqs_table_upload(
   fields = NULL,
   create_disposition = c("CREATE_IF_NEEDED", "CREATE_NEVER"),
   write_disposition = c("WRITE_EMPTY", "WRITE_APPEND", "WRITE_TRUNCATE"),
-  stream_type = c("PENDING", "DEFAULT"),
+  stream_type = c("AUTO", "PENDING", "DEFAULT"),
   row_batch_size = 100000L,
   quiet = getOption("bigrquery.quiet", NA),
+  max_stream_count = 0L,
+  compression = c("auto", "zstd", "none"),
   ...
 )
 }
@@ -34,9 +36,12 @@ If \code{NULL}, inferred from \code{values} or retrieved from the destination ta
 \code{"WRITE_EMPTY"} (default, errors if non-empty), \code{"WRITE_APPEND"} (appends rows),
 or \code{"WRITE_TRUNCATE"} (replaces existing rows).}
 
-\item{stream_type}{Write stream mode: \code{"PENDING"} (default, atomic commit via
-\code{CreateWriteStream} / \code{FinalizeWriteStream} / \code{BatchCommitWriteStreams}) or
-\code{"DEFAULT"} (writes to the table's \verb{_default} stream, immediately committed).}
+\item{stream_type}{Write stream mode: \code{"AUTO"} (default, uses high-speed
+parallel \code{"DEFAULT"} streams with automatic table cleanup on failure when
+creating a brand-new table, and atomic \code{"PENDING"} streams with
+\code{BatchCommitWriteStreams} when writing to an existing table), \code{"PENDING"}
+(always use atomic \code{CreateWriteStream} / \code{FinalizeWriteStream} /
+\code{BatchCommitWriteStreams}), or \code{"DEFAULT"} (always write to \verb{_default}).}
 
 \item{row_batch_size}{Maximum number of rows per \code{AppendRows} request when
 \code{values} is a \code{data.frame} (default \code{100000L}). Automatically scaled down for
@@ -44,6 +49,13 @@ wide tables to stay well below the 20 MB gRPC message limit.}
 
 \item{quiet}{Should progress information be suppressed? Default \code{NA} (shows progress
 in interactive sessions).}
+
+\item{max_stream_count}{Maximum number of parallel write streams to open
+(\code{0L} automatically scales concurrency based on payload size and
+\code{options(bigrquerystorage.threads)}).}
+
+\item{compression}{Arrow record batch buffer compression codec: \code{"auto"}
+(default, uses \code{"zstd"} when compiled with \code{libzstd}), \code{"zstd"}, or \code{"none"}.}
 
 \item{...}{Additional arguments passed to \code{\link[bigrquery:bq_table_create]{bigrquery::bq_table_create()}} when
 creating a table.}

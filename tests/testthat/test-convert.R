@@ -242,3 +242,48 @@ test_that("nested INT64 in STRUCT, REPEATED RECORD, and plain data.frames serial
   expect_identical(out_deep$rep_s[[2]]$rep_b, df_deep$rep_s[[2]]$rep_b)
 })
 
+test_that("fast C++ column builder and ZSTD Arrow IPC encoder preserve values across non-aligned batch slices", {
+  n <- 205L
+  df <- tibble::tibble(
+    i = ifelse(seq_len(n) %% 7L == 0L, NA_integer_, seq_len(n)),
+    i64 = bit64::as.integer64(ifelse(seq_len(n) %% 11L == 0L, NA_character_, as.character(9007199254740990 + seq_len(n)))),
+    d = ifelse(seq_len(n) %% 5L == 0L, NA_real_, seq_len(n) * 0.25),
+    b = ifelse(seq_len(n) %% 9L == 0L, NA, seq_len(n) %% 2L == 0L),
+    s = ifelse(seq_len(n) %% 6L == 0L, NA_character_, paste0("val_", seq_len(n))),
+    f = factor(ifelse(seq_len(n) %% 8L == 0L, NA_character_, paste0("lvl_", seq_len(n) %% 4L))),
+    dt = as.Date("2024-01-01") + ifelse(seq_len(n) %% 10L == 0L, NA_integer_, seq_len(n)),
+    ts = as.POSIXct("2024-01-01 00:00:00", tz = "UTC") + ifelse(seq_len(n) %% 13L == 0L, NA_real_, seq_len(n))
+  )
+  fields <- bqs_infer_bq_fields(df)
+
+  # Non-byte-aligned row_batch_size (37 rows) exercises bit-shifted validity & bool slices
+  ipc_raw <- bqs_serialize_to_ipc(df, fields, row_batch_size = 37L, use_zstd = FALSE)
+  stream_raw <- read_nanoarrow(ipc_raw)
+  sch_raw <- stream_raw$get_schema()
+  out_raw <- parse_postprocess_schema(
+    bqs_convert_stream(stream_raw, int64_ptype(sch_raw), "integer64", nanoarrow::convert_array_stream, convert_stream_no_warnings),
+    sch_raw,
+    "integer64"
+  )
+  expect_identical(out_raw$i64, df$i64)
+  expect_equal(out_raw$d, df$d)
+  expect_identical(out_raw$b, df$b)
+  expect_identical(out_raw$s, df$s)
+  expect_identical(out_raw$f, as.character(df$f))
+  expect_identical(out_raw$dt, df$dt)
+  expect_equal(out_raw$ts, df$ts)
+
+  if (bqs_has_zstd() && isTRUE(nanoarrow::nanoarrow_with_zstd())) {
+    ipc_zstd <- bqs_serialize_to_ipc(df, fields, row_batch_size = 37L, use_zstd = TRUE)
+    expect_lt(length(ipc_zstd), length(ipc_raw))
+    stream_z <- read_nanoarrow(ipc_zstd)
+    sch_z <- stream_z$get_schema()
+    out_z <- parse_postprocess_schema(
+      bqs_convert_stream(stream_z, int64_ptype(sch_z), "integer64", nanoarrow::convert_array_stream, convert_stream_no_warnings),
+      sch_z,
+      "integer64"
+    )
+    expect_identical(out_z, out_raw)
+  }
+})
+

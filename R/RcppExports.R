@@ -21,8 +21,16 @@ bqs_ipc_stream <- function(client, project, dataset, table, parent, n, selected_
     .Call(`_bigrquerystorage_bqs_ipc_stream`, client, project, dataset, table, parent, n, selected_fields, row_restriction, sample_percentage, timestamp_seconds, timestamp_nanos, quiet, max_stream_count, compression_codec, max_threads)
 }
 
-bqs_ipc_write <- function(client, project, dataset, table, ipc_bytes, stream_type = "PENDING", quiet = FALSE) {
-    .Call(`_bigrquerystorage_bqs_ipc_write`, client, project, dataset, table, ipc_bytes, stream_type, quiet)
+bqs_warm_write_channels <- function(client, n_channels = 0L) {
+    invisible(.Call(`_bigrquerystorage_bqs_warm_write_channels`, client, n_channels))
+}
+
+bqs_ipc_write <- function(client, project, dataset, table, ipc_bytes, stream_type = "PENDING", quiet = FALSE, max_stream_count = 0L, max_threads = 0L) {
+    .Call(`_bigrquerystorage_bqs_ipc_write`, client, project, dataset, table, ipc_bytes, stream_type, quiet, max_stream_count, max_threads)
+}
+
+bqs_arrow_write <- function(client, project, dataset, table, stream_xptr, schema_ipc, row_batch_size = 100000L, stream_type = "PENDING", use_zstd = TRUE, quiet = FALSE, max_stream_count = 0L, max_threads = 0L) {
+    .Call(`_bigrquerystorage_bqs_arrow_write`, client, project, dataset, table, stream_xptr, schema_ipc, row_batch_size, stream_type, use_zstd, quiet, max_stream_count, max_threads)
 }
 
 bqs_convert_stream <- function(stream_xptr, ptype_df, bigint, na_convert_stream, na_convert_stream_quiet) {
@@ -43,5 +51,21 @@ bqs_collect_streams <- function(readers, schema_reader, n_threads) {
 
 bqs_encode_decimal <- function(x, scale = 9L, bitwidth = 128L) {
     .Call(`_bigrquerystorage_bqs_encode_decimal`, x, scale, bitwidth)
+}
+
+bqs_has_zstd <- function() {
+    .Call(`_bigrquerystorage_bqs_has_zstd`)
+}
+
+bqs_can_fast_encode <- function(schema_xptr) {
+    .Call(`_bigrquerystorage_bqs_can_fast_encode`, schema_xptr)
+}
+
+bqs_fast_df_columns <- function(df, col_names, target_types, target_modes, n_rows, n_threads = 0L) {
+    .Call(`_bigrquerystorage_bqs_fast_df_columns`, df, col_names, target_types, target_modes, n_rows, n_threads)
+}
+
+bqs_encode_arrow_ipc_raw <- function(schema_xptr, array_xptr, schema_ipc, row_batch_size, use_zstd = FALSE, n_threads = 0L) {
+    .Call(`_bigrquerystorage_bqs_encode_arrow_ipc_raw`, schema_xptr, array_xptr, schema_ipc, row_batch_size, use_zstd, n_threads)
 }
 
