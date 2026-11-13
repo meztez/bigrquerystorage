@@ -33,6 +33,10 @@ bqs_arrow_write <- function(client, project, dataset, table, stream_xptr, schema
     .Call(`_bigrquerystorage_bqs_arrow_write`, client, project, dataset, table, stream_xptr, schema_ipc, row_batch_size, stream_type, use_zstd, quiet, max_stream_count, max_threads)
 }
 
+bqs_download_direct <- function(client, project, dataset, table, parent, n, selected_fields, row_restriction, sample_percentage, timestamp_seconds, timestamp_nanos, quiet, max_stream_count, compression_codec, max_threads, bigint, as_data_frame, split_streams, read_nanoarrow_fn, int64_ptype_fn, check_pkg_fn, na_convert_stream, na_convert_stream_quiet, as_bigint) {
+    .Call(`_bigrquerystorage_bqs_download_direct`, client, project, dataset, table, parent, n, selected_fields, row_restriction, sample_percentage, timestamp_seconds, timestamp_nanos, quiet, max_stream_count, compression_codec, max_threads, bigint, as_data_frame, split_streams, read_nanoarrow_fn, int64_ptype_fn, check_pkg_fn, na_convert_stream, na_convert_stream_quiet, as_bigint)
+}
+
 bqs_convert_stream <- function(stream_xptr, ptype_df, bigint, na_convert_stream, na_convert_stream_quiet) {
     .Call(`_bigrquerystorage_bqs_convert_stream`, stream_xptr, ptype_df, bigint, na_convert_stream, na_convert_stream_quiet)
 }

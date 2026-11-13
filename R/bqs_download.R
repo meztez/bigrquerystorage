@@ -114,7 +114,15 @@ bqs_table_download <- function(
   }
 
   compression_codec <- switch(compression,
-    auto = if (isTRUE(nanoarrow::nanoarrow_with_zstd())) 2L else if (isTRUE(nanoarrow::nanoarrow_with_lz4())) 1L else 0L,
+    auto = if (type != "arrow" && bqs_has_zstd()) {
+      2L
+    } else if (isTRUE(nanoarrow::nanoarrow_with_zstd())) {
+      2L
+    } else if (isTRUE(nanoarrow::nanoarrow_with_lz4())) {
+      1L
+    } else {
+      0L
+    },
     zstd = 2L,
     lz4 = 1L,
     none = 0L
@@ -122,8 +130,50 @@ bqs_table_download <- function(
 
   quiet <- isTRUE(quiet)
   threads <- as.integer(getOption("bigrquerystorage.threads", 0L))
+  split_streams <- isTRUE(getOption("bigrquerystorage.split_streams", TRUE))
 
   bqs_auth()
+
+  if (type != "arrow" && (compression_codec == 0L || (compression_codec == 2L && bqs_has_zstd()))) {
+    rlang::local_options(nanoarrow.warn_unregistered_extension = FALSE)
+    as_bigint <- switch(bigint,
+      integer = as.integer,
+      integer64 = bit64::as.integer64,
+      numeric = as.numeric,
+      character = as.character
+    )
+    tb <- bqs_download_direct(
+      client = .global$client$ptr,
+      project = bqs_table_name[1],
+      dataset = bqs_table_name[2],
+      table = bqs_table_name[3],
+      parent = parent,
+      n = as.numeric(n_max),
+      selected_fields = selected_fields,
+      row_restriction = row_restriction,
+      sample_percentage = sample_percentage,
+      timestamp_seconds = timestamp_seconds,
+      timestamp_nanos = timestamp_nanos,
+      quiet = quiet,
+      max_stream_count = as.integer(max_stream_count),
+      compression_codec = compression_codec,
+      max_threads = threads,
+      bigint = bigint,
+      as_data_frame = (type != "tibble"),
+      split_streams = split_streams,
+      read_nanoarrow_fn = nanoarrow::read_nanoarrow,
+      int64_ptype_fn = int64_ptype,
+      check_pkg_fn = bqs_check_namespace,
+      na_convert_stream = nanoarrow::convert_array_stream,
+      na_convert_stream_quiet = convert_stream_no_warnings,
+      as_bigint = as_bigint
+    )
+    return(switch(type,
+      tibble = tb,
+      "data.frame" = tb,
+      "data.table" = data.table::setDT(tb)
+    ))
+  }
 
   ipc <- bqs_ipc_stream(
     client = .global$client$ptr,

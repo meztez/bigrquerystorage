@@ -441,4 +441,38 @@ test_that("bqs_table_upload supports multi-stream parallel ZSTD uploads across A
   expect_identical(out_auto$id, df_multi$id)
 })
 
+test_that("fused direct download handles low/high cardinality strings, NaN vs NULL, and n_max", {
+  auth_fn()
+
+  sql <- "
+    SELECT
+      id,
+      IF(MOD(id, 5) = 0, NULL, CONCAT('cat_', CAST(MOD(id, 4) AS STRING))) AS low_card_str,
+      IF(MOD(id, 7) = 0, NULL, GENERATE_UUID()) AS high_card_str,
+      CASE MOD(id, 4)
+        WHEN 0 THEN NULL
+        WHEN 1 THEN IEEE_DIVIDE(0.0, 0.0)
+        ELSE CAST(id AS FLOAT64) * 0.5
+      END AS dbl_val,
+      MOD(id, 3) = 0 AS flag_val
+    FROM UNNEST(GENERATE_ARRAY(1, 5000)) AS id
+  "
+  tb <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql, quiet = TRUE)
+
+  df_zstd <- bqs_table_download(tb, bigrquery::bq_test_project(), compression = "zstd", quiet = TRUE)
+  df_none <- bqs_table_download(tb, bigrquery::bq_test_project(), compression = "none", quiet = TRUE)
+  df_zstd <- df_zstd[order(df_zstd$id), ]
+  df_none <- df_none[order(df_none$id), ]
+
+  expect_equal(nrow(df_zstd), 5000L)
+  expect_identical(df_zstd$id, 1:5000)
+  expect_identical(df_zstd$low_card_str, df_none$low_card_str)
+  expect_identical(df_zstd$high_card_str, df_none$high_card_str)
+  expect_identical(is.na(df_zstd$dbl_val), df_zstd$id %% 4L %in% c(0L, 1L))
+  expect_identical(is.nan(df_zstd$dbl_val), df_zstd$id %% 4L == 1L)
+
+  df_lim <- bqs_table_download(tb, bigrquery::bq_test_project(), n_max = 123L, quiet = TRUE)
+  expect_equal(nrow(df_lim), 123L)
+})
+
 

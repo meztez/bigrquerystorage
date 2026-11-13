@@ -186,7 +186,7 @@ public:
                      const std::string& target,
                      const std::string& service_configuration)
     : cred_(cred), target_(target), service_configuration_(service_configuration) {
-    EnsureChannels(1);
+    EnsureChannels(24, true);
     EnsureWriteChannels(12, true);
   }
   void SetClientInfo(const std::string &client_info) {
@@ -196,15 +196,26 @@ public:
   // Keep a pool of channels so concurrent ReadRows calls each get their own
   // HTTP/2 connection instead of being multiplexed on a single one. Channels
   // need distinct arguments, otherwise gRPC shares the underlying subchannel.
-  void EnsureChannels(size_t n) {
+  void EnsureChannels(size_t n, bool warm_connect = true) {
     while (stubs_.size() < n) {
       grpc::ChannelArguments channel_arguments;
       channel_arguments.SetMaxReceiveMessageSize(134217728);
       channel_arguments.SetServiceConfigJSON(service_configuration_);
       channel_arguments.SetInt("grpc.use_local_subchannel_pool", 1);
+      channel_arguments.SetInt("grpc.http2.bdp_probe", 1);
+      channel_arguments.SetInt("grpc.http2.lookahead_bytes", 32 * 1024 * 1024);
       channel_arguments.SetInt("bigrquerystorage.channel_id", static_cast<int>(stubs_.size()));
-      stubs_.push_back(BigQueryRead::NewStub(
-        grpc::CreateCustomChannel(target_, cred_, channel_arguments)));
+      auto channel = grpc::CreateCustomChannel(target_, cred_, channel_arguments);
+      if (warm_connect) {
+        channel->GetState(true);
+      }
+      read_channels_.push_back(channel);
+      stubs_.push_back(BigQueryRead::NewStub(channel));
+    }
+    if (warm_connect) {
+      for (size_t i = 0; i < n && i < read_channels_.size(); i++) {
+        read_channels_[i]->GetState(true);
+      }
     }
   }
 
@@ -739,10 +750,180 @@ public:
     return {method_response.primary_stream().name(),
             method_response.remainder_stream().name()};
   }
+
+  // Thread-safe SplitReadStream helper (returns true when stream split into 2 non-empty sub-streams)
+  bool TrySplitReadStreamWorker(size_t stub_idx,
+                                const std::string& stream,
+                                double fraction,
+                                std::string* primary_out,
+                                std::string* remainder_out) {
+    google::cloud::bigquery::storage::v1::SplitReadStreamRequest req;
+    req.set_name(stream);
+    req.set_fraction(fraction);
+
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(150));
+    context.AddMetadata("x-goog-request-params", "name=" + stream);
+    context.AddMetadata("x-goog-api-client", client_info_);
+
+    google::cloud::bigquery::storage::v1::SplitReadStreamResponse resp;
+    grpc::Status status = stubs_[stub_idx % stubs_.size()]->SplitReadStream(&context, req, &resp);
+    if (!status.ok()) return false;
+    if (resp.primary_stream().name().empty() || resp.remainder_stream().name().empty()) {
+      return false;
+    }
+    *primary_out = resp.primary_stream().name();
+    *remainder_out = resp.remainder_stream().name();
+    return true;
+  }
+
+  // Single-stream ReadRows with in-flight ZSTD decompression and progress bar
+  void ReadRowsDecoded(const std::string& stream,
+                       std::vector<bqs_ipc::DecodedBatch>* out,
+                       bqs_ipc::ZstdDecompressContext* zctx,
+                       std::int64_t& n,
+                       long int& rows_count,
+                       long int& pages_count,
+                       bool quiet,
+                       RProgress::RProgress* pb,
+                       bool last_stream) {
+    grpc::ClientContext context;
+    context.AddMetadata("x-goog-request-params", "read_stream=" + stream);
+    context.AddMetadata("x-goog-api-client", client_info_);
+
+    ReadRowsRequest method_request;
+    method_request.set_read_stream(stream);
+    method_request.set_offset(0);
+
+    ReadRowsResponse method_response;
+    std::unique_ptr<grpc::ClientReader<ReadRowsResponse>> reader(
+        stubs_[0]->ReadRows(&context, method_request));
+
+    while (reader->Read(&method_response)) {
+      int64_t batch_rows = method_response.row_count();
+      std::string* raw_batch = method_response.mutable_arrow_record_batch()->release_serialized_record_batch();
+      if (raw_batch && !raw_batch->empty()) {
+        bqs_ipc::DecodedBatch decoded;
+        std::string dec_err;
+        bool ok = bqs_ipc::decode_ipc_record_batch(std::move(*raw_batch), &decoded, zctx, &dec_err);
+        delete raw_batch;
+        if (!ok) {
+          context.TryCancel();
+          reader->Finish();
+          Rcpp::stop(dec_err.c_str());
+        }
+        out->push_back(std::move(decoded));
+      } else {
+        delete raw_batch;
+      }
+
+      method_request.set_offset(method_request.offset() + batch_rows);
+      pages_count += 1;
+      if (!quiet) {
+        if (method_response.has_throttle_state()) {
+          pb->set_extra(method_response.throttle_state().throttle_percent());
+        }
+        if (n > 0) {
+          if (method_request.offset() + rows_count >= n) {
+            context.TryCancel();
+            pb->update(1);
+            break;
+          }
+          pb->tick(batch_rows);
+        } else {
+          pb->tick(
+              (method_response.stats().progress().at_response_end() -
+               method_response.stats().progress().at_response_start()) * 200);
+        }
+      } else if (n > 0 && method_request.offset() + rows_count >= n) {
+        context.TryCancel();
+        break;
+      }
+      if (pages_count % 100 == 0L) {
+        try {
+          Rcpp::checkUserInterrupt();
+        } catch (...) {
+          context.TryCancel();
+          reader->Finish();
+          throw;
+        }
+      }
+    }
+    grpc::Status status = reader->Finish();
+    if ((n < 0 && !status.ok()) || (n > 0 && !(status.ok() || status.error_code() == grpc::StatusCode::CANCELLED))) {
+      std::string err = std::string("grpc method ReadRows error -> ") + status.error_message();
+      Rcpp::stop(err.c_str());
+    }
+    rows_count += method_request.offset();
+    if (last_stream && !quiet) {
+      pb->update(1);
+    }
+  }
+
+  // Worker-thread ReadRows with in-flight ZSTD decompression (zero R API calls)
+  void ReadRowsDecodedWorker(int worker,
+                             const std::string& stream,
+                             std::vector<bqs_ipc::DecodedBatch>* out,
+                             bqs_ipc::ZstdDecompressContext* zctx,
+                             ParallelRead* state,
+                             std::string* error_msg) {
+    grpc::ClientContext context;
+    context.AddMetadata("x-goog-request-params", "read_stream=" + stream);
+    context.AddMetadata("x-goog-api-client", client_info_);
+
+    ReadRowsRequest method_request;
+    method_request.set_read_stream(stream);
+    method_request.set_offset(0);
+
+    ReadRowsResponse method_response;
+    state->Register(worker, &context);
+    std::unique_ptr<grpc::ClientReader<ReadRowsResponse>> reader(
+        stubs_[static_cast<size_t>(worker) % stubs_.size()]->ReadRows(&context, method_request));
+
+    while (reader->Read(&method_response)) {
+      int64_t batch_rows = method_response.row_count();
+      std::string* raw_batch = method_response.mutable_arrow_record_batch()->release_serialized_record_batch();
+      if (raw_batch && !raw_batch->empty()) {
+        bqs_ipc::DecodedBatch decoded;
+        std::string dec_err;
+        bool ok = bqs_ipc::decode_ipc_record_batch(std::move(*raw_batch), &decoded, zctx, &dec_err);
+        delete raw_batch;
+        if (!ok) {
+          *error_msg = dec_err;
+          state->CancelAll();
+          break;
+        }
+        out->push_back(std::move(decoded));
+      } else {
+        delete raw_batch;
+      }
+
+      if (method_response.has_throttle_state()) {
+        state->throttle.store(method_response.throttle_state().throttle_percent());
+      }
+      state->pages.fetch_add(1);
+      int64_t total = state->rows.fetch_add(batch_rows) + batch_rows;
+      if (state->n > 0 && total >= state->n) {
+        state->CancelAll();
+        break;
+      }
+      if (state->cancel.load()) {
+        break;
+      }
+    }
+    grpc::Status status = reader->Finish();
+    state->Unregister(worker);
+    if (error_msg->empty() && !status.ok() &&
+        !(state->cancel.load() && status.error_code() == grpc::StatusCode::CANCELLED)) {
+      *error_msg = std::string("grpc method ReadRows error -> ") + status.error_message();
+      state->CancelAll();
+    }
+  }
 private:
   std::shared_ptr<grpc::ChannelCredentials> cred_;
   std::string target_;
   std::string service_configuration_;
+  std::vector<std::shared_ptr<grpc::Channel>> read_channels_;
   std::vector<std::unique_ptr<BigQueryRead::Stub>> stubs_;
   std::vector<std::shared_ptr<grpc::Channel>> write_channels_;
   std::vector<std::unique_ptr<google::cloud::bigquery::storage::v1::BigQueryWrite::Stub>> write_stubs_;
@@ -1455,5 +1636,337 @@ double bqs_arrow_write(SEXP client,
     client_ptr.get(), parent, schema_bytes, &batches, total_rows,
     stream_type, num_streams, quiet);
   return static_cast<double>(committed);
+}
+
+// High-throughput fused download pipeline:
+// CreateReadSession -> (optional parallel SplitReadStream) ->
+// Parallel ReadRows with in-flight ZSTD decompression ->
+// Parallel Direct C++ Arrow-to-R Tibble/DataFrame conversion.
+// [[Rcpp::export(rng=false)]]
+SEXP bqs_download_direct(SEXP client,
+                         std::string project,
+                         std::string dataset,
+                         std::string table,
+                         std::string parent,
+                         std::int64_t n,
+                         std::vector<std::string> selected_fields,
+                         std::string row_restriction,
+                         std::double_t sample_percentage,
+                         std::int64_t timestamp_seconds,
+                         std::int32_t timestamp_nanos,
+                         bool quiet,
+                         int32_t max_stream_count,
+                         int32_t compression_codec,
+                         int32_t max_threads,
+                         std::string bigint,
+                         bool as_data_frame,
+                         bool split_streams,
+                         Rcpp::Function read_nanoarrow_fn,
+                         Rcpp::Function int64_ptype_fn,
+                         Rcpp::Function check_pkg_fn,
+                         Rcpp::Function na_convert_stream,
+                         Rcpp::Function na_convert_stream_quiet,
+                         Rcpp::Function as_bigint) {
+  Rcpp::XPtr<BigQueryReadClient> client_ptr(client);
+
+  int target_threads = max_threads > 0 ? max_threads : 24;
+
+  int32_t requested_streams = max_stream_count;
+  if (n > 0 && n <= 100000 && requested_streams == 0) {
+    requested_streams = 1;
+  }
+  int32_t preferred_min_streams = target_threads;
+  if (requested_streams > 0) {
+    preferred_min_streams = std::min(requested_streams, preferred_min_streams);
+  } else {
+    requested_streams = std::max<int32_t>(target_threads * 2, 32);
+  }
+
+  ReadSession read_session = client_ptr->CreateReadSession(
+    project,
+    dataset,
+    table,
+    parent,
+    timestamp_seconds,
+    timestamp_nanos,
+    selected_fields,
+    row_restriction,
+    sample_percentage,
+    requested_streams,
+    compression_codec,
+    preferred_min_streams);
+
+  int orig_n = read_session.streams_size();
+  const std::string& schema_bytes = read_session.arrow_schema().serialized_schema();
+
+  bool do_async_split = split_streams && n < 0 && orig_n >= 2 &&
+                        (orig_n * 2 <= target_threads) &&
+                        read_session.estimated_total_bytes_scanned() >= 96LL * 1024LL * 1024LL;
+
+  int total_slots = do_async_split ? (orig_n * 2) : std::max(1, orig_n);
+  std::vector<std::vector<bqs_ipc::DecodedBatch>> stream_batches(static_cast<size_t>(total_slots));
+
+  long int rows_count = 0;
+  long int pages_count = 0;
+  RProgress::RProgress pb(
+      "\033[42m\033[30mStreaming (:percent)\033[39m\033[49m [:bar] eta[:eta|:elapsed] throt[:extra]");
+  pb.set_cursor_char(">");
+
+  if (orig_n <= 1) {
+    pb.set_total(n > 0 ? static_cast<double>(n) : 100.0);
+    bqs_ipc::ZstdDecompressContext zctx;
+    for (int i = 0; i < orig_n; i++) {
+      client_ptr->ReadRowsDecoded(read_session.streams(i).name(),
+                                  &stream_batches[i],
+                                  &zctx,
+                                  n, rows_count, pages_count, quiet,
+                                  &pb, i == orig_n - 1);
+    }
+  } else if (do_async_split) {
+    // Non-blocking per-stream SplitReadStream + immediate ReadRows:
+    // Each primary worker splits stream `i` (150ms budget), dispatches `remainder`
+    // to an already-waiting helper worker on its own pre-warmed channel, and
+    // immediately reads `primary` into slot `2*i` (with `remainder` in `2*i + 1`).
+    int num_threads = orig_n * 2;
+    client_ptr->EnsureChannels(static_cast<size_t>(num_threads), true);
+
+    ParallelRead state(num_threads);
+    state.n = n;
+    std::vector<std::string> errors(static_cast<size_t>(total_slots));
+    std::atomic<int> running(num_threads);
+    std::mutex done_mu;
+    std::condition_variable done_cv;
+
+    std::mutex rem_mu;
+    std::condition_variable rem_cv;
+    std::vector<std::pair<int, std::string>> rem_queue;
+    rem_queue.reserve(static_cast<size_t>(orig_n));
+    int pending_splits = orig_n;
+
+    std::vector<std::thread> workers;
+    workers.reserve(static_cast<size_t>(num_threads));
+
+    // Primary workers 0 .. orig_n - 1
+    for (int i = 0; i < orig_n; i++) {
+      workers.emplace_back([&, i]() {
+        bqs_ipc::ZstdDecompressContext zctx;
+        std::string orig_stream = read_session.streams(i).name();
+        std::string p1, p2;
+        bool split_ok = false;
+        if (!state.cancel.load()) {
+          split_ok = client_ptr->TrySplitReadStreamWorker(
+            static_cast<size_t>(i), orig_stream, 0.5, &p1, &p2);
+        }
+        {
+          std::lock_guard<std::mutex> lk(rem_mu);
+          if (split_ok && !state.cancel.load()) {
+            rem_queue.emplace_back(2 * i + 1, std::move(p2));
+          }
+          pending_splits--;
+        }
+        rem_cv.notify_all();
+
+        if (!state.cancel.load()) {
+          const std::string& s_read = split_ok ? p1 : orig_stream;
+          int slot = 2 * i;
+          client_ptr->ReadRowsDecodedWorker(
+            i, s_read, &stream_batches[slot], &zctx, &state, &errors[slot]);
+          state.streams_done.fetch_add(1);
+        }
+        std::lock_guard<std::mutex> lock(done_mu);
+        running.fetch_sub(1);
+        done_cv.notify_all();
+      });
+    }
+
+    // Helper workers orig_n .. 2*orig_n - 1 for remainder streams
+    for (int h = orig_n; h < num_threads; h++) {
+      workers.emplace_back([&, h]() {
+        bqs_ipc::ZstdDecompressContext zctx;
+        while (!state.cancel.load()) {
+          std::pair<int, std::string> item;
+          bool has_item = false;
+          {
+            std::unique_lock<std::mutex> lk(rem_mu);
+            rem_cv.wait(lk, [&]() {
+              return !rem_queue.empty() || pending_splits == 0 || state.cancel.load();
+            });
+            if (!rem_queue.empty() && !state.cancel.load()) {
+              item = std::move(rem_queue.back());
+              rem_queue.pop_back();
+              has_item = true;
+            } else if (pending_splits == 0 || state.cancel.load()) {
+              break;
+            }
+          }
+          if (has_item) {
+            client_ptr->ReadRowsDecodedWorker(
+              h, item.second, &stream_batches[item.first], &zctx, &state, &errors[item.first]);
+            state.streams_done.fetch_add(1);
+          }
+        }
+        std::lock_guard<std::mutex> lock(done_mu);
+        running.fetch_sub(1);
+        done_cv.notify_all();
+      });
+    }
+
+    double expected_rows = static_cast<double>(read_session.estimated_row_count());
+    pb.set_total(100);
+
+    auto join_all = [&]() {
+      rem_cv.notify_all();
+      for (auto& w : workers) {
+        if (w.joinable()) w.join();
+      }
+    };
+
+    while (true) {
+      {
+        std::unique_lock<std::mutex> lock(done_mu);
+        done_cv.wait_for(lock, std::chrono::milliseconds(50),
+                         [&]() { return running.load() == 0; });
+      }
+      if (running.load() == 0) break;
+      try {
+        Rcpp::checkUserInterrupt();
+      } catch (...) {
+        state.CancelAll();
+        join_all();
+        throw;
+      }
+      if (!quiet) {
+        double ratio = expected_rows > 0
+          ? static_cast<double>(state.rows.load()) / expected_rows
+          : static_cast<double>(state.streams_done.load()) / total_slots;
+        pb.set_extra(state.throttle.load());
+        pb.update(std::min(0.99, std::max(0.0, ratio)));
+      }
+    }
+    join_all();
+
+    for (int i = 0; i < total_slots; i++) {
+      if (!errors[i].empty()) {
+        Rcpp::stop(errors[i].c_str());
+      }
+    }
+    rows_count = static_cast<long int>(state.rows.load());
+    pages_count = static_cast<long int>(state.pages.load());
+    if (!quiet) {
+      pb.update(1);
+    }
+  } else {
+    int n_streams = orig_n;
+    int num_threads = std::min(n_streams, target_threads);
+    client_ptr->EnsureChannels(static_cast<size_t>(num_threads), true);
+
+    ParallelRead state(num_threads);
+    state.n = n;
+    std::vector<std::string> errors(static_cast<size_t>(n_streams));
+    std::atomic<int> next_stream(0);
+    std::atomic<int> running(num_threads);
+    std::mutex done_mu;
+    std::condition_variable done_cv;
+
+    std::vector<std::thread> workers;
+    workers.reserve(static_cast<size_t>(num_threads));
+    for (int t = 0; t < num_threads; t++) {
+      workers.emplace_back([&, t]() {
+        bqs_ipc::ZstdDecompressContext zctx;
+        while (!state.cancel.load()) {
+          int idx = next_stream.fetch_add(1);
+          if (idx >= n_streams) break;
+          client_ptr->ReadRowsDecodedWorker(
+            t, read_session.streams(idx).name(), &stream_batches[idx], &zctx, &state, &errors[idx]);
+          state.streams_done.fetch_add(1);
+        }
+        std::lock_guard<std::mutex> lock(done_mu);
+        running.fetch_sub(1);
+        done_cv.notify_all();
+      });
+    }
+
+    double expected_rows = static_cast<double>(read_session.estimated_row_count());
+    if (n > 0 && (expected_rows <= 0 || n < expected_rows)) {
+      expected_rows = static_cast<double>(n);
+    }
+    pb.set_total(100);
+
+    auto join_all = [&]() {
+      for (auto& w : workers) {
+        if (w.joinable()) w.join();
+      }
+    };
+
+    while (true) {
+      {
+        std::unique_lock<std::mutex> lock(done_mu);
+        done_cv.wait_for(lock, std::chrono::milliseconds(50),
+                         [&]() { return running.load() == 0; });
+      }
+      if (running.load() == 0) break;
+      try {
+        Rcpp::checkUserInterrupt();
+      } catch (...) {
+        state.CancelAll();
+        join_all();
+        throw;
+      }
+      if (!quiet) {
+        double ratio = expected_rows > 0
+          ? static_cast<double>(state.rows.load()) / expected_rows
+          : static_cast<double>(state.streams_done.load()) / n_streams;
+        pb.set_extra(state.throttle.load());
+        pb.update(std::min(0.99, std::max(0.0, ratio)));
+      }
+    }
+    join_all();
+
+    for (int i = 0; i < n_streams; i++) {
+      if (!errors[i].empty()) {
+        Rcpp::stop(errors[i].c_str());
+      }
+    }
+    rows_count = static_cast<long int>(state.rows.load());
+    pages_count = static_cast<long int>(state.pages.load());
+    if (!quiet) {
+      pb.update(1);
+    }
+  }
+
+  if (!quiet) {
+    REprintf("Streamed %ld rows in %ld messages.\n", rows_count, pages_count);
+  }
+
+  // Decode the ~600-byte ArrowSchema once via nanoarrow::read_nanoarrow
+  Rcpp::RawVector schema_raw(schema_bytes.size());
+  if (!schema_bytes.empty()) {
+    std::memcpy(RAW(schema_raw), schema_bytes.data(), schema_bytes.size());
+  }
+  SEXP schema_reader_xptr = PROTECT(read_nanoarrow_fn(schema_raw));
+  struct ArrowArrayStream* sch_stream = nanoarrow_array_stream_from_xptr(schema_reader_xptr);
+
+  SEXP schema_xptr = PROTECT(nanoarrow_schema_owning_xptr());
+  struct ArrowSchema* out_schema = nanoarrow_output_schema_from_xptr(schema_xptr);
+  if (sch_stream->get_schema(sch_stream, out_schema) != 0) {
+    const char* err = sch_stream->get_last_error ? sch_stream->get_last_error(sch_stream) : "Failed to parse ArrowSchema";
+    UNPROTECT(2);
+    Rcpp::stop(err ? err : "Failed to parse ArrowSchema");
+  }
+
+  SEXP res = PROTECT(bqs_convert_decoded_streams(
+    schema_xptr,
+    &stream_batches,
+    n,
+    bigint,
+    as_data_frame,
+    target_threads,
+    int64_ptype_fn,
+    check_pkg_fn,
+    na_convert_stream,
+    na_convert_stream_quiet,
+    as_bigint));
+  UNPROTECT(3);
+  return res;
 }
 

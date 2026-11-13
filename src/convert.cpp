@@ -1854,3 +1854,1078 @@ Rcpp::RawVector bqs_encode_arrow_ipc_raw(SEXP schema_xptr,
   return out;
 }
 
+// -- Parallel Direct C++ DecodedBatches -> R Tibble/DataFrame Converter -------
+
+namespace {
+
+enum DirectColKind {
+  DCOL_FALLBACK = 0,
+  DCOL_INT64_TO_INT32,
+  DCOL_INT64_TO_INT64,
+  DCOL_INT64_TO_DBL,
+  DCOL_INT32,
+  DCOL_FLOAT64,
+  DCOL_FLOAT32,
+  DCOL_BOOL,
+  DCOL_DATE32,
+  DCOL_TIME64_US,
+  DCOL_TIMESTAMP_US,
+  DCOL_DECIMAL128,
+  DCOL_UTF8,
+  DCOL_LARGE_UTF8
+};
+
+struct DecodedBatchSlice {
+  const bqs_ipc::DecodedBatch* batch;
+  int64_t row_len;
+  int64_t dst_offset;
+};
+
+struct DirectColSpec {
+  int col_idx = 0;
+  DirectColKind kind = DCOL_FALLBACK;
+  size_t node_idx = 0;
+  size_t buf_idx = 0;
+  double dec_scale_mult = 1.0;
+  bool is_geography = false;
+  void* out_ptr = nullptr;
+};
+
+struct NumericSliceTask {
+  const DirectColSpec* col = nullptr;
+  const DecodedBatchSlice* slices = nullptr;
+  size_t b_start = 0;
+  size_t b_end = 0;
+  uint64_t na_real_bits = 0;
+  bool overflow = false;
+};
+
+static inline uint64_t fast_hash_str(const char* p, int64_t len) {
+  if (len <= 0) return 0x9e3779b97f4a7c15ULL;
+  uint64_t h = static_cast<uint64_t>(len) * 0x9e3779b97f4a7c15ULL;
+  if (len <= 8) {
+    uint64_t v = 0;
+    if (len >= 4) {
+      uint32_t a, b;
+      std::memcpy(&a, p, 4);
+      std::memcpy(&b, p + len - 4, 4);
+      v = (static_cast<uint64_t>(a) << 32) | b;
+    } else {
+      v = (static_cast<uint64_t>(static_cast<uint8_t>(p[0])) << 16) |
+          (static_cast<uint64_t>(static_cast<uint8_t>(p[len >> 1])) << 8) |
+          static_cast<uint64_t>(static_cast<uint8_t>(p[len - 1]));
+    }
+    h ^= v;
+    h *= 0xbf58476d1ce4e5b9ULL;
+    return h ^ (h >> 32);
+  }
+  int64_t i = 0;
+  for (; i + 8 <= len; i += 8) {
+    uint64_t w;
+    std::memcpy(&w, p + i, 8);
+    h ^= w;
+    h *= 0xbf58476d1ce4e5b9ULL;
+    h ^= (h >> 31);
+  }
+  uint64_t tail;
+  std::memcpy(&tail, p + len - 8, 8);
+  h ^= tail;
+  h *= 0x94d049bb133111ebULL;
+  return h ^ (h >> 32);
+}
+
+struct StrDictEntry {
+  uint64_t hash;
+  const char* ptr;
+  int32_t len;
+};
+
+struct StringChunkTask {
+  const DirectColSpec* col = nullptr;
+  const DecodedBatchSlice* slices = nullptr;
+  size_t b_start = 0;
+  size_t b_end = 0;
+  int64_t dst_offset = 0;
+  int64_t total_rows = 0;
+  bool use_dict = true;
+  bool has_nulls = false;
+  std::vector<StrDictEntry> entries;
+  std::vector<uint32_t> codes;
+};
+
+static void run_numeric_slice_task(NumericSliceTask& task) {
+  const DirectColSpec& c = *task.col;
+  const size_t n_idx = c.node_idx;
+  const size_t b_idx = c.buf_idx;
+  double na_dbl = 0.0;
+  std::memcpy(&na_dbl, &task.na_real_bits, sizeof(double));
+
+  for (size_t s = task.b_start; s < task.b_end; s++) {
+    const DecodedBatchSlice& sl = task.slices[s];
+    const bqs_ipc::DecodedBatch& batch = *sl.batch;
+    const int64_t len = sl.row_len;
+    if (len <= 0) continue;
+    const int64_t dst_off = sl.dst_offset;
+
+    const bqs_ipc::FieldNodeDesc& nd = batch.nodes[n_idx];
+    const bqs_ipc::BufferDesc& vbuf = batch.buffers[b_idx];
+    const bqs_ipc::BufferDesc& dbuf = batch.buffers[b_idx + 1];
+    const uint8_t* valid = (nd.null_count > 0 && vbuf.length > 0)
+                             ? (batch.body_ptr + vbuf.offset)
+                             : nullptr;
+    const uint8_t* raw = (dbuf.length > 0) ? (batch.body_ptr + dbuf.offset) : nullptr;
+
+    switch (c.kind) {
+      case DCOL_FLOAT64: {
+        double* dst = static_cast<double*>(c.out_ptr) + dst_off;
+        const double* src = reinterpret_cast<const double*>(raw);
+        if (!valid) {
+          std::memcpy(dst, src, static_cast<size_t>(len) * sizeof(double));
+        } else {
+          for (int64_t i = 0; i < len; i++) {
+            if ((valid[i >> 3] >> (i & 7)) & 1) {
+              dst[i] = src[i];
+            } else {
+              std::memcpy(dst + i, &task.na_real_bits, sizeof(uint64_t));
+            }
+          }
+        }
+        break;
+      }
+      case DCOL_FLOAT32: {
+        double* dst = static_cast<double*>(c.out_ptr) + dst_off;
+        const float* src = reinterpret_cast<const float*>(raw);
+        if (!valid) {
+          for (int64_t i = 0; i < len; i++) dst[i] = static_cast<double>(src[i]);
+        } else {
+          for (int64_t i = 0; i < len; i++) {
+            if ((valid[i >> 3] >> (i & 7)) & 1) {
+              dst[i] = static_cast<double>(src[i]);
+            } else {
+              std::memcpy(dst + i, &task.na_real_bits, sizeof(uint64_t));
+            }
+          }
+        }
+        break;
+      }
+      case DCOL_INT64_TO_INT32: {
+        int* dst = static_cast<int*>(c.out_ptr) + dst_off;
+        const int64_t* src = reinterpret_cast<const int64_t*>(raw);
+        bool local_ovf = false;
+        if (!valid) {
+          for (int64_t i = 0; i < len; i++) {
+            int64_t v = src[i];
+            if (static_cast<uint64_t>(v + 2147483647LL) > 4294967294ULL) {
+              dst[i] = NA_INTEGER;
+              local_ovf = true;
+            } else {
+              dst[i] = static_cast<int>(v);
+            }
+          }
+        } else {
+          for (int64_t i = 0; i < len; i++) {
+            if ((valid[i >> 3] >> (i & 7)) & 1) {
+              int64_t v = src[i];
+              if (static_cast<uint64_t>(v + 2147483647LL) > 4294967294ULL) {
+                dst[i] = NA_INTEGER;
+                local_ovf = true;
+              } else {
+                dst[i] = static_cast<int>(v);
+              }
+            } else {
+              dst[i] = NA_INTEGER;
+            }
+          }
+        }
+        if (local_ovf) task.overflow = true;
+        break;
+      }
+      case DCOL_INT64_TO_INT64: {
+        int64_t* dst = static_cast<int64_t*>(c.out_ptr) + dst_off;
+        const int64_t* src = reinterpret_cast<const int64_t*>(raw);
+        const int64_t na_i64 = static_cast<int64_t>(1ULL << 63);
+        if (!valid) {
+          std::memcpy(dst, src, static_cast<size_t>(len) * sizeof(int64_t));
+        } else {
+          for (int64_t i = 0; i < len; i++) {
+            dst[i] = ((valid[i >> 3] >> (i & 7)) & 1) ? src[i] : na_i64;
+          }
+        }
+        break;
+      }
+      case DCOL_INT64_TO_DBL: {
+        double* dst = static_cast<double*>(c.out_ptr) + dst_off;
+        const int64_t* src = reinterpret_cast<const int64_t*>(raw);
+        if (!valid) {
+          for (int64_t i = 0; i < len; i++) dst[i] = static_cast<double>(src[i]);
+        } else {
+          for (int64_t i = 0; i < len; i++) {
+            if ((valid[i >> 3] >> (i & 7)) & 1) {
+              dst[i] = static_cast<double>(src[i]);
+            } else {
+              std::memcpy(dst + i, &task.na_real_bits, sizeof(uint64_t));
+            }
+          }
+        }
+        break;
+      }
+      case DCOL_INT32: {
+        int* dst = static_cast<int*>(c.out_ptr) + dst_off;
+        const int32_t* src = reinterpret_cast<const int32_t*>(raw);
+        if (!valid) {
+          std::memcpy(dst, src, static_cast<size_t>(len) * sizeof(int32_t));
+        } else {
+          for (int64_t i = 0; i < len; i++) {
+            dst[i] = ((valid[i >> 3] >> (i & 7)) & 1) ? src[i] : NA_INTEGER;
+          }
+        }
+        break;
+      }
+      case DCOL_BOOL: {
+        int* dst = static_cast<int*>(c.out_ptr) + dst_off;
+        if (!valid) {
+          int64_t i = 0;
+          for (; i + 8 <= len; i += 8) {
+            uint8_t byte = raw[i >> 3];
+            dst[i + 0] = (byte >> 0) & 1;
+            dst[i + 1] = (byte >> 1) & 1;
+            dst[i + 2] = (byte >> 2) & 1;
+            dst[i + 3] = (byte >> 3) & 1;
+            dst[i + 4] = (byte >> 4) & 1;
+            dst[i + 5] = (byte >> 5) & 1;
+            dst[i + 6] = (byte >> 6) & 1;
+            dst[i + 7] = (byte >> 7) & 1;
+          }
+          for (; i < len; i++) {
+            dst[i] = (raw[i >> 3] >> (i & 7)) & 1;
+          }
+        } else {
+          for (int64_t i = 0; i < len; i++) {
+            if ((valid[i >> 3] >> (i & 7)) & 1) {
+              dst[i] = (raw[i >> 3] >> (i & 7)) & 1;
+            } else {
+              dst[i] = NA_LOGICAL;
+            }
+          }
+        }
+        break;
+      }
+      case DCOL_DATE32: {
+        double* dst = static_cast<double*>(c.out_ptr) + dst_off;
+        const int32_t* src = reinterpret_cast<const int32_t*>(raw);
+        if (!valid) {
+          for (int64_t i = 0; i < len; i++) dst[i] = static_cast<double>(src[i]);
+        } else {
+          for (int64_t i = 0; i < len; i++) {
+            if ((valid[i >> 3] >> (i & 7)) & 1) {
+              dst[i] = static_cast<double>(src[i]);
+            } else {
+              std::memcpy(dst + i, &task.na_real_bits, sizeof(uint64_t));
+            }
+          }
+        }
+        break;
+      }
+      case DCOL_TIME64_US:
+      case DCOL_TIMESTAMP_US: {
+        double* dst = static_cast<double*>(c.out_ptr) + dst_off;
+        const int64_t* src = reinterpret_cast<const int64_t*>(raw);
+        const double inv_us = 1e-6;
+        if (!valid) {
+          for (int64_t i = 0; i < len; i++) dst[i] = static_cast<double>(src[i]) * inv_us;
+        } else {
+          for (int64_t i = 0; i < len; i++) {
+            if ((valid[i >> 3] >> (i & 7)) & 1) {
+              dst[i] = static_cast<double>(src[i]) * inv_us;
+            } else {
+              std::memcpy(dst + i, &task.na_real_bits, sizeof(uint64_t));
+            }
+          }
+        }
+        break;
+      }
+      case DCOL_DECIMAL128: {
+#if defined(__SIZEOF_INT128__)
+        double* dst = static_cast<double*>(c.out_ptr) + dst_off;
+        const double mult = c.dec_scale_mult;
+        if (!valid) {
+          for (int64_t i = 0; i < len; i++) {
+            __extension__ __int128 v;
+            std::memcpy(&v, raw + i * 16, 16);
+            dst[i] = static_cast<double>(v) * mult;
+          }
+        } else {
+          for (int64_t i = 0; i < len; i++) {
+            if ((valid[i >> 3] >> (i & 7)) & 1) {
+              __extension__ __int128 v;
+              std::memcpy(&v, raw + i * 16, 16);
+              dst[i] = static_cast<double>(v) * mult;
+            } else {
+              std::memcpy(dst + i, &task.na_real_bits, sizeof(uint64_t));
+            }
+          }
+        }
+#else
+        (void)na_dbl;
+#endif
+        break;
+      }
+      default:
+        break;
+    }
+  }
+}
+
+static void run_string_chunk_task(StringChunkTask& task) {
+  const DirectColSpec& c = *task.col;
+  const size_t n_idx = c.node_idx;
+  const size_t b_idx = c.buf_idx;
+  const bool is_large = (c.kind == DCOL_LARGE_UTF8);
+
+  task.codes.resize(static_cast<size_t>(task.total_rows));
+  uint32_t* codes = task.codes.data();
+
+  static const uint32_t EMPTY_SLOT = 0xFFFFFFFFu;
+  uint32_t cap = 4096u;
+  std::vector<uint32_t> slots(cap, EMPTY_SLOT);
+  uint32_t mask = cap - 1u;
+  task.entries.reserve(1024);
+
+  auto rehash = [&]() {
+    cap <<= 1;
+    mask = cap - 1u;
+    slots.assign(cap, EMPTY_SLOT);
+    for (uint32_t id = 0; id < static_cast<uint32_t>(task.entries.size()); id++) {
+      uint32_t pos = static_cast<uint32_t>(task.entries[id].hash) & mask;
+      while (slots[pos] != EMPTY_SLOT) pos = (pos + 1u) & mask;
+      slots[pos] = id;
+    }
+  };
+
+  auto intern_local = [&](const char* ptr, int32_t slen) -> uint32_t {
+    uint64_t h = fast_hash_str(ptr, slen);
+    uint32_t pos = static_cast<uint32_t>(h) & mask;
+    while (true) {
+      uint32_t id = slots[pos];
+      if (id == EMPTY_SLOT) {
+        uint32_t new_id = static_cast<uint32_t>(task.entries.size());
+        task.entries.push_back({h, ptr, slen});
+        slots[pos] = new_id;
+        if (task.entries.size() * 2u >= cap) rehash();
+        return new_id;
+      }
+      const StrDictEntry& e = task.entries[id];
+      if (e.hash == h && e.len == slen && (slen == 0 || std::memcmp(e.ptr, ptr, static_cast<size_t>(slen)) == 0)) {
+        return id;
+      }
+      pos = (pos + 1u) & mask;
+    }
+  };
+
+  int64_t out_pos = 0;
+  bool checked_cardinality = false;
+
+  for (size_t s = task.b_start; s < task.b_end; s++) {
+    const DecodedBatchSlice& sl = task.slices[s];
+    const bqs_ipc::DecodedBatch& batch = *sl.batch;
+    const int64_t len = sl.row_len;
+    if (len <= 0) continue;
+
+    const bqs_ipc::FieldNodeDesc& nd = batch.nodes[n_idx];
+    const bqs_ipc::BufferDesc& vbuf = batch.buffers[b_idx];
+    const bqs_ipc::BufferDesc& obuf = batch.buffers[b_idx + 1];
+    const bqs_ipc::BufferDesc& dbuf = batch.buffers[b_idx + 2];
+
+    const uint8_t* valid = (nd.null_count > 0 && vbuf.length > 0)
+                             ? (batch.body_ptr + vbuf.offset)
+                             : nullptr;
+    const char* data = (dbuf.length > 0)
+                         ? reinterpret_cast<const char*>(batch.body_ptr + dbuf.offset)
+                         : "";
+
+    if (valid) task.has_nulls = true;
+
+    if (!is_large) {
+      const int32_t* offs = reinterpret_cast<const int32_t*>(batch.body_ptr + obuf.offset);
+      if (!valid) {
+        for (int64_t i = 0; i < len; i++) {
+          int32_t start = offs[i];
+          int32_t slen = offs[i + 1] - start;
+          codes[out_pos++] = intern_local(data + start, slen);
+          if (!checked_cardinality && out_pos >= 2048) {
+            checked_cardinality = true;
+            if (static_cast<int64_t>(task.entries.size()) > (out_pos * 3) / 4) {
+              task.use_dict = false;
+              std::vector<StrDictEntry>().swap(task.entries);
+              std::vector<uint32_t>().swap(task.codes);
+              return;
+            }
+          }
+        }
+      } else {
+        for (int64_t i = 0; i < len; i++) {
+          if ((valid[i >> 3] >> (i & 7)) & 1) {
+            int32_t start = offs[i];
+            int32_t slen = offs[i + 1] - start;
+            codes[out_pos++] = intern_local(data + start, slen);
+          } else {
+            codes[out_pos++] = 0xFFFFFFFFu;
+          }
+          if (!checked_cardinality && out_pos >= 2048) {
+            checked_cardinality = true;
+            if (static_cast<int64_t>(task.entries.size()) > (out_pos * 3) / 4) {
+              task.use_dict = false;
+              std::vector<StrDictEntry>().swap(task.entries);
+              std::vector<uint32_t>().swap(task.codes);
+              return;
+            }
+          }
+        }
+      }
+    } else {
+      const int64_t* offs = reinterpret_cast<const int64_t*>(batch.body_ptr + obuf.offset);
+      for (int64_t i = 0; i < len; i++) {
+        if (!valid || ((valid[i >> 3] >> (i & 7)) & 1)) {
+          int64_t start = offs[i];
+          int64_t slen64 = offs[i + 1] - start;
+          if (slen64 > 2147483647LL) {
+            task.use_dict = false;
+            std::vector<StrDictEntry>().swap(task.entries);
+            std::vector<uint32_t>().swap(task.codes);
+            return;
+          }
+          codes[out_pos++] = intern_local(data + start, static_cast<int32_t>(slen64));
+        } else {
+          codes[out_pos++] = 0xFFFFFFFFu;
+        }
+      }
+    }
+  }
+}
+
+struct GlobalCharEntry {
+  uint64_t hash;
+  const char* ptr;
+  int32_t len;
+  SEXP charsxp;
+};
+
+class GlobalCharTable {
+public:
+  explicit GlobalCharTable(size_t reserve_hint = 1024) {
+    size_t c = 2048;
+    while (c < reserve_hint * 2) c <<= 1;
+    cap_ = c;
+    mask_ = cap_ - 1;
+    slots_.assign(cap_, 0xFFFFFFFFu);
+    entries_.reserve(reserve_hint);
+  }
+
+  SEXP intern(uint64_t h, const char* ptr, int32_t len, SEXP guard, R_xlen_t* guard_pos) {
+    if (len == 0) return R_BlankString;
+    size_t pos = static_cast<size_t>(h) & mask_;
+    while (true) {
+      uint32_t id = slots_[pos];
+      if (id == 0xFFFFFFFFu) {
+        SEXP cs = Rf_mkCharLenCE(ptr, len, CE_UTF8);
+        SET_STRING_ELT(guard, (*guard_pos)++, cs);
+        uint32_t new_id = static_cast<uint32_t>(entries_.size());
+        entries_.push_back({h, ptr, len, cs});
+        slots_[pos] = new_id;
+        if (entries_.size() * 2 >= cap_) rehash();
+        return cs;
+      }
+      const GlobalCharEntry& e = entries_[id];
+      if (e.hash == h && e.len == len && std::memcmp(e.ptr, ptr, static_cast<size_t>(len)) == 0) {
+        return e.charsxp;
+      }
+      pos = (pos + 1) & mask_;
+    }
+  }
+
+private:
+  size_t cap_;
+  size_t mask_;
+  std::vector<uint32_t> slots_;
+  std::vector<GlobalCharEntry> entries_;
+
+  void rehash() {
+    cap_ <<= 1;
+    mask_ = cap_ - 1;
+    slots_.assign(cap_, 0xFFFFFFFFu);
+    for (uint32_t id = 0; id < static_cast<uint32_t>(entries_.size()); id++) {
+      size_t pos = static_cast<size_t>(entries_[id].hash) & mask_;
+      while (slots_[pos] != 0xFFFFFFFFu) pos = (pos + 1) & mask_;
+      slots_[pos] = id;
+    }
+  }
+};
+
+struct FallbackStreamData {
+  ArrowSchema root_schema;
+  std::vector<ArrowSchema*> child_schema_ptrs;
+  std::vector<ArrowArray> batches;
+  size_t batch_idx = 0;
+
+  ~FallbackStreamData() {
+    for (size_t i = batch_idx; i < batches.size(); i++) {
+      if (batches[i].release) batches[i].release(&batches[i]);
+    }
+  }
+
+  static int get_schema(struct ArrowArrayStream* s, struct ArrowSchema* out) {
+    FallbackStreamData* self = static_cast<FallbackStreamData*>(s->private_data);
+    *out = self->root_schema;
+    out->release = noop_release_schema;
+    return 0;
+  }
+
+  static int get_next(struct ArrowArrayStream* s, struct ArrowArray* out) {
+    FallbackStreamData* self = static_cast<FallbackStreamData*>(s->private_data);
+    if (self->batch_idx >= self->batches.size()) {
+      out->release = nullptr;
+      return 0;
+    }
+    *out = self->batches[self->batch_idx];
+    self->batches[self->batch_idx].release = nullptr;
+    self->batch_idx++;
+    return 0;
+  }
+
+  static const char* get_last_error(struct ArrowArrayStream*) { return nullptr; }
+  static void release(struct ArrowArrayStream* s) { s->release = nullptr; }
+};
+
+} // namespace
+
+SEXP bqs_convert_decoded_streams(
+    SEXP schema_xptr,
+    std::vector<std::vector<bqs_ipc::DecodedBatch>>* stream_batches,
+    int64_t n_max,
+    const std::string& bigint,
+    bool as_data_frame,
+    int n_threads,
+    Rcpp::Function int64_ptype_fn,
+    Rcpp::Function check_pkg_fn,
+    Rcpp::Function na_convert_stream,
+    Rcpp::Function na_convert_stream_quiet,
+    Rcpp::Function as_bigint) {
+  struct ArrowSchema* schema = nanoarrow_schema_from_xptr(schema_xptr);
+
+  bool has_geo = false, has_bytes = false;
+  schema_flags(schema, std::string(), &has_geo, &has_bytes);
+  if (has_geo) check_pkg_fn("wk", "GEOGRAPHY");
+  if (has_bytes) check_pkg_fn("blob", "BYTES");
+
+  // Flatten non-empty batches in stream order, honoring n_max
+  std::vector<DecodedBatchSlice> slices;
+  int64_t total_rows = 0;
+  for (size_t s = 0; s < stream_batches->size(); s++) {
+    auto& sb = (*stream_batches)[s];
+    for (size_t b = 0; b < sb.size(); b++) {
+      if (n_max >= 0 && total_rows >= n_max) break;
+      int64_t blen = sb[b].length;
+      if (blen <= 0) continue;
+      int64_t take = (n_max >= 0) ? std::min<int64_t>(blen, n_max - total_rows) : blen;
+      slices.push_back({&sb[b], take, total_rows});
+      total_rows += take;
+    }
+  }
+
+  const int64_t n_cols = schema->n_children;
+
+  // Handle 0-row edge case via existing schema ptype path
+  if (total_rows == 0) {
+    for (auto& sb : *stream_batches) sb.clear();
+    FallbackStreamData empty_data;
+    empty_data.child_schema_ptrs.resize(static_cast<size_t>(n_cols));
+    for (int64_t j = 0; j < n_cols; j++) {
+      empty_data.child_schema_ptrs[static_cast<size_t>(j)] = schema->children[j];
+    }
+    empty_data.root_schema = *schema;
+    empty_data.root_schema.release = noop_release_schema;
+
+    SEXP empty_stream_xptr = PROTECT(nanoarrow_array_stream_owning_xptr());
+    struct ArrowArrayStream* es = reinterpret_cast<struct ArrowArrayStream*>(R_ExternalPtrAddr(empty_stream_xptr));
+    es->get_schema = FallbackStreamData::get_schema;
+    es->get_next = FallbackStreamData::get_next;
+    es->get_last_error = FallbackStreamData::get_last_error;
+    es->release = FallbackStreamData::release;
+    es->private_data = &empty_data;
+
+    SEXP ptype = PROTECT(int64_ptype_fn(schema_xptr));
+    SEXP df = PROTECT(bqs_convert_stream(empty_stream_xptr, ptype, bigint, na_convert_stream, na_convert_stream_quiet));
+    SEXP tb = PROTECT(bqs_postprocess(df, schema_xptr, bigint, as_bigint));
+    if (as_data_frame) {
+      Rf_setAttrib(tb, R_ClassSymbol, Rf_mkString("data.frame"));
+    } else if (!Rf_inherits(tb, "tbl_df")) {
+      SEXP cls_tbl = PROTECT(Rf_allocVector(STRSXP, 3));
+      SET_STRING_ELT(cls_tbl, 0, Rf_mkChar("tbl_df"));
+      SET_STRING_ELT(cls_tbl, 1, Rf_mkChar("tbl"));
+      SET_STRING_ELT(cls_tbl, 2, Rf_mkChar("data.frame"));
+      Rf_setAttrib(tb, R_ClassSymbol, cls_tbl);
+      UNPROTECT(1);
+    }
+    UNPROTECT(4);
+    return tb;
+  }
+
+  // Compute exact pre-order FieldNode and Buffer index for every top-level column
+  std::vector<size_t> col_node_pos(static_cast<size_t>(n_cols), 0);
+  std::vector<size_t> col_buf_pos(static_cast<size_t>(n_cols), 0);
+  size_t running_nodes = 0;
+  size_t running_bufs = 0;
+  for (int64_t j = 0; j < n_cols; j++) {
+    col_node_pos[static_cast<size_t>(j)] = running_nodes;
+    col_buf_pos[static_cast<size_t>(j)] = running_bufs;
+    bqs_ipc::count_schema_nodes_and_buffers(schema->children[j], &running_nodes, &running_bufs);
+  }
+
+  for (const auto& sl : slices) {
+    if (sl.batch->nodes.size() != running_nodes || sl.batch->buffers.size() != running_bufs) {
+      Rcpp::stop("Arrow RecordBatch node/buffer count mismatch against session schema.");
+    }
+  }
+
+  // Classify columns and allocate output R vectors on the main thread
+  Rcpp::List out_cols(n_cols);
+  Rcpp::CharacterVector col_names(n_cols);
+  std::vector<DirectColSpec> direct_specs(static_cast<size_t>(n_cols));
+  std::vector<int> numeric_cols;
+  std::vector<int> string_cols;
+  std::vector<int> fallback_cols;
+
+  SEXP cls_int64 = PROTECT(Rf_mkString("integer64"));
+  SEXP cls_date = PROTECT(Rf_mkString("Date"));
+  SEXP cls_posix = PROTECT(Rf_allocVector(STRSXP, 2));
+  SET_STRING_ELT(cls_posix, 0, Rf_mkChar("POSIXct"));
+  SET_STRING_ELT(cls_posix, 1, Rf_mkChar("POSIXt"));
+  SEXP cls_hms = PROTECT(Rf_allocVector(STRSXP, 2));
+  SET_STRING_ELT(cls_hms, 0, Rf_mkChar("hms"));
+  SET_STRING_ELT(cls_hms, 1, Rf_mkChar("difftime"));
+  SEXP cls_wk = PROTECT(Rf_allocVector(STRSXP, 2));
+  SET_STRING_ELT(cls_wk, 0, Rf_mkChar("wk_wkt"));
+  SET_STRING_ELT(cls_wk, 1, Rf_mkChar("wk_vctr"));
+  SEXP str_utc = PROTECT(Rf_mkString("UTC"));
+  SEXP str_secs = PROTECT(Rf_mkString("secs"));
+  SEXP sym_tzone = Rf_install("tzone");
+  SEXP sym_units = Rf_install("units");
+
+  for (int64_t j = 0; j < n_cols; j++) {
+    ArrowSchema* ch = schema->children[j];
+    col_names[j] = ch->name ? Rf_mkCharCE(ch->name, CE_UTF8) : Rf_mkChar("");
+    const char* fmt = schema_format(ch);
+    std::string ext = schema_extension_name(ch);
+
+    DirectColSpec& sp = direct_specs[static_cast<size_t>(j)];
+    sp.col_idx = static_cast<int>(j);
+    sp.node_idx = col_node_pos[static_cast<size_t>(j)];
+    sp.buf_idx = col_buf_pos[static_cast<size_t>(j)];
+    sp.is_geography = (ext == EXT_GEOGRAPHY);
+
+    int dec_scale = 0;
+    if (ch->dictionary != nullptr) {
+      sp.kind = DCOL_FALLBACK;
+    } else if (std::strcmp(fmt, "g") == 0 && ext.empty()) {
+      sp.kind = DCOL_FLOAT64;
+      SEXP v = PROTECT(Rf_allocVector(REALSXP, total_rows));
+      sp.out_ptr = REAL(v);
+      out_cols[j] = v;
+      UNPROTECT(1);
+      numeric_cols.push_back(static_cast<int>(j));
+    } else if (std::strcmp(fmt, "f") == 0 && ext.empty()) {
+      sp.kind = DCOL_FLOAT32;
+      SEXP v = PROTECT(Rf_allocVector(REALSXP, total_rows));
+      sp.out_ptr = REAL(v);
+      out_cols[j] = v;
+      UNPROTECT(1);
+      numeric_cols.push_back(static_cast<int>(j));
+    } else if (std::strcmp(fmt, "l") == 0 && ext.empty() && bigint != "character") {
+      if (bigint == "integer") {
+        sp.kind = DCOL_INT64_TO_INT32;
+        SEXP v = PROTECT(Rf_allocVector(INTSXP, total_rows));
+        sp.out_ptr = INTEGER(v);
+        out_cols[j] = v;
+        UNPROTECT(1);
+      } else if (bigint == "integer64") {
+        sp.kind = DCOL_INT64_TO_INT64;
+        SEXP v = PROTECT(Rf_allocVector(REALSXP, total_rows));
+        Rf_setAttrib(v, R_ClassSymbol, cls_int64);
+        sp.out_ptr = REAL(v);
+        out_cols[j] = v;
+        UNPROTECT(1);
+      } else {
+        sp.kind = DCOL_INT64_TO_DBL;
+        SEXP v = PROTECT(Rf_allocVector(REALSXP, total_rows));
+        sp.out_ptr = REAL(v);
+        out_cols[j] = v;
+        UNPROTECT(1);
+      }
+      numeric_cols.push_back(static_cast<int>(j));
+    } else if (std::strcmp(fmt, "i") == 0 && ext.empty()) {
+      sp.kind = DCOL_INT32;
+      SEXP v = PROTECT(Rf_allocVector(INTSXP, total_rows));
+      sp.out_ptr = INTEGER(v);
+      out_cols[j] = v;
+      UNPROTECT(1);
+      numeric_cols.push_back(static_cast<int>(j));
+    } else if (std::strcmp(fmt, "b") == 0 && ext.empty()) {
+      sp.kind = DCOL_BOOL;
+      SEXP v = PROTECT(Rf_allocVector(LGLSXP, total_rows));
+      sp.out_ptr = LOGICAL(v);
+      out_cols[j] = v;
+      UNPROTECT(1);
+      numeric_cols.push_back(static_cast<int>(j));
+    } else if (std::strcmp(fmt, "tdD") == 0 && ext.empty()) {
+      sp.kind = DCOL_DATE32;
+      SEXP v = PROTECT(Rf_allocVector(REALSXP, total_rows));
+      Rf_setAttrib(v, R_ClassSymbol, cls_date);
+      sp.out_ptr = REAL(v);
+      out_cols[j] = v;
+      UNPROTECT(1);
+      numeric_cols.push_back(static_cast<int>(j));
+    } else if (std::strcmp(fmt, "ttu") == 0 && ext.empty()) {
+      sp.kind = DCOL_TIME64_US;
+      SEXP v = PROTECT(Rf_allocVector(REALSXP, total_rows));
+      Rf_setAttrib(v, sym_units, str_secs);
+      Rf_setAttrib(v, R_ClassSymbol, cls_hms);
+      sp.out_ptr = REAL(v);
+      out_cols[j] = v;
+      UNPROTECT(1);
+      numeric_cols.push_back(static_cast<int>(j));
+    } else if (std::strncmp(fmt, "tsu:", 4) == 0 && (ext.empty() || ext == EXT_DATETIME)) {
+      sp.kind = DCOL_TIMESTAMP_US;
+      SEXP v = PROTECT(Rf_allocVector(REALSXP, total_rows));
+      Rf_setAttrib(v, R_ClassSymbol, cls_posix);
+      Rf_setAttrib(v, sym_tzone, str_utc);
+      sp.out_ptr = REAL(v);
+      out_cols[j] = v;
+      UNPROTECT(1);
+      numeric_cols.push_back(static_cast<int>(j));
+    } else if (
+#if defined(__SIZEOF_INT128__)
+        ext.empty() && parse_decimal128_scale(fmt, &dec_scale)
+#else
+        false
+#endif
+    ) {
+      sp.kind = DCOL_DECIMAL128;
+      sp.dec_scale_mult = std::pow(10.0, -dec_scale);
+      SEXP v = PROTECT(Rf_allocVector(REALSXP, total_rows));
+      sp.out_ptr = REAL(v);
+      out_cols[j] = v;
+      UNPROTECT(1);
+      numeric_cols.push_back(static_cast<int>(j));
+    } else if ((std::strcmp(fmt, "u") == 0 || std::strcmp(fmt, "U") == 0) &&
+               (ext.empty() || ext == EXT_GEOGRAPHY)) {
+      sp.kind = (std::strcmp(fmt, "U") == 0) ? DCOL_LARGE_UTF8 : DCOL_UTF8;
+      string_cols.push_back(static_cast<int>(j));
+    } else {
+      sp.kind = DCOL_FALLBACK;
+      fallback_cols.push_back(static_cast<int>(j));
+    }
+  }
+
+  // Build fine-grained parallel tasks for numeric/bool/temporal/decimal AND string columns
+  uint64_t na_real_bits = 0;
+  double r_na = NA_REAL;
+  std::memcpy(&na_real_bits, &r_na, sizeof(uint64_t));
+
+  // Partition `slices` into ~128K-row groups for numeric tasks and ~200K-row groups for string tasks
+  std::vector<std::pair<size_t, size_t>> num_groups;
+  {
+    size_t gs = 0;
+    int64_t acc = 0;
+    for (size_t s = 0; s < slices.size(); s++) {
+      acc += slices[s].row_len;
+      if (acc >= 131072 || s + 1 == slices.size()) {
+        num_groups.emplace_back(gs, s + 1);
+        gs = s + 1;
+        acc = 0;
+      }
+    }
+  }
+
+  std::vector<NumericSliceTask> num_tasks;
+  num_tasks.reserve(numeric_cols.size() * num_groups.size());
+  for (int cidx : numeric_cols) {
+    for (const auto& grp : num_groups) {
+      NumericSliceTask t;
+      t.col = &direct_specs[static_cast<size_t>(cidx)];
+      t.slices = slices.data();
+      t.b_start = grp.first;
+      t.b_end = grp.second;
+      t.na_real_bits = na_real_bits;
+      num_tasks.push_back(t);
+    }
+  }
+
+  std::vector<std::vector<StringChunkTask>> str_col_tasks(string_cols.size());
+  std::vector<StringChunkTask*> flat_str_tasks;
+  if (!string_cols.empty()) {
+    std::vector<std::pair<size_t, size_t>> str_groups;
+    size_t gs = 0;
+    int64_t acc = 0;
+    for (size_t s = 0; s < slices.size(); s++) {
+      acc += slices[s].row_len;
+      if (acc >= 196608 || s + 1 == slices.size()) {
+        str_groups.emplace_back(gs, s + 1);
+        gs = s + 1;
+        acc = 0;
+      }
+    }
+    for (size_t sc = 0; sc < string_cols.size(); sc++) {
+      int cidx = string_cols[sc];
+      auto& vec = str_col_tasks[sc];
+      vec.resize(str_groups.size());
+      for (size_t g = 0; g < str_groups.size(); g++) {
+        size_t bs = str_groups[g].first;
+        size_t be = str_groups[g].second;
+        int64_t chunk_rows = 0;
+        for (size_t u = bs; u < be; u++) chunk_rows += slices[u].row_len;
+        vec[g].col = &direct_specs[static_cast<size_t>(cidx)];
+        vec[g].slices = slices.data();
+        vec[g].b_start = bs;
+        vec[g].b_end = be;
+        vec[g].dst_offset = slices[bs].dst_offset;
+        vec[g].total_rows = chunk_rows;
+        flat_str_tasks.push_back(&vec[g]);
+      }
+    }
+  }
+
+  // Execute ALL numeric and string hashing/dict tasks concurrently across C++ worker pool
+  size_t total_tasks = num_tasks.size() + flat_str_tasks.size();
+  if (total_tasks > 0) {
+    if (n_threads <= 0) {
+      unsigned int hw = std::thread::hardware_concurrency();
+      n_threads = hw > 0 ? static_cast<int>(std::min(hw, 24u)) : 4;
+    }
+    int n_workers = (total_rows >= 8192 && total_tasks > 1)
+                      ? static_cast<int>(std::min<size_t>(static_cast<size_t>(std::max(1, n_threads)), total_tasks))
+                      : 1;
+    std::atomic<size_t> next_t{0};
+    auto worker_fn = [&]() {
+      while (true) {
+        size_t idx = next_t.fetch_add(1);
+        if (idx >= total_tasks) break;
+        if (idx < flat_str_tasks.size()) {
+          run_string_chunk_task(*flat_str_tasks[idx]);
+        } else {
+          run_numeric_slice_task(num_tasks[idx - flat_str_tasks.size()]);
+        }
+      }
+    };
+
+    if (n_workers <= 1) {
+      worker_fn();
+    } else {
+      std::vector<std::thread> pool;
+      pool.reserve(static_cast<size_t>(n_workers - 1));
+      for (int w = 1; w < n_workers; w++) pool.emplace_back(worker_fn);
+      worker_fn();
+      for (auto& th : pool) th.join();
+    }
+  }
+
+  bool any_int_overflow = false;
+  for (const auto& t : num_tasks) {
+    if (t.overflow) {
+      any_int_overflow = true;
+      break;
+    }
+  }
+  if (any_int_overflow) {
+    Rf_warning("NAs produced by integer overflow");
+  }
+
+  // Finalize STRSXP columns on the main R thread using unique CHARSXP interning
+  for (size_t sc = 0; sc < string_cols.size(); sc++) {
+    int cidx = string_cols[sc];
+    const DirectColSpec& sp = direct_specs[static_cast<size_t>(cidx)];
+    auto& chunks = str_col_tasks[sc];
+
+    SEXP str_vec = PROTECT(Rf_allocVector(STRSXP, total_rows));
+    if (sp.is_geography) {
+      Rf_setAttrib(str_vec, R_ClassSymbol, cls_wk);
+    }
+
+    size_t max_guard_slots = 0;
+    for (const auto& ch : chunks) {
+      if (ch.use_dict) max_guard_slots += ch.entries.size();
+    }
+
+    SEXP guard = PROTECT(Rf_allocVector(STRSXP, static_cast<R_xlen_t>(max_guard_slots)));
+    R_xlen_t guard_pos = 0;
+    GlobalCharTable gtab(std::min<size_t>(max_guard_slots + 16, 65536));
+    std::vector<SEXP> resolved;
+
+    for (auto& ch : chunks) {
+      if (ch.use_dict) {
+        size_t n_ent = ch.entries.size();
+        resolved.resize(n_ent);
+        for (size_t u = 0; u < n_ent; u++) {
+          const StrDictEntry& e = ch.entries[u];
+          resolved[u] = gtab.intern(e.hash, e.ptr, e.len, guard, &guard_pos);
+        }
+        const uint32_t* codes = ch.codes.data();
+        const int64_t base = ch.dst_offset;
+        const int64_t nrows = ch.total_rows;
+        if (!ch.has_nulls) {
+          for (int64_t i = 0; i < nrows; i++) {
+            SEXP val = resolved[codes[i]];
+            if (val != R_BlankString) SET_STRING_ELT(str_vec, base + i, val);
+          }
+        } else {
+          for (int64_t i = 0; i < nrows; i++) {
+            uint32_t code = codes[i];
+            if (code == 0xFFFFFFFFu) {
+              SET_STRING_ELT(str_vec, base + i, NA_STRING);
+            } else {
+              SEXP val = resolved[code];
+              if (val != R_BlankString) SET_STRING_ELT(str_vec, base + i, val);
+            }
+          }
+        }
+        std::vector<StrDictEntry>().swap(ch.entries);
+        std::vector<uint32_t>().swap(ch.codes);
+      } else {
+        // High-cardinality direct fallback for this chunk
+        const bool is_large = (sp.kind == DCOL_LARGE_UTF8);
+        for (size_t s = ch.b_start; s < ch.b_end; s++) {
+          const DecodedBatchSlice& sl = slices[s];
+          const bqs_ipc::DecodedBatch& batch = *sl.batch;
+          const int64_t len = sl.row_len;
+          const int64_t dst_off = sl.dst_offset;
+          const bqs_ipc::FieldNodeDesc& nd = batch.nodes[sp.node_idx];
+          const bqs_ipc::BufferDesc& vbuf = batch.buffers[sp.buf_idx];
+          const bqs_ipc::BufferDesc& obuf = batch.buffers[sp.buf_idx + 1];
+          const bqs_ipc::BufferDesc& dbuf = batch.buffers[sp.buf_idx + 2];
+          const uint8_t* valid = (nd.null_count > 0 && vbuf.length > 0)
+                                   ? (batch.body_ptr + vbuf.offset)
+                                   : nullptr;
+          const char* data = (dbuf.length > 0)
+                               ? reinterpret_cast<const char*>(batch.body_ptr + dbuf.offset)
+                               : "";
+          if (!is_large) {
+            const int32_t* offs = reinterpret_cast<const int32_t*>(batch.body_ptr + obuf.offset);
+            for (int64_t i = 0; i < len; i++) {
+              if (valid && !((valid[i >> 3] >> (i & 7)) & 1)) {
+                SET_STRING_ELT(str_vec, dst_off + i, NA_STRING);
+              } else {
+                int32_t st = offs[i];
+                int32_t slen = offs[i + 1] - st;
+                if (slen > 0) {
+                  SET_STRING_ELT(str_vec, dst_off + i, Rf_mkCharLenCE(data + st, slen, CE_UTF8));
+                }
+              }
+            }
+          } else {
+            const int64_t* offs = reinterpret_cast<const int64_t*>(batch.body_ptr + obuf.offset);
+            for (int64_t i = 0; i < len; i++) {
+              if (valid && !((valid[i >> 3] >> (i & 7)) & 1)) {
+                SET_STRING_ELT(str_vec, dst_off + i, NA_STRING);
+              } else {
+                int64_t st = offs[i];
+                int64_t slen = offs[i + 1] - st;
+                if (slen > 0) {
+                  SET_STRING_ELT(str_vec, dst_off + i, Rf_mkCharLenCE(data + st, static_cast<int>(slen), CE_UTF8));
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    out_cols[cidx] = str_vec;
+    UNPROTECT(2); // guard, str_vec
+  }
+
+  // Handle any nested / special fallback columns zero-copy via bqs_convert_stream + bqs_postprocess
+  if (!fallback_cols.empty()) {
+    size_t nf = fallback_cols.size();
+    FallbackStreamData fb_data;
+    fb_data.child_schema_ptrs.resize(nf);
+    for (size_t k = 0; k < nf; k++) {
+      fb_data.child_schema_ptrs[k] = schema->children[fallback_cols[k]];
+    }
+    fb_data.root_schema = *schema;
+    fb_data.root_schema.n_children = static_cast<int64_t>(nf);
+    fb_data.root_schema.children = fb_data.child_schema_ptrs.data();
+    fb_data.root_schema.release = noop_release_schema;
+
+    fb_data.batches.resize(slices.size());
+    for (size_t s = 0; s < slices.size(); s++) {
+      const DecodedBatchSlice& sl = slices[s];
+      ArrowArray& root_a = fb_data.batches[s];
+      bqs_ipc::BorrowedArrayPriv* rpriv = new bqs_ipc::BorrowedArrayPriv();
+      root_a.length = sl.row_len;
+      root_a.null_count = 0;
+      root_a.offset = 0;
+      root_a.n_buffers = 1;
+      root_a.n_children = static_cast<int64_t>(nf);
+      root_a.buffers = rpriv->buffers;
+      root_a.dictionary = nullptr;
+      root_a.private_data = rpriv;
+      root_a.release = bqs_ipc::release_borrowed_array;
+      root_a.children = static_cast<ArrowArray**>(malloc(nf * sizeof(ArrowArray*)));
+      for (size_t k = 0; k < nf; k++) {
+        int col_idx = fallback_cols[k];
+        size_t npos = col_node_pos[static_cast<size_t>(col_idx)];
+        size_t bpos = col_buf_pos[static_cast<size_t>(col_idx)];
+        ArrowArray* ch_a = bqs_ipc::build_borrowed_field_array(
+          schema->children[col_idx], *sl.batch, &npos, &bpos);
+        ch_a->length = sl.row_len;
+        root_a.children[k] = ch_a;
+      }
+    }
+
+    SEXP sub_schema_xptr = PROTECT(nanoarrow_schema_owning_xptr());
+    struct ArrowSchema* sub_sch_ptr = nanoarrow_output_schema_from_xptr(sub_schema_xptr);
+    *sub_sch_ptr = fb_data.root_schema;
+    sub_sch_ptr->release = noop_release_schema;
+
+    SEXP sub_ptype = PROTECT(int64_ptype_fn(sub_schema_xptr));
+
+    SEXP fb_stream_xptr = PROTECT(nanoarrow_array_stream_owning_xptr());
+    struct ArrowArrayStream* fb_s = reinterpret_cast<struct ArrowArrayStream*>(R_ExternalPtrAddr(fb_stream_xptr));
+    fb_s->get_schema = FallbackStreamData::get_schema;
+    fb_s->get_next = FallbackStreamData::get_next;
+    fb_s->get_last_error = FallbackStreamData::get_last_error;
+    fb_s->release = FallbackStreamData::release;
+    fb_s->private_data = &fb_data;
+
+    SEXP fb_df = PROTECT(bqs_convert_stream(
+      fb_stream_xptr, sub_ptype, bigint, na_convert_stream, na_convert_stream_quiet));
+    SEXP fb_post = PROTECT(bqs_postprocess(fb_df, sub_schema_xptr, bigint, as_bigint));
+    Rcpp::List fb_list(fb_post);
+    for (size_t k = 0; k < nf; k++) {
+      out_cols[fallback_cols[k]] = fb_list[k];
+    }
+    UNPROTECT(5);
+  }
+
+  // Free all C++ batch buffers before returning to R
+  for (auto& sb : *stream_batches) {
+    for (auto& b : sb) b.clear_memory();
+    std::vector<bqs_ipc::DecodedBatch>().swap(sb);
+  }
+
+  out_cols.attr("names") = col_names;
+  if (as_data_frame) {
+    out_cols.attr("class") = "data.frame";
+  } else {
+    SEXP cls_tbl = PROTECT(Rf_allocVector(STRSXP, 3));
+    SET_STRING_ELT(cls_tbl, 0, Rf_mkChar("tbl_df"));
+    SET_STRING_ELT(cls_tbl, 1, Rf_mkChar("tbl"));
+    SET_STRING_ELT(cls_tbl, 2, Rf_mkChar("data.frame"));
+    Rf_setAttrib(out_cols, R_ClassSymbol, cls_tbl);
+    UNPROTECT(1);
+  }
+  Rf_setAttrib(out_cols, R_RowNamesSymbol, compact_row_names(total_rows));
+
+  UNPROTECT(7); // cls_int64, cls_date, cls_posix, cls_hms, cls_wk, str_utc, str_secs
+  return out_cols;
+}
+

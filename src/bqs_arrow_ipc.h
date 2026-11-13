@@ -6,9 +6,11 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
+#include <Rcpp.h>
 #include <nanoarrow/r.h>
 
 #ifdef HAVE_BQS_ZSTD
@@ -687,6 +689,386 @@ inline bool encode_batches_parallel(const ArrowSchema* schema,
   return true;
 }
 
+// -- In-flight Arrow IPC RecordBatch Decoder & Zero-Copy View Builder ---------
+
+struct DecodedBatch {
+  int64_t length = 0;
+  std::vector<FieldNodeDesc> nodes;
+  std::vector<BufferDesc> buffers;
+  std::string raw_ipc;                        // Kept zero-copy when uncompressed
+  std::unique_ptr<uint8_t[]> decompressed;    // Allocated once (uninitialized) when ZSTD-decompressed
+  const uint8_t* body_ptr = nullptr;
+  size_t body_size = 0;
+
+  void clear_memory() {
+    std::string().swap(raw_ipc);
+    decompressed.reset();
+    body_ptr = nullptr;
+    body_size = 0;
+  }
+};
+
+class ZstdDecompressContext {
+public:
+  ZstdDecompressContext() {
+#ifdef HAVE_BQS_ZSTD
+    dctx_ = ZSTD_createDCtx();
+#endif
+  }
+  ~ZstdDecompressContext() {
+#ifdef HAVE_BQS_ZSTD
+    if (dctx_) ZSTD_freeDCtx(dctx_);
+#endif
+  }
+  ZstdDecompressContext(const ZstdDecompressContext&) = delete;
+  ZstdDecompressContext& operator=(const ZstdDecompressContext&) = delete;
+
+#ifdef HAVE_BQS_ZSTD
+  ZSTD_DCtx* get() const { return dctx_; }
+#else
+  void* get() const { return nullptr; }
+#endif
+
+private:
+#ifdef HAVE_BQS_ZSTD
+  ZSTD_DCtx* dctx_ = nullptr;
+#endif
+};
+
+inline uint16_t fb_read_u16(const uint8_t* p) {
+  uint16_t v;
+  std::memcpy(&v, p, 2);
+  return v;
+}
+
+inline int32_t fb_read_i32(const uint8_t* p) {
+  int32_t v;
+  std::memcpy(&v, p, 4);
+  return v;
+}
+
+inline uint32_t fb_read_u32(const uint8_t* p) {
+  uint32_t v;
+  std::memcpy(&v, p, 4);
+  return v;
+}
+
+inline int64_t fb_read_i64(const uint8_t* p) {
+  int64_t v;
+  std::memcpy(&v, p, 8);
+  return v;
+}
+
+inline uint32_t fb_field_pos(const uint8_t* fb,
+                             uint32_t table_off,
+                             uint32_t vt_off,
+                             uint16_t vt_len,
+                             uint16_t slot_idx) {
+  uint32_t entry = 4u + static_cast<uint32_t>(slot_idx) * 2u;
+  if (entry + 2u > vt_len) return 0u;
+  uint16_t foff = fb_read_u16(fb + vt_off + entry);
+  return foff > 0 ? (table_off + static_cast<uint32_t>(foff)) : 0u;
+}
+
+// Parse an Arrow IPC RecordBatch message (`raw_msg`, transferred in by move)
+// and decompress ZSTD buffers in-flight into `out`.
+inline bool decode_ipc_record_batch(std::string&& raw_msg,
+                                    DecodedBatch* out,
+                                    ZstdDecompressContext* zctx,
+                                    std::string* err_out) {
+  const uint8_t* data = reinterpret_cast<const uint8_t*>(raw_msg.data());
+  size_t len = raw_msg.size();
+  if (len < 8) {
+    if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: message shorter than 8 bytes.";
+    return false;
+  }
+
+  uint32_t cont = fb_read_u32(data);
+  int32_t meta_len = 0;
+  size_t fb_start = 0;
+  if (cont == 0xFFFFFFFFu) {
+    meta_len = fb_read_i32(data + 4);
+    fb_start = 8;
+  } else {
+    meta_len = static_cast<int32_t>(cont);
+    fb_start = 4;
+  }
+  if (meta_len <= 0 || fb_start + static_cast<size_t>(meta_len) > len) {
+    if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: truncated FlatBuffer metadata.";
+    return false;
+  }
+
+  const uint8_t* fb = data + fb_start;
+  uint32_t root_off = fb_read_u32(fb);
+  uint32_t msg_vt_off = static_cast<uint32_t>(static_cast<int64_t>(root_off) - fb_read_i32(fb + root_off));
+  uint16_t msg_vt_len = fb_read_u16(fb + msg_vt_off);
+
+  uint32_t ht_pos = fb_field_pos(fb, root_off, msg_vt_off, msg_vt_len, 1);
+  uint8_t header_type = ht_pos ? fb[ht_pos] : 0;
+  if (header_type != 3) {
+    if (err_out) *err_out = "Unexpected Arrow IPC header_type (expected RecordBatch = 3).";
+    return false;
+  }
+
+  uint32_t hdr_pos = fb_field_pos(fb, root_off, msg_vt_off, msg_vt_len, 2);
+  if (!hdr_pos) {
+    if (err_out) *err_out = "Missing RecordBatch header in Arrow IPC Message.";
+    return false;
+  }
+  uint32_t rb_off = hdr_pos + fb_read_u32(fb + hdr_pos);
+
+  uint32_t bl_pos = fb_field_pos(fb, root_off, msg_vt_off, msg_vt_len, 3);
+  int64_t body_len = bl_pos ? fb_read_i64(fb + bl_pos) : 0;
+  size_t body_offset_in_msg = fb_start + static_cast<size_t>(meta_len);
+  if (body_len < 0 || body_offset_in_msg + static_cast<size_t>(body_len) > len) {
+    if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: truncated body.";
+    return false;
+  }
+
+  uint32_t rb_vt_off = static_cast<uint32_t>(static_cast<int64_t>(rb_off) - fb_read_i32(fb + rb_off));
+  uint16_t rb_vt_len = fb_read_u16(fb + rb_vt_off);
+
+  uint32_t len_pos = fb_field_pos(fb, rb_off, rb_vt_off, rb_vt_len, 0);
+  out->length = len_pos ? fb_read_i64(fb + len_pos) : 0;
+
+  // FieldNodes vector (slot 1)
+  uint32_t nodes_pos = fb_field_pos(fb, rb_off, rb_vt_off, rb_vt_len, 1);
+  if (nodes_pos) {
+    uint32_t vec = nodes_pos + fb_read_u32(fb + nodes_pos);
+    uint32_t n_nodes = fb_read_u32(fb + vec);
+    out->nodes.resize(n_nodes);
+    const uint8_t* np = fb + vec + 4;
+    for (uint32_t i = 0; i < n_nodes; i++) {
+      out->nodes[i].length = fb_read_i64(np + i * 16u);
+      out->nodes[i].null_count = fb_read_i64(np + i * 16u + 8u);
+    }
+  } else {
+    out->nodes.clear();
+  }
+
+  // Buffers vector (slot 2)
+  uint32_t bufs_pos = fb_field_pos(fb, rb_off, rb_vt_off, rb_vt_len, 2);
+  std::vector<BufferDesc> raw_bufs;
+  if (bufs_pos) {
+    uint32_t vec = bufs_pos + fb_read_u32(fb + bufs_pos);
+    uint32_t n_bufs = fb_read_u32(fb + vec);
+    raw_bufs.resize(n_bufs);
+    const uint8_t* bp = fb + vec + 4;
+    for (uint32_t i = 0; i < n_bufs; i++) {
+      raw_bufs[i].offset = fb_read_i64(bp + i * 16u);
+      raw_bufs[i].length = fb_read_i64(bp + i * 16u + 8u);
+    }
+  }
+
+  // Optional BodyCompression table (slot 3)
+  uint32_t comp_pos = fb_field_pos(fb, rb_off, rb_vt_off, rb_vt_len, 3);
+  bool is_compressed = false;
+  int8_t comp_codec = 0;
+  int8_t comp_method = 0;
+  if (comp_pos && fb_read_u32(fb + comp_pos) != 0) {
+    is_compressed = true;
+    uint32_t comp_off = comp_pos + fb_read_u32(fb + comp_pos);
+    uint32_t comp_vt_off = static_cast<uint32_t>(static_cast<int64_t>(comp_off) - fb_read_i32(fb + comp_off));
+    uint16_t comp_vt_len = fb_read_u16(fb + comp_vt_off);
+    uint32_t codec_pos = fb_field_pos(fb, comp_off, comp_vt_off, comp_vt_len, 0);
+    uint32_t method_pos = fb_field_pos(fb, comp_off, comp_vt_off, comp_vt_len, 1);
+    comp_codec = codec_pos ? static_cast<int8_t>(fb[codec_pos]) : 0;
+    comp_method = method_pos ? static_cast<int8_t>(fb[method_pos]) : 0;
+  }
+
+  if (!is_compressed) {
+    out->buffers = std::move(raw_bufs);
+    out->raw_ipc = std::move(raw_msg);
+    out->decompressed.reset();
+    out->body_ptr = reinterpret_cast<const uint8_t*>(out->raw_ipc.data()) + body_offset_in_msg;
+    out->body_size = static_cast<size_t>(body_len);
+    return true;
+  }
+
+#ifdef HAVE_BQS_ZSTD
+  if (comp_codec == 1 && comp_method == 0) {
+    const uint8_t* src_body = data + body_offset_in_msg;
+    size_t n_bufs = raw_bufs.size();
+    out->buffers.resize(n_bufs);
+
+    // Pass 1: compute exact decompressed byte total from 8-byte prefixes
+    size_t total_out_bytes = 0;
+    for (size_t i = 0; i < n_bufs; i++) {
+      int64_t blen = raw_bufs[i].length;
+      int64_t boff = raw_bufs[i].offset;
+      if (blen <= 0) continue;
+      if (blen < 8 || boff < 0 || static_cast<size_t>(boff + blen) > static_cast<size_t>(body_len)) {
+        if (err_out) *err_out = "Invalid compressed Arrow buffer bounds.";
+        return false;
+      }
+      int64_t ulen = fb_read_i64(src_body + boff);
+      int64_t actual = (ulen == -1) ? (blen - 8) : std::max<int64_t>(0, ulen);
+      total_out_bytes += static_cast<size_t>((actual + 7) & ~static_cast<int64_t>(7));
+    }
+
+    // Single uninitialized allocation (no redundant zero-memset before ZSTD overwrite)
+    out->decompressed.reset(total_out_bytes > 0 ? new uint8_t[total_out_bytes] : nullptr);
+    uint8_t* dst_base = out->decompressed.get();
+    size_t dst_pos = 0;
+
+    // Pass 2: decompress all buffers directly into dst_base
+    for (size_t i = 0; i < n_bufs; i++) {
+      int64_t blen = raw_bufs[i].length;
+      int64_t boff = raw_bufs[i].offset;
+      if (blen <= 0) {
+        out->buffers[i] = {static_cast<int64_t>(dst_pos), 0};
+        continue;
+      }
+      int64_t ulen = fb_read_i64(src_body + boff);
+      const uint8_t* csrc = src_body + boff + 8;
+      size_t clen = static_cast<size_t>(blen - 8);
+      if (ulen == -1) {
+        if (clen > 0) std::memcpy(dst_base + dst_pos, csrc, clen);
+        out->buffers[i] = {static_cast<int64_t>(dst_pos), static_cast<int64_t>(clen)};
+        size_t padded = (clen + 7u) & ~static_cast<size_t>(7u);
+        if (padded > clen) std::memset(dst_base + dst_pos + clen, 0, padded - clen);
+        dst_pos += padded;
+      } else if (ulen <= 0) {
+        out->buffers[i] = {static_cast<int64_t>(dst_pos), 0};
+      } else {
+        size_t target_len = static_cast<size_t>(ulen);
+        size_t res = (zctx && zctx->get())
+                       ? ZSTD_decompressDCtx(zctx->get(), dst_base + dst_pos, target_len, csrc, clen)
+                       : ZSTD_decompress(dst_base + dst_pos, target_len, csrc, clen);
+        if (ZSTD_isError(res) || res != target_len) {
+          if (err_out) *err_out = std::string("ZSTD_decompress failed: ") + ZSTD_getErrorName(res);
+          return false;
+        }
+        out->buffers[i] = {static_cast<int64_t>(dst_pos), ulen};
+        size_t padded = (target_len + 7u) & ~static_cast<size_t>(7u);
+        if (padded > target_len) std::memset(dst_base + dst_pos + target_len, 0, padded - target_len);
+        dst_pos += padded;
+      }
+    }
+
+    std::string().swap(raw_msg); // Free compressed bytes immediately
+    out->body_ptr = dst_base;
+    out->body_size = total_out_bytes;
+    return true;
+  }
+#else
+  (void)zctx;
+  (void)comp_codec;
+  (void)comp_method;
+#endif
+
+  if (err_out) *err_out = "Unsupported Arrow IPC BodyCompression codec/method.";
+  return false;
+}
+
+inline void count_schema_nodes_and_buffers(const ArrowSchema* sch,
+                                           size_t* n_nodes,
+                                           size_t* n_bufs) {
+  const char* fmt = (sch && sch->format) ? sch->format : "";
+  (*n_nodes) += 1;
+  if (std::strcmp(fmt, "n") == 0) {
+    // 0 buffers
+  } else if (std::strcmp(fmt, "+s") == 0 || std::strncmp(fmt, "+w:", 3) == 0) {
+    (*n_bufs) += 1;
+  } else if (std::strcmp(fmt, "u") == 0 || std::strcmp(fmt, "z") == 0 ||
+             std::strcmp(fmt, "U") == 0 || std::strcmp(fmt, "Z") == 0) {
+    (*n_bufs) += 3;
+  } else {
+    (*n_bufs) += 2;
+  }
+  for (int64_t c = 0; c < sch->n_children; c++) {
+    count_schema_nodes_and_buffers(sch->children[c], n_nodes, n_bufs);
+  }
+}
+
+struct BorrowedArrayPriv {
+  const void* buffers[3] = {nullptr, nullptr, nullptr};
+};
+
+inline void release_borrowed_array(struct ArrowArray* a) {
+  if (!a || !a->release) return;
+  if (a->children) {
+    for (int64_t i = 0; i < a->n_children; i++) {
+      if (a->children[i]) {
+        if (a->children[i]->release) a->children[i]->release(a->children[i]);
+        free(a->children[i]);
+      }
+    }
+    free(a->children);
+  }
+  delete static_cast<BorrowedArrayPriv*>(a->private_data);
+  a->release = nullptr;
+}
+
+// Construct a zero-copy ArrowArray view for a single field subtree from a DecodedBatch
+inline ArrowArray* build_borrowed_field_array(const ArrowSchema* sch,
+                                              const DecodedBatch& batch,
+                                              size_t* node_pos,
+                                              size_t* buf_pos) {
+  ArrowArray* arr = static_cast<ArrowArray*>(malloc(sizeof(ArrowArray)));
+  BorrowedArrayPriv* priv = new BorrowedArrayPriv();
+  const char* fmt = (sch && sch->format) ? sch->format : "";
+
+  const FieldNodeDesc& nd = batch.nodes[(*node_pos)++];
+  int n_bufs = 0;
+  if (std::strcmp(fmt, "n") == 0) {
+    n_bufs = 0;
+  } else if (std::strcmp(fmt, "+s") == 0 || std::strncmp(fmt, "+w:", 3) == 0) {
+    n_bufs = 1;
+  } else if (std::strcmp(fmt, "u") == 0 || std::strcmp(fmt, "z") == 0 ||
+             std::strcmp(fmt, "U") == 0 || std::strcmp(fmt, "Z") == 0) {
+    n_bufs = 3;
+  } else {
+    n_bufs = 2;
+  }
+
+  for (int b = 0; b < n_bufs; b++) {
+    const BufferDesc& bd = batch.buffers[(*buf_pos)++];
+    if (b == 0 && (bd.length == 0 || nd.null_count == 0)) {
+      priv->buffers[b] = nullptr;
+    } else {
+      priv->buffers[b] = (bd.length > 0 && batch.body_ptr)
+                           ? (batch.body_ptr + bd.offset)
+                           : static_cast<const void*>("");
+    }
+  }
+
+  arr->length = nd.length;
+  arr->null_count = nd.null_count;
+  arr->offset = 0;
+  arr->n_buffers = n_bufs;
+  arr->n_children = sch->n_children;
+  arr->buffers = priv->buffers;
+  arr->dictionary = nullptr;
+  arr->private_data = priv;
+  arr->release = release_borrowed_array;
+
+  if (sch->n_children > 0) {
+    arr->children = static_cast<ArrowArray**>(malloc(static_cast<size_t>(sch->n_children) * sizeof(ArrowArray*)));
+    for (int64_t c = 0; c < sch->n_children; c++) {
+      arr->children[c] = build_borrowed_field_array(sch->children[c], batch, node_pos, buf_pos);
+    }
+  } else {
+    arr->children = nullptr;
+  }
+  return arr;
+}
+
 } // namespace bqs_ipc
+
+// Implemented in convert.cpp: converts in-flight decoded batches directly to an
+// R tibble / data.frame in parallel across C++ threads.
+SEXP bqs_convert_decoded_streams(
+    SEXP schema_xptr,
+    std::vector<std::vector<bqs_ipc::DecodedBatch>>* stream_batches,
+    int64_t n_max,
+    const std::string& bigint,
+    bool as_data_frame,
+    int n_threads,
+    Rcpp::Function int64_ptype_fn,
+    Rcpp::Function check_pkg_fn,
+    Rcpp::Function na_convert_stream,
+    Rcpp::Function na_convert_stream_quiet,
+    Rcpp::Function as_bigint);
 
 #endif // BQS_ARROW_IPC_H
