@@ -159,7 +159,7 @@ bqs_table_upload <- function(
       } else {
         bqs_infer_bq_fields(values)
       }
-      bigrquery::bq_table_delete(bq_tbl)
+      bqs_with_ddl_retry(bigrquery::bq_table_delete(bq_tbl))
       extra <- list(...)
       if (is.null(extra$description) && !is.null(meta$description)) {
         extra$description <- meta$description
@@ -332,14 +332,35 @@ bqs_table_is_empty <- function(bq_tbl, parent) {
 }
 
 #' @noRd
+bqs_with_ddl_retry <- function(expr, max_attempts = 5L) {
+  expr_q <- substitute(expr)
+  env <- parent.frame()
+  for (attempt in seq_len(max_attempts)) {
+    res <- tryCatch(
+      list(ok = TRUE, val = eval(expr_q, envir = env)),
+      error = function(e) list(ok = FALSE, err = e)
+    )
+    if (res$ok) {
+      return(res$val)
+    }
+    msg <- conditionMessage(res$err)
+    is_rate_limit <- grepl("rateLimitExceeded|too many table update", msg, ignore.case = TRUE)
+    if (!is_rate_limit || attempt == max_attempts) {
+      stop(res$err)
+    }
+    Sys.sleep(min(8, 0.5 * (2^(attempt - 1L))))
+  }
+}
+
+#' @noRd
 bqs_create_table <- function(x, fields, ...) {
   extra <- list(...)
   extra$billing <- NULL
   if (length(fields)) {
     bq_fields_list <- bqs_fields_to_bq_fields(fields)
-    do.call(bigrquery::bq_table_create, c(list(x = x, fields = bq_fields_list), extra))
+    bqs_with_ddl_retry(do.call(bigrquery::bq_table_create, c(list(x = x, fields = bq_fields_list), extra)))
   } else {
-    do.call(bigrquery::bq_table_create, c(list(x = x), extra))
+    bqs_with_ddl_retry(do.call(bigrquery::bq_table_create, c(list(x = x), extra)))
   }
 }
 

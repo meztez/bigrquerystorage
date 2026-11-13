@@ -245,6 +245,7 @@ public:
 
   bool CreateWriteStreamWorker(
       int worker,
+      int num_streams,
       const std::string& parent,
       google::cloud::bigquery::storage::v1::WriteStream_Type stream_type,
       ParallelRead* create_state,
@@ -259,10 +260,12 @@ public:
     auto& stub = write_stubs_[stub_idx % write_stubs_.size()];
     google::cloud::bigquery::storage::v1::WriteStream resp;
     grpc::Status status;
-    for (int attempt = 0; attempt < 7; attempt++) {
+    const int deadline_ms = (num_streams > 1 && worker > 0) ? 3500 : 15000;
+    static const int MAX_ATTEMPTS = 12; // ~30s total retry window for table recreation propagation
+    for (int attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if (create_state->cancel.load() || all_claimed.load()) return false;
       grpc::ClientContext context;
-      context.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(2500));
+      context.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(deadline_ms));
       context.AddMetadata("x-goog-request-params", "parent=" + parent);
       context.AddMetadata("x-goog-api-client", client_info_);
       create_state->Register(worker, &context);
@@ -281,13 +284,16 @@ public:
            code != grpc::StatusCode::UNAVAILABLE &&
            code != grpc::StatusCode::DEADLINE_EXCEEDED &&
            code != grpc::StatusCode::CANCELLED) ||
-          attempt == 6) {
+          attempt == MAX_ATTEMPTS - 1) {
         break;
       }
       int sleep_ms = (code == grpc::StatusCode::DEADLINE_EXCEEDED)
-                       ? 10
-                       : std::min(1000, 50 * (1 << attempt));
-      std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+                       ? 25
+                       : std::min(4000, 100 * (1 << std::min(attempt, 6)));
+      for (int slept = 0; slept < sleep_ms; slept += 50) {
+        if (create_state->cancel.load() || all_claimed.load()) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(std::min(50, sleep_ms - slept)));
+      }
     }
     if (all_claimed.load()) return false;
     if (err_out) {
@@ -306,7 +312,7 @@ public:
     auto& stub = write_stubs_[stub_idx % write_stubs_.size()];
     google::cloud::bigquery::storage::v1::FinalizeWriteStreamResponse resp;
     grpc::Status status;
-    for (int attempt = 0; attempt < 3; attempt++) {
+    for (int attempt = 0; attempt < 5; attempt++) {
       grpc::ClientContext context;
       context.AddMetadata("x-goog-request-params", "name=" + stream_name);
       context.AddMetadata("x-goog-api-client", client_info_);
@@ -315,10 +321,12 @@ public:
         *row_count_out = resp.row_count();
         return true;
       }
-      if (status.error_code() != grpc::StatusCode::UNAVAILABLE || attempt == 2) {
+      auto code = status.error_code();
+      if ((code != grpc::StatusCode::UNAVAILABLE && code != grpc::StatusCode::NOT_FOUND) ||
+          attempt == 4) {
         break;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(100 * (1 << attempt)));
+      std::this_thread::sleep_for(std::chrono::milliseconds(150 * (1 << attempt)));
     }
     if (err_out) {
       *err_out = "gRPC method FinalizeWriteStream error -> " + status.error_message();
@@ -336,15 +344,18 @@ public:
 
     google::cloud::bigquery::storage::v1::BatchCommitWriteStreamsResponse resp;
     grpc::Status status;
-    for (int attempt = 0; attempt < 3; attempt++) {
+    for (int attempt = 0; attempt < 6; attempt++) {
       grpc::ClientContext context;
       context.AddMetadata("x-goog-request-params", "parent=" + parent);
       context.AddMetadata("x-goog-api-client", client_info_);
       status = write_stubs_[0]->BatchCommitWriteStreams(&context, req, &resp);
-      if (status.ok() || status.error_code() != grpc::StatusCode::UNAVAILABLE || attempt == 2) {
+      auto code = status.error_code();
+      if (status.ok() ||
+          (code != grpc::StatusCode::UNAVAILABLE && code != grpc::StatusCode::NOT_FOUND) ||
+          attempt == 5) {
         break;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(100 * (1 << attempt)));
+      std::this_thread::sleep_for(std::chrono::milliseconds(150 * (1 << attempt)));
     }
     if (!status.ok()) {
       std::string err = "gRPC method BatchCommitWriteStreams error -> " + status.error_message();
@@ -388,7 +399,8 @@ public:
     std::vector<size_t> pending_replay;
     pending_replay.push_back(first_idx);
 
-    for (int attempt = 0; attempt < 6; attempt++) {
+    static const int MAX_APPEND_ATTEMPTS = 12; // ~30s total retry window for table recreation
+    for (int attempt = 0; attempt < MAX_APPEND_ATTEMPTS; attempt++) {
       if (state->cancel.load()) return false;
 
       grpc::ClientContext context;
@@ -502,10 +514,14 @@ public:
         return false;
       }
 
-      bool retryable = (acked_here == 0) && (attempt < 5) && (
+      bool retryable = (acked_here == 0) && (attempt < MAX_APPEND_ATTEMPTS - 1) && (
         resp_err_code == 5 /* NOT_FOUND */ ||
+        resp_err_code == 9 /* FAILED_PRECONDITION */ ||
+        resp_err_code == 10 /* ABORTED */ ||
         resp_err_code == 14 /* UNAVAILABLE */ ||
         status.error_code() == grpc::StatusCode::NOT_FOUND ||
+        status.error_code() == grpc::StatusCode::FAILED_PRECONDITION ||
+        status.error_code() == grpc::StatusCode::ABORTED ||
         status.error_code() == grpc::StatusCode::UNAVAILABLE
       );
       if (retryable) {
@@ -514,7 +530,11 @@ public:
           sent_this_attempt.push_back(pending_replay[k]);
         }
         pending_replay = std::move(sent_this_attempt);
-        std::this_thread::sleep_for(std::chrono::milliseconds(std::min(1000, 60 * (1 << attempt))));
+        int sleep_ms = std::min(4000, 100 * (1 << std::min(attempt, 6)));
+        for (int slept = 0; slept < sleep_ms; slept += 50) {
+          if (state->cancel.load()) return false;
+          std::this_thread::sleep_for(std::chrono::milliseconds(std::min(50, sleep_ms - slept)));
+        }
         continue;
       }
 
@@ -1360,6 +1380,7 @@ static int64_t execute_parallel_write(BigQueryReadClient* client_ptr,
       if (!is_default) {
         ready = client_ptr->CreateWriteStreamWorker(
           w,
+          num_streams,
           parent,
           google::cloud::bigquery::storage::v1::WriteStream_Type_PENDING,
           &create_state,
