@@ -303,31 +303,46 @@ public:
     return false;
   }
 
-  bool FinalizeWriteStreamWorker(size_t stub_idx,
+  bool FinalizeWriteStreamWorker(int worker,
                                  const std::string& stream_name,
+                                 ParallelRead* state,
                                  int64_t* row_count_out,
                                  std::string* err_out) {
     google::cloud::bigquery::storage::v1::FinalizeWriteStreamRequest req;
     req.set_name(stream_name);
 
+    size_t stub_idx = static_cast<size_t>(worker);
     auto& stub = write_stubs_[stub_idx % write_stubs_.size()];
     google::cloud::bigquery::storage::v1::FinalizeWriteStreamResponse resp;
     grpc::Status status;
     for (int attempt = 0; attempt < 5; attempt++) {
+      if (state->cancel.load()) return false;
       grpc::ClientContext context;
+      context.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(15000));
       context.AddMetadata("x-goog-request-params", "name=" + stream_name);
       context.AddMetadata("x-goog-api-client", client_info_);
+      state->Register(worker, &context);
       status = stub->FinalizeWriteStream(&context, req, &resp);
+      state->Unregister(worker);
       if (status.ok()) {
         *row_count_out = resp.row_count();
         return true;
       }
+      if (state->cancel.load() && status.error_code() == grpc::StatusCode::CANCELLED) {
+        return false;
+      }
       auto code = status.error_code();
-      if ((code != grpc::StatusCode::UNAVAILABLE && code != grpc::StatusCode::NOT_FOUND) ||
+      if ((code != grpc::StatusCode::UNAVAILABLE &&
+           code != grpc::StatusCode::NOT_FOUND &&
+           code != grpc::StatusCode::DEADLINE_EXCEEDED) ||
           attempt == 4) {
         break;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(150 * (1 << attempt)));
+      int sleep_ms = 150 * (1 << attempt);
+      for (int slept = 0; slept < sleep_ms; slept += 50) {
+        if (state->cancel.load()) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(std::min(50, sleep_ms - slept)));
+      }
     }
     if (err_out) {
       *err_out = "gRPC method FinalizeWriteStream error -> " + status.error_message();
@@ -1352,63 +1367,51 @@ static int64_t split_arrow_ipc_stream(const uint8_t* data,
     } else {
       meta_len = static_cast<int32_t>(continuation);
     }
-    if (pos + 8 + static_cast<size_t>(meta_len) > len) {
+    if (meta_len < 4 || pos + 8 + static_cast<size_t>(meta_len) > len) {
       Rcpp::stop("Invalid Arrow IPC stream: truncated metadata.");
     }
+    const size_t meta_size = static_cast<size_t>(meta_len);
     const uint8_t* fb = data + pos + 8;
-    int32_t root_off = 0;
-    std::memcpy(&root_off, fb, 4);
-    int32_t vtable_rel = 0;
-    std::memcpy(&vtable_rel, fb + root_off, 4);
-    int32_t vtable_off = root_off - vtable_rel;
-    uint16_t vtable_len = 0;
-    std::memcpy(&vtable_len, fb + vtable_off, 2);
+    uint32_t root_off = bqs_ipc::fb_read_u32(fb);
+    uint32_t msg_vt_off = 0;
+    uint16_t msg_vt_len = 0;
+    if (!bqs_ipc::fb_open_table(fb, meta_size, root_off, &msg_vt_off, &msg_vt_len)) {
+      Rcpp::stop("Invalid Arrow IPC stream: out-of-bounds Message table.");
+    }
 
-    uint8_t header_type = 0;
-    if (vtable_len >= 8) {
-      uint16_t ht_off = 0;
-      std::memcpy(&ht_off, fb + vtable_off + 6, 2);
-      if (ht_off > 0) {
-        header_type = fb[root_off + ht_off];
-      }
+    uint32_t ht_pos = 0, hdr_pos = 0, bl_pos = 0;
+    if (!bqs_ipc::fb_field_checked(fb, meta_size, root_off, msg_vt_off, msg_vt_len, 1, 1, &ht_pos) ||
+        !bqs_ipc::fb_field_checked(fb, meta_size, root_off, msg_vt_off, msg_vt_len, 2, 4, &hdr_pos) ||
+        !bqs_ipc::fb_field_checked(fb, meta_size, root_off, msg_vt_off, msg_vt_len, 3, 8, &bl_pos)) {
+      Rcpp::stop("Invalid Arrow IPC stream: out-of-bounds Message fields.");
     }
-    int64_t body_len = 0;
-    if (vtable_len >= 12) {
-      uint16_t bl_off = 0;
-      std::memcpy(&bl_off, fb + vtable_off + 10, 2);
-      if (bl_off > 0) {
-        std::memcpy(&body_len, fb + root_off + bl_off, 8);
-      }
-    }
-    size_t msg_len = 8 + static_cast<size_t>(meta_len) + static_cast<size_t>(body_len);
-    if (pos + msg_len > len) {
+
+    uint8_t header_type = ht_pos ? fb[ht_pos] : 0;
+    int64_t body_len = bl_pos ? bqs_ipc::fb_read_i64(fb + bl_pos) : 0;
+    if (body_len < 0 || static_cast<uint64_t>(body_len) > static_cast<uint64_t>(len - (pos + 8 + meta_size))) {
       Rcpp::stop("Invalid Arrow IPC stream: truncated message body.");
     }
+    size_t msg_len = 8 + meta_size + static_cast<size_t>(body_len);
+
     if (header_type == 1) {
       schema_out->assign(reinterpret_cast<const char*>(data + pos), msg_len);
     } else if (header_type == 3) {
       batches_out->emplace_back(reinterpret_cast<const char*>(data + pos), msg_len);
       int64_t rb_rows = 0;
-      if (vtable_len >= 10) {
-        uint16_t hdr_off = 0;
-        std::memcpy(&hdr_off, fb + vtable_off + 8, 2);
-        if (hdr_off > 0) {
-          int32_t hdr_uoff = 0;
-          std::memcpy(&hdr_uoff, fb + root_off + hdr_off, 4);
-          int32_t rb_off = root_off + hdr_off + hdr_uoff;
-          int32_t rb_vt_rel = 0;
-          std::memcpy(&rb_vt_rel, fb + rb_off, 4);
-          int32_t rb_vt_off = rb_off - rb_vt_rel;
-          uint16_t rb_vt_len = 0;
-          std::memcpy(&rb_vt_len, fb + rb_vt_off, 2);
-          if (rb_vt_len >= 6) {
-            uint16_t len_off = 0;
-            std::memcpy(&len_off, fb + rb_vt_off + 4, 2);
-            if (len_off > 0) {
-              std::memcpy(&rb_rows, fb + rb_off + len_off, 8);
-              total_rows += rb_rows;
-            }
-          }
+      if (hdr_pos) {
+        uint64_t rb_off64 = static_cast<uint64_t>(hdr_pos) + bqs_ipc::fb_read_u32(fb + hdr_pos);
+        uint32_t rb_vt_off = 0;
+        uint16_t rb_vt_len = 0;
+        uint32_t len_pos = 0;
+        if (rb_off64 > meta_size ||
+            !bqs_ipc::fb_open_table(fb, meta_size, static_cast<uint32_t>(rb_off64), &rb_vt_off, &rb_vt_len) ||
+            !bqs_ipc::fb_field_checked(fb, meta_size, static_cast<uint32_t>(rb_off64), rb_vt_off, rb_vt_len, 0, 8, &len_pos)) {
+          Rcpp::stop("Invalid Arrow IPC stream: out-of-bounds RecordBatch header.");
+        }
+        if (len_pos) {
+          rb_rows = bqs_ipc::fb_read_i64(fb + len_pos);
+          if (rb_rows < 0) Rcpp::stop("Invalid Arrow IPC stream: negative RecordBatch row count.");
+          total_rows += rb_rows;
         }
       }
       if (batch_rows_out) batch_rows_out->push_back(rb_rows);
@@ -1494,7 +1497,7 @@ static int64_t execute_parallel_write(BigQueryReadClient* client_ptr,
       }
       if (!is_default && stream_used[wu] != 0 && !state.cancel.load()) {
         if (!client_ptr->FinalizeWriteStreamWorker(
-              wu, stream_names[wu], &finalized_rows[wu], &errors[wu])) {
+              w, stream_names[wu], &state, &finalized_rows[wu], &errors[wu])) {
           create_state.CancelAll();
           state.CancelAll();
         }
@@ -1588,9 +1591,6 @@ double bqs_ipc_write(SEXP client,
                      bool quiet = false,
                      int max_stream_count = 0,
                      int max_threads = 0) {
-  Rcpp::XPtr<BigQueryReadClient> client_ptr(client);
-  std::string parent = "projects/" + project + "/datasets/" + dataset + "/tables/" + table;
-
   std::string schema_bytes;
   std::vector<std::string> batches;
   std::vector<int64_t> batch_rows;
@@ -1599,6 +1599,9 @@ double bqs_ipc_write(SEXP client,
   if (batches.empty()) {
     return 0;
   }
+
+  Rcpp::XPtr<BigQueryReadClient> client_ptr(client);
+  std::string parent = "projects/" + project + "/datasets/" + dataset + "/tables/" + table;
 
   int target_threads = max_threads > 0 ? max_threads : 10;
   if (max_stream_count > 0) {

@@ -763,19 +763,43 @@ inline int64_t fb_read_i64(const uint8_t* p) {
   return v;
 }
 
-inline uint32_t fb_field_pos(const uint8_t* fb,
+inline bool fb_open_table(const uint8_t* fb,
+                          size_t meta_size,
+                          uint32_t table_off,
+                          uint32_t* vt_off_out,
+                          uint16_t* vt_len_out) {
+  if (static_cast<uint64_t>(table_off) + 4u > meta_size) return false;
+  int32_t soff = fb_read_i32(fb + table_off);
+  int64_t voff = static_cast<int64_t>(table_off) - static_cast<int64_t>(soff);
+  if (voff < 0 || static_cast<uint64_t>(voff) + 4u > meta_size) return false;
+  uint16_t vlen = fb_read_u16(fb + voff);
+  if (vlen < 4u || static_cast<uint64_t>(voff) + vlen > meta_size) return false;
+  *vt_off_out = static_cast<uint32_t>(voff);
+  *vt_len_out = vlen;
+  return true;
+}
+
+inline bool fb_field_checked(const uint8_t* fb,
+                             size_t meta_size,
                              uint32_t table_off,
                              uint32_t vt_off,
                              uint16_t vt_len,
-                             uint16_t slot_idx) {
+                             uint16_t slot_idx,
+                             size_t field_bytes,
+                             uint32_t* pos_out) {
+  *pos_out = 0u;
   uint32_t entry = 4u + static_cast<uint32_t>(slot_idx) * 2u;
-  if (entry + 2u > vt_len) return 0u;
+  if (entry + 2u > vt_len) return true; // Field absent -> default
   uint16_t foff = fb_read_u16(fb + vt_off + entry);
-  return foff > 0 ? (table_off + static_cast<uint32_t>(foff)) : 0u;
+  if (foff == 0u) return true; // Field absent -> default
+  uint64_t fpos = static_cast<uint64_t>(table_off) + static_cast<uint64_t>(foff);
+  if (fpos + field_bytes > meta_size) return false;
+  *pos_out = static_cast<uint32_t>(fpos);
+  return true;
 }
 
 // Parse an Arrow IPC RecordBatch message (`raw_msg`, transferred in by move)
-// and decompress ZSTD buffers in-flight into `out`.
+// with full FlatBuffer & body bounds validation, and decompress ZSTD buffers in-flight.
 inline bool decode_ipc_record_batch(std::string&& raw_msg,
                                     DecodedBatch* out,
                                     ZstdDecompressContext* zctx,
@@ -797,85 +821,149 @@ inline bool decode_ipc_record_batch(std::string&& raw_msg,
     meta_len = static_cast<int32_t>(cont);
     fb_start = 4;
   }
-  if (meta_len <= 0 || fb_start + static_cast<size_t>(meta_len) > len) {
+  if (meta_len < 4 || fb_start + static_cast<size_t>(meta_len) > len) {
     if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: truncated FlatBuffer metadata.";
     return false;
   }
 
+  const size_t meta_size = static_cast<size_t>(meta_len);
   const uint8_t* fb = data + fb_start;
   uint32_t root_off = fb_read_u32(fb);
-  uint32_t msg_vt_off = static_cast<uint32_t>(static_cast<int64_t>(root_off) - fb_read_i32(fb + root_off));
-  uint16_t msg_vt_len = fb_read_u16(fb + msg_vt_off);
+  uint32_t msg_vt_off = 0;
+  uint16_t msg_vt_len = 0;
+  if (!fb_open_table(fb, meta_size, root_off, &msg_vt_off, &msg_vt_len)) {
+    if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: out-of-bounds Message table.";
+    return false;
+  }
 
-  uint32_t ht_pos = fb_field_pos(fb, root_off, msg_vt_off, msg_vt_len, 1);
+  uint32_t ht_pos = 0, hdr_pos = 0, bl_pos = 0;
+  if (!fb_field_checked(fb, meta_size, root_off, msg_vt_off, msg_vt_len, 1, 1, &ht_pos) ||
+      !fb_field_checked(fb, meta_size, root_off, msg_vt_off, msg_vt_len, 2, 4, &hdr_pos) ||
+      !fb_field_checked(fb, meta_size, root_off, msg_vt_off, msg_vt_len, 3, 8, &bl_pos)) {
+    if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: out-of-bounds Message fields.";
+    return false;
+  }
+
   uint8_t header_type = ht_pos ? fb[ht_pos] : 0;
   if (header_type != 3) {
     if (err_out) *err_out = "Unexpected Arrow IPC header_type (expected RecordBatch = 3).";
     return false;
   }
-
-  uint32_t hdr_pos = fb_field_pos(fb, root_off, msg_vt_off, msg_vt_len, 2);
   if (!hdr_pos) {
     if (err_out) *err_out = "Missing RecordBatch header in Arrow IPC Message.";
     return false;
   }
-  uint32_t rb_off = hdr_pos + fb_read_u32(fb + hdr_pos);
 
-  uint32_t bl_pos = fb_field_pos(fb, root_off, msg_vt_off, msg_vt_len, 3);
+  uint64_t rb_off64 = static_cast<uint64_t>(hdr_pos) + fb_read_u32(fb + hdr_pos);
+  if (rb_off64 > meta_size) {
+    if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: out-of-bounds RecordBatch offset.";
+    return false;
+  }
+  uint32_t rb_off = static_cast<uint32_t>(rb_off64);
+
   int64_t body_len = bl_pos ? fb_read_i64(fb + bl_pos) : 0;
-  size_t body_offset_in_msg = fb_start + static_cast<size_t>(meta_len);
-  if (body_len < 0 || body_offset_in_msg + static_cast<size_t>(body_len) > len) {
+  size_t body_offset_in_msg = fb_start + meta_size;
+  if (body_len < 0 || static_cast<uint64_t>(body_len) > static_cast<uint64_t>(len - body_offset_in_msg)) {
     if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: truncated body.";
     return false;
   }
+  const uint64_t ubody_len = static_cast<uint64_t>(body_len);
 
-  uint32_t rb_vt_off = static_cast<uint32_t>(static_cast<int64_t>(rb_off) - fb_read_i32(fb + rb_off));
-  uint16_t rb_vt_len = fb_read_u16(fb + rb_vt_off);
+  uint32_t rb_vt_off = 0;
+  uint16_t rb_vt_len = 0;
+  if (!fb_open_table(fb, meta_size, rb_off, &rb_vt_off, &rb_vt_len)) {
+    if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: out-of-bounds RecordBatch vtable.";
+    return false;
+  }
 
-  uint32_t len_pos = fb_field_pos(fb, rb_off, rb_vt_off, rb_vt_len, 0);
+  uint32_t len_pos = 0, nodes_pos = 0, bufs_pos = 0, comp_pos = 0;
+  if (!fb_field_checked(fb, meta_size, rb_off, rb_vt_off, rb_vt_len, 0, 8, &len_pos) ||
+      !fb_field_checked(fb, meta_size, rb_off, rb_vt_off, rb_vt_len, 1, 4, &nodes_pos) ||
+      !fb_field_checked(fb, meta_size, rb_off, rb_vt_off, rb_vt_len, 2, 4, &bufs_pos) ||
+      !fb_field_checked(fb, meta_size, rb_off, rb_vt_off, rb_vt_len, 3, 4, &comp_pos)) {
+    if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: out-of-bounds RecordBatch fields.";
+    return false;
+  }
+
   out->length = len_pos ? fb_read_i64(fb + len_pos) : 0;
+  if (out->length < 0) {
+    if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: negative row length.";
+    return false;
+  }
 
   // FieldNodes vector (slot 1)
-  uint32_t nodes_pos = fb_field_pos(fb, rb_off, rb_vt_off, rb_vt_len, 1);
   if (nodes_pos) {
-    uint32_t vec = nodes_pos + fb_read_u32(fb + nodes_pos);
+    uint64_t vec = static_cast<uint64_t>(nodes_pos) + fb_read_u32(fb + nodes_pos);
+    if (vec + 4u > meta_size) {
+      if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: out-of-bounds nodes vector.";
+      return false;
+    }
     uint32_t n_nodes = fb_read_u32(fb + vec);
+    if (vec + 4u + static_cast<uint64_t>(n_nodes) * 16u > meta_size) {
+      if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: truncated nodes vector.";
+      return false;
+    }
     out->nodes.resize(n_nodes);
     const uint8_t* np = fb + vec + 4;
     for (uint32_t i = 0; i < n_nodes; i++) {
-      out->nodes[i].length = fb_read_i64(np + i * 16u);
-      out->nodes[i].null_count = fb_read_i64(np + i * 16u + 8u);
+      int64_t nl = fb_read_i64(np + i * 16u);
+      int64_t nc = fb_read_i64(np + i * 16u + 8u);
+      if (nl < 0 || nc < 0) {
+        if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: negative FieldNode count.";
+        return false;
+      }
+      out->nodes[i] = {nl, nc};
     }
   } else {
     out->nodes.clear();
   }
 
   // Buffers vector (slot 2)
-  uint32_t bufs_pos = fb_field_pos(fb, rb_off, rb_vt_off, rb_vt_len, 2);
   std::vector<BufferDesc> raw_bufs;
   if (bufs_pos) {
-    uint32_t vec = bufs_pos + fb_read_u32(fb + bufs_pos);
+    uint64_t vec = static_cast<uint64_t>(bufs_pos) + fb_read_u32(fb + bufs_pos);
+    if (vec + 4u > meta_size) {
+      if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: out-of-bounds buffers vector.";
+      return false;
+    }
     uint32_t n_bufs = fb_read_u32(fb + vec);
+    if (vec + 4u + static_cast<uint64_t>(n_bufs) * 16u > meta_size) {
+      if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: truncated buffers vector.";
+      return false;
+    }
     raw_bufs.resize(n_bufs);
     const uint8_t* bp = fb + vec + 4;
     for (uint32_t i = 0; i < n_bufs; i++) {
-      raw_bufs[i].offset = fb_read_i64(bp + i * 16u);
-      raw_bufs[i].length = fb_read_i64(bp + i * 16u + 8u);
+      int64_t bo = fb_read_i64(bp + i * 16u);
+      int64_t bl = fb_read_i64(bp + i * 16u + 8u);
+      if (bl < 0 || (bl > 0 && (bo < 0 || static_cast<uint64_t>(bo) + static_cast<uint64_t>(bl) > ubody_len))) {
+        if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: buffer range exceeds message body.";
+        return false;
+      }
+      raw_bufs[i] = {bo, bl};
     }
   }
 
   // Optional BodyCompression table (slot 3)
-  uint32_t comp_pos = fb_field_pos(fb, rb_off, rb_vt_off, rb_vt_len, 3);
   bool is_compressed = false;
   int8_t comp_codec = 0;
   int8_t comp_method = 0;
   if (comp_pos && fb_read_u32(fb + comp_pos) != 0) {
     is_compressed = true;
-    uint32_t comp_off = comp_pos + fb_read_u32(fb + comp_pos);
-    uint32_t comp_vt_off = static_cast<uint32_t>(static_cast<int64_t>(comp_off) - fb_read_i32(fb + comp_off));
-    uint16_t comp_vt_len = fb_read_u16(fb + comp_vt_off);
-    uint32_t codec_pos = fb_field_pos(fb, comp_off, comp_vt_off, comp_vt_len, 0);
-    uint32_t method_pos = fb_field_pos(fb, comp_off, comp_vt_off, comp_vt_len, 1);
+    uint64_t comp_off64 = static_cast<uint64_t>(comp_pos) + fb_read_u32(fb + comp_pos);
+    uint32_t comp_vt_off = 0;
+    uint16_t comp_vt_len = 0;
+    if (comp_off64 > meta_size ||
+        !fb_open_table(fb, meta_size, static_cast<uint32_t>(comp_off64), &comp_vt_off, &comp_vt_len)) {
+      if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: out-of-bounds BodyCompression table.";
+      return false;
+    }
+    uint32_t codec_pos = 0, method_pos = 0;
+    if (!fb_field_checked(fb, meta_size, static_cast<uint32_t>(comp_off64), comp_vt_off, comp_vt_len, 0, 1, &codec_pos) ||
+        !fb_field_checked(fb, meta_size, static_cast<uint32_t>(comp_off64), comp_vt_off, comp_vt_len, 1, 1, &method_pos)) {
+      if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: out-of-bounds BodyCompression fields.";
+      return false;
+    }
     comp_codec = codec_pos ? static_cast<int8_t>(fb[codec_pos]) : 0;
     comp_method = method_pos ? static_cast<int8_t>(fb[method_pos]) : 0;
   }
@@ -896,19 +984,30 @@ inline bool decode_ipc_record_batch(std::string&& raw_msg,
     out->buffers.resize(n_bufs);
 
     // Pass 1: compute exact decompressed byte total from 8-byte prefixes
-    size_t total_out_bytes = 0;
+    static const uint64_t MAX_DECOMPRESSED_BATCH_BYTES = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+    uint64_t total_out_bytes64 = 0;
     for (size_t i = 0; i < n_bufs; i++) {
       int64_t blen = raw_bufs[i].length;
       int64_t boff = raw_bufs[i].offset;
       if (blen <= 0) continue;
-      if (blen < 8 || boff < 0 || static_cast<size_t>(boff + blen) > static_cast<size_t>(body_len)) {
-        if (err_out) *err_out = "Invalid compressed Arrow buffer bounds.";
+      if (blen < 8) {
+        if (err_out) *err_out = "Invalid compressed Arrow buffer (< 8 bytes).";
         return false;
       }
       int64_t ulen = fb_read_i64(src_body + boff);
-      int64_t actual = (ulen == -1) ? (blen - 8) : std::max<int64_t>(0, ulen);
-      total_out_bytes += static_cast<size_t>((actual + 7) & ~static_cast<int64_t>(7));
+      if (ulen < -1 || static_cast<uint64_t>(ulen > 0 ? ulen : 0) > MAX_DECOMPRESSED_BATCH_BYTES) {
+        if (err_out) *err_out = "Invalid compressed Arrow buffer uncompressed length.";
+        return false;
+      }
+      uint64_t actual = (ulen == -1) ? static_cast<uint64_t>(blen - 8)
+                                     : static_cast<uint64_t>(std::max<int64_t>(0, ulen));
+      total_out_bytes64 += (actual + 7ULL) & ~7ULL;
+      if (total_out_bytes64 > MAX_DECOMPRESSED_BATCH_BYTES) {
+        if (err_out) *err_out = "Decompressed Arrow RecordBatch exceeds 2 GiB safety limit.";
+        return false;
+      }
     }
+    size_t total_out_bytes = static_cast<size_t>(total_out_bytes64);
 
     // Single uninitialized allocation (no redundant zero-memset before ZSTD overwrite)
     out->decompressed.reset(total_out_bytes > 0 ? new uint8_t[total_out_bytes] : nullptr);

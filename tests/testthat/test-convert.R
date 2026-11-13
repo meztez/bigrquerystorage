@@ -324,5 +324,16 @@ test_that("fast path preserves NaN vs NA_real_, explicit NA factor levels, and n
   expect_true(length(null_ipc) > 0L)
   decoded_null <- convert_array_stream(read_nanoarrow(null_ipc))
   expect_identical(decoded_null$x, 1:4)
+
+  # Malformed 12-byte IPC message with 4-byte metadata and out-of-bounds root_off (1024)
+  bad_ipc <- as.raw(c(
+    0xff, 0xff, 0xff, 0xff,
+    0x04, 0x00, 0x00, 0x00,
+    0x00, 0x04, 0x00, 0x00
+  ))
+  expect_error(
+    bqs_ipc_write(NULL, "p", "d", "t", bad_ipc, quiet = TRUE),
+    "Invalid Arrow IPC"
+  )
 })
 

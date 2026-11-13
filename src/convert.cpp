@@ -2631,6 +2631,57 @@ SEXP bqs_convert_decoded_streams(
     }
   }
 
+  // Validate per-column buffer capacities across all slices before launching C++ workers
+  for (int64_t j = 0; j < n_cols; j++) {
+    const DirectColSpec& sp = direct_specs[static_cast<size_t>(j)];
+    if (sp.kind == DCOL_FALLBACK) continue;
+    for (const auto& sl : slices) {
+      const bqs_ipc::DecodedBatch& batch = *sl.batch;
+      const int64_t len = sl.row_len;
+      if (len <= 0) continue;
+      const bqs_ipc::FieldNodeDesc& nd = batch.nodes[sp.node_idx];
+      const bqs_ipc::BufferDesc& vbuf = batch.buffers[sp.buf_idx];
+      if (nd.null_count > 0 && vbuf.length > 0 && vbuf.length < ((len + 7) >> 3)) {
+        UNPROTECT(7);
+        Rcpp::stop("Invalid Arrow IPC RecordBatch: validity bitmap shorter than row count.");
+      }
+      if (sp.kind == DCOL_UTF8 || sp.kind == DCOL_LARGE_UTF8) {
+        const bqs_ipc::BufferDesc& obuf = batch.buffers[sp.buf_idx + 1];
+        const bqs_ipc::BufferDesc& dbuf = batch.buffers[sp.buf_idx + 2];
+        int64_t elem_sz = (sp.kind == DCOL_LARGE_UTF8) ? 8 : 4;
+        if (obuf.length < (len + 1) * elem_sz || !batch.body_ptr) {
+          UNPROTECT(7);
+          Rcpp::stop("Invalid Arrow IPC RecordBatch: string offset buffer shorter than row count.");
+        }
+        int64_t first_off = 0, last_off = 0;
+        if (sp.kind == DCOL_UTF8) {
+          const int32_t* offs = reinterpret_cast<const int32_t*>(batch.body_ptr + obuf.offset);
+          first_off = offs[0];
+          last_off = offs[len];
+        } else {
+          const int64_t* offs = reinterpret_cast<const int64_t*>(batch.body_ptr + obuf.offset);
+          first_off = offs[0];
+          last_off = offs[len];
+        }
+        if (first_off < 0 || last_off < first_off || last_off > dbuf.length) {
+          UNPROTECT(7);
+          Rcpp::stop("Invalid Arrow IPC RecordBatch: string offsets out of data buffer bounds.");
+        }
+      } else {
+        const bqs_ipc::BufferDesc& dbuf = batch.buffers[sp.buf_idx + 1];
+        int64_t req_bytes = 0;
+        if (sp.kind == DCOL_BOOL) req_bytes = (len + 7) >> 3;
+        else if (sp.kind == DCOL_INT32 || sp.kind == DCOL_FLOAT32 || sp.kind == DCOL_DATE32) req_bytes = len * 4;
+        else if (sp.kind == DCOL_DECIMAL128) req_bytes = len * 16;
+        else req_bytes = len * 8;
+        if (dbuf.length < req_bytes || (req_bytes > 0 && !batch.body_ptr)) {
+          UNPROTECT(7);
+          Rcpp::stop("Invalid Arrow IPC RecordBatch: data buffer shorter than row count.");
+        }
+      }
+    }
+  }
+
   // Build fine-grained parallel tasks for numeric/bool/temporal/decimal AND string columns
   uint64_t na_real_bits = 0;
   double r_na = NA_REAL;

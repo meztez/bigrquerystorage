@@ -64,22 +64,29 @@ CXXFLAGS=`${R_HOME}/bin/R CMD config CXXFLAGS`
 echo "Using default C++ compiler: $CXX $CXXFLAGS"
 fi
 
-# Optional ZSTD support for Arrow IPC upload buffer compression
+# Optional ZSTD support for Arrow IPC buffer compression/decompression
 CPPFLAGS=`${R_HOME}/bin/R CMD config CPPFLAGS`
+LDFLAGS=`${R_HOME}/bin/R CMD config LDFLAGS`
+ZSTD_PROBE_CFLAGS=""
+ZSTD_PROBE_LIBS="-lzstd"
 if [ `command -v pkg-config` ] && pkg-config --exists libzstd; then
-  ZSTD_CFLAGS=`pkg-config --cflags --silence-errors libzstd`
-  ZSTD_LIBS=`pkg-config --libs libzstd`
-  PKG_CFLAGS="$PKG_CFLAGS $ZSTD_CFLAGS -DHAVE_BQS_ZSTD"
-  PKG_LIBS="$PKG_LIBS $ZSTD_LIBS"
-  echo "Found libzstd via pkg-config: $ZSTD_LIBS"
-else
-  echo "#include <zstd.h>" | ${CXX} -E ${CPPFLAGS} ${PKG_CFLAGS} ${CXXFLAGS} -xc++ - >/dev/null 2>&1
-  if [ $? -eq 0 ]; then
-    PKG_CFLAGS="$PKG_CFLAGS -DHAVE_BQS_ZSTD"
-    PKG_LIBS="$PKG_LIBS -lzstd"
-    echo "Found zstd.h, enabling -lzstd"
-  fi
+  ZSTD_PROBE_CFLAGS=`pkg-config --cflags --silence-errors libzstd`
+  ZSTD_PROBE_LIBS=`pkg-config --libs libzstd`
 fi
+ZSTD_CONFTEST="conftest_zstd_$$"
+cat << 'EOF' > "${ZSTD_CONFTEST}.cpp"
+#include <zstd.h>
+int main() { return ZSTD_versionNumber() > 0 ? 0 : 1; }
+EOF
+${CXX} ${CPPFLAGS} ${PKG_CFLAGS} ${ZSTD_PROBE_CFLAGS} ${CXXFLAGS} "${ZSTD_CONFTEST}.cpp" ${LDFLAGS} ${PKG_LIBS} ${ZSTD_PROBE_LIBS} -o "${ZSTD_CONFTEST}" >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+  PKG_CFLAGS="$PKG_CFLAGS $ZSTD_PROBE_CFLAGS -DHAVE_BQS_ZSTD"
+  PKG_LIBS="$PKG_LIBS $ZSTD_PROBE_LIBS"
+  echo "Found working libzstd: $ZSTD_PROBE_LIBS"
+else
+  echo "libzstd not found or failed to link; building without ZSTD compression."
+fi
+rm -rf "${ZSTD_CONFTEST}" "${ZSTD_CONFTEST}.cpp" "${ZSTD_CONFTEST}.dSYM"
 
 # Test configuration
 echo "#include $PKG_TEST_HEADER" | ${CXX} -E ${CPPFLAGS} ${PKG_CFLAGS} ${CXXFLAGS} -xc++ - >/dev/null 2>configure.log

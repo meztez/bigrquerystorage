@@ -459,17 +459,24 @@ test_that("fused direct download handles low/high cardinality strings, NaN vs NU
   "
   tb <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql, quiet = TRUE)
 
-  df_zstd <- bqs_table_download(tb, bigrquery::bq_test_project(), compression = "zstd", quiet = TRUE)
   df_none <- bqs_table_download(tb, bigrquery::bq_test_project(), compression = "none", quiet = TRUE)
-  df_zstd <- df_zstd[order(df_zstd$id), ]
   df_none <- df_none[order(df_none$id), ]
 
-  expect_equal(nrow(df_zstd), 5000L)
-  expect_identical(df_zstd$id, 1:5000)
-  expect_identical(df_zstd$low_card_str, df_none$low_card_str)
-  expect_identical(df_zstd$high_card_str, df_none$high_card_str)
-  expect_identical(is.na(df_zstd$dbl_val), df_zstd$id %% 4L %in% c(0L, 1L))
-  expect_identical(is.nan(df_zstd$dbl_val), df_zstd$id %% 4L == 1L)
+  expect_equal(nrow(df_none), 5000L)
+  expect_identical(df_none$id, 1:5000)
+  expect_identical(is.na(df_none$dbl_val), df_none$id %% 4L %in% c(0L, 1L))
+  expect_identical(is.nan(df_none$dbl_val), df_none$id %% 4L == 1L)
+
+  if (bqs_has_zstd() || isTRUE(nanoarrow::nanoarrow_with_zstd())) {
+    df_zstd <- bqs_table_download(tb, bigrquery::bq_test_project(), compression = "zstd", quiet = TRUE)
+    df_zstd <- df_zstd[order(df_zstd$id), ]
+    expect_equal(nrow(df_zstd), 5000L)
+    expect_identical(df_zstd$id, df_none$id)
+    expect_identical(df_zstd$low_card_str, df_none$low_card_str)
+    expect_identical(df_zstd$high_card_str, df_none$high_card_str)
+    expect_identical(is.na(df_zstd$dbl_val), is.na(df_none$dbl_val))
+    expect_identical(is.nan(df_zstd$dbl_val), is.nan(df_none$dbl_val))
+  }
 
   df_lim <- bqs_table_download(tb, bigrquery::bq_test_project(), n_max = 123L, quiet = TRUE)
   expect_equal(nrow(df_lim), 123L)
