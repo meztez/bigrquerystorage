@@ -117,7 +117,11 @@ bqs_table_upload <- function(
       bqs_create_table(bq_tbl, create_fields, ...)
       TRUE
     }, error = function(e) {
-      if (identical(e$status, 409L) || grepl("Already Exists", conditionMessage(e), ignore.case = TRUE)) {
+      msg <- conditionMessage(e)
+      if (identical(e$status, 409L) || grepl("Already Exists", msg, ignore.case = TRUE)) {
+        FALSE
+      } else if ((identical(e$status, 403L) || grepl("Access Denied|Forbidden|permission", msg, ignore.case = TRUE)) &&
+                 isTRUE(tryCatch(bigrquery::bq_table_exists(bq_tbl), error = function(...) FALSE))) {
         FALSE
       } else {
         stop(e)
@@ -546,9 +550,9 @@ bqs_serialize_to_ipc <- function(values, target_fields, row_batch_size, use_zstd
     return(raw(0))
   }
 
-  # Scale batch size for wide tables to keep each serialized batch well under 20 MB
-  est_bytes_per_row <- max(64L, ncol(values) * 16L)
-  max_rows_by_size <- max(1000L, as.integer(8L * 1024L * 1024L / est_bytes_per_row))
+  # Scale batch size for wide tables / large values to keep each serialized batch well under 20 MB
+  est_bytes_per_row <- max(64, ncol(values) * 16, as.numeric(utils::object.size(values)) / n)
+  max_rows_by_size <- max(1L, as.integer(8 * 1024 * 1024 / est_bytes_per_row))
   batch_rows <- min(row_batch_size, max_rows_by_size)
 
   arr <- bqs_df_to_arrow_array(values, target_fields)

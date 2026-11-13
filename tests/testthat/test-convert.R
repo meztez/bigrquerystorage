@@ -287,3 +287,42 @@ test_that("fast C++ column builder and ZSTD Arrow IPC encoder preserve values ac
   }
 })
 
+test_that("fast path preserves NaN vs NA_real_, explicit NA factor levels, and null Arrow arrays", {
+  df <- tibble::tibble(
+    dbl = c(NaN, NA_real_, 1.5, -Inf, Inf),
+    fct_na = factor(c("a", NA, "b", NA, "c"), exclude = NULL)
+  )
+  fields <- bqs_infer_bq_fields(df)
+  ipc <- bqs_serialize_to_ipc(df, fields, row_batch_size = 2L, use_zstd = FALSE)
+  out <- convert_array_stream(read_nanoarrow(ipc))
+
+  expect_identical(is.nan(out$dbl), c(TRUE, FALSE, FALSE, FALSE, FALSE))
+  expect_identical(is.na(out$dbl), c(TRUE, TRUE, FALSE, FALSE, FALSE))
+  expect_identical(out$fct_na, c("a", NA_character_, "b", NA_character_, "c"))
+
+  # Null Arrow type ('n') has 0 buffers; ensure fast IPC encoder handles it safely
+  null_sch <- na_struct(list(null_col = na_na(), x = na_int32()))
+  null_child <- nanoarrow_array_modify(
+    nanoarrow_array_init(na_na()),
+    list(length = 4L, null_count = 4L, offset = 0L, buffers = list())
+  )
+  root_arr <- nanoarrow_array_modify(
+    nanoarrow_array_init(null_sch),
+    list(
+      length = 4L,
+      null_count = 0L,
+      offset = 0L,
+      buffers = list(NULL),
+      children = list(null_child, as_nanoarrow_array(1:4))
+    )
+  )
+  nanoarrow_array_set_schema(root_arr, null_sch)
+  expect_true(bqs_can_fast_encode(null_sch))
+  null_ipc <- bqs_encode_arrow_ipc_raw(
+    null_sch, root_arr, bqs_schema_to_ipc(null_sch), row_batch_size = 2L, use_zstd = FALSE
+  )
+  expect_true(length(null_ipc) > 0L)
+  decoded_null <- convert_array_stream(read_nanoarrow(null_ipc))
+  expect_identical(decoded_null$x, 1:4)
+})
+

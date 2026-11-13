@@ -1,6 +1,7 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include <deque>
 #include <thread>
 #include <atomic>
 #include <mutex>
@@ -370,18 +371,30 @@ public:
     }
   }
 
-  // Dynamic work-stealing bounded-window AppendRows worker with transient
-  // NOT_FOUND / UNAVAILABLE retry on freshly created tables.
+  // Dynamic work-stealing bounded-window AppendRows worker:
+  // - PENDING streams assign stable per-stream row offsets and treat ALREADY_EXISTS
+  //   as idempotent acknowledgements on retry, preventing duplicate rows.
+  // - DEFAULT streams (where offsets are forbidden by BigQuery) never replay writes
+  //   after ambiguous transport failures; they only retry an explicit server-side
+  //   NOT_FOUND before the first batch is acknowledged.
   bool AppendArrowBatchesWorkStealing(int worker,
                                       const std::string& stream_name,
+                                      bool is_default,
                                       const std::string& schema_bytes,
                                       const std::vector<std::string>& batches,
+                                      const std::vector<int64_t>& batch_rows,
                                       std::atomic<size_t>* next_batch,
                                       std::atomic<bool>* all_claimed,
                                       ParallelRead* create_state,
                                       ParallelRead* state,
                                       bool* used_out,
                                       std::string* err_out) {
+    struct AssignedBatch {
+      size_t batch_idx;
+      int64_t stream_offset;
+      bool acked;
+    };
+
     size_t m = batches.size();
     size_t first_idx = next_batch->fetch_add(1);
     if (first_idx >= m) {
@@ -396,12 +409,22 @@ public:
     }
     *used_out = true;
 
-    std::vector<size_t> pending_replay;
-    pending_replay.push_back(first_idx);
+    std::vector<AssignedBatch> assigned;
+    assigned.push_back({first_idx, 0, false});
+    int64_t next_offset = (first_idx < batch_rows.size()) ? batch_rows[first_idx] : 0;
+    size_t total_acked = 0;
 
     static const int MAX_APPEND_ATTEMPTS = 12; // ~30s total retry window for table recreation
     for (int attempt = 0; attempt < MAX_APPEND_ATTEMPTS; attempt++) {
       if (state->cancel.load()) return false;
+
+      std::vector<size_t> replay_slots;
+      for (size_t s = 0; s < assigned.size(); s++) {
+        if (!assigned[s].acked) replay_slots.push_back(s);
+      }
+      if (replay_slots.empty() && next_batch->load() >= m) {
+        return !state->cancel.load();
+      }
 
       grpc::ClientContext context;
       context.AddMetadata("x-goog-request-params", "write_stream=" + stream_name);
@@ -414,8 +437,8 @@ public:
       static const size_t MAX_INFLIGHT = 3;
       std::mutex win_mu;
       std::condition_variable win_cv;
+      std::deque<size_t> inflight_slots;
       size_t in_flight = 0;
-      size_t acked_here = 0;
       bool reader_done = false;
       std::atomic<bool> local_failed{false};
       int resp_err_code = 0;
@@ -424,8 +447,34 @@ public:
       std::thread reader_thread([&]() {
         google::cloud::bigquery::storage::v1::AppendRowsResponse resp;
         while (stream->Read(&resp)) {
+          size_t slot = 0;
+          bool have_slot = false;
+          {
+            std::lock_guard<std::mutex> lk(win_mu);
+            if (!inflight_slots.empty()) {
+              slot = inflight_slots.front();
+              inflight_slots.pop_front();
+              have_slot = true;
+            }
+          }
           if (resp.has_error()) {
-            resp_err_code = resp.error().code();
+            int code = resp.error().code();
+            if (!is_default && code == 6 /* ALREADY_EXISTS */ && have_slot) {
+              bool newly_acked = false;
+              {
+                std::lock_guard<std::mutex> lk(win_mu);
+                if (in_flight > 0) in_flight--;
+                if (!assigned[slot].acked) {
+                  assigned[slot].acked = true;
+                  total_acked++;
+                  newly_acked = true;
+                }
+              }
+              win_cv.notify_one();
+              if (newly_acked) state->pages.fetch_add(1);
+              continue;
+            }
+            resp_err_code = code;
             std::string err = "gRPC method AppendRows row error (" +
               std::to_string(resp_err_code) + ") -> " + resp.error().message();
             for (int j = 0; j < resp.row_errors_size() && j < 5; j++) {
@@ -441,13 +490,18 @@ public:
             win_cv.notify_all();
             break;
           }
+          bool newly_acked = false;
           {
             std::lock_guard<std::mutex> lk(win_mu);
             if (in_flight > 0) in_flight--;
-            acked_here++;
+            if (have_slot && !assigned[slot].acked) {
+              assigned[slot].acked = true;
+              total_acked++;
+              newly_acked = true;
+            }
           }
           win_cv.notify_one();
-          state->pages.fetch_add(1);
+          if (newly_acked) state->pages.fetch_add(1);
         }
         {
           std::lock_guard<std::mutex> lk(win_mu);
@@ -458,44 +512,54 @@ public:
 
       bool is_first = true;
       size_t replay_pos = 0;
-      std::vector<size_t> sent_this_attempt;
 
       while (true) {
-        size_t idx = 0;
+        size_t batch_idx = 0;
+        int64_t req_offset = 0;
         {
           std::unique_lock<std::mutex> lk(win_mu);
           win_cv.wait(lk, [&]() {
-            return in_flight < MAX_INFLIGHT || reader_done ||
+            size_t cap = (is_default && total_acked == 0) ? 1u : MAX_INFLIGHT;
+            return in_flight < cap || reader_done ||
                    local_failed.load() || state->cancel.load();
           });
           if (reader_done || local_failed.load() || state->cancel.load()) {
             break;
           }
-          if (replay_pos < pending_replay.size()) {
-            idx = pending_replay[replay_pos++];
+          size_t slot = 0;
+          if (replay_pos < replay_slots.size()) {
+            slot = replay_slots[replay_pos++];
           } else {
-            idx = next_batch->fetch_add(1);
-            if (idx >= m) {
+            size_t next_idx = next_batch->fetch_add(1);
+            if (next_idx >= m) {
               all_claimed->store(true);
               create_state->CancelAll();
               break;
             }
-            if (idx + 1 >= m) {
+            if (next_idx + 1 >= m) {
               all_claimed->store(true);
               create_state->CancelAll();
             }
+            slot = assigned.size();
+            assigned.push_back({next_idx, next_offset, false});
+            next_offset += (next_idx < batch_rows.size()) ? batch_rows[next_idx] : 0;
           }
+          batch_idx = assigned[slot].batch_idx;
+          req_offset = assigned[slot].stream_offset;
+          inflight_slots.push_back(slot);
           in_flight++;
         }
 
-        sent_this_attempt.push_back(idx);
         google::cloud::bigquery::storage::v1::AppendRowsRequest req;
         if (is_first) {
           req.set_write_stream(stream_name);
           req.mutable_arrow_rows()->mutable_writer_schema()->set_serialized_schema(schema_bytes);
           is_first = false;
         }
-        req.mutable_arrow_rows()->mutable_rows()->set_serialized_record_batch(batches[idx]);
+        if (!is_default) {
+          req.mutable_offset()->set_value(req_offset);
+        }
+        req.mutable_arrow_rows()->mutable_rows()->set_serialized_record_batch(batches[batch_idx]);
 
         if (!stream->Write(req)) {
           break;
@@ -507,29 +571,49 @@ public:
       grpc::Status status = stream->Finish();
       state->Unregister(worker);
 
-      if (resp_error.empty() && status.ok()) {
+      bool all_assigned_acked = true;
+      for (const auto& a : assigned) {
+        if (!a.acked) {
+          all_assigned_acked = false;
+          break;
+        }
+      }
+
+      if (resp_error.empty() && status.ok() && all_assigned_acked) {
         return !state->cancel.load();
       }
       if (state->cancel.load() && status.error_code() == grpc::StatusCode::CANCELLED) {
         return false;
       }
 
-      bool retryable = (acked_here == 0) && (attempt < MAX_APPEND_ATTEMPTS - 1) && (
-        resp_err_code == 5 /* NOT_FOUND */ ||
-        resp_err_code == 9 /* FAILED_PRECONDITION */ ||
-        resp_err_code == 10 /* ABORTED */ ||
-        resp_err_code == 14 /* UNAVAILABLE */ ||
-        status.error_code() == grpc::StatusCode::NOT_FOUND ||
-        status.error_code() == grpc::StatusCode::FAILED_PRECONDITION ||
-        status.error_code() == grpc::StatusCode::ABORTED ||
-        status.error_code() == grpc::StatusCode::UNAVAILABLE
-      );
-      if (retryable) {
-        // Replay any unacked batches claimed during this attempt
-        for (size_t k = replay_pos; k < pending_replay.size(); k++) {
-          sent_this_attempt.push_back(pending_replay[k]);
+      bool retryable = false;
+      if (attempt < MAX_APPEND_ATTEMPTS - 1) {
+        if (is_default) {
+          // Offsets are disallowed on _default streams: never replay after an
+          // ambiguous transport error; only retry an explicit server NOT_FOUND
+          // before the first batch is accepted (window capped at 1).
+          retryable = (total_acked == 0) && (assigned.size() == 1) &&
+                      (resp_err_code == 5 /* NOT_FOUND */);
+        } else {
+          // PENDING streams carry stable per-stream row offsets + ALREADY_EXISTS
+          // handling, so transient stream/transport errors can be safely replayed.
+          retryable = (
+            resp_err_code == 5 /* NOT_FOUND */ ||
+            resp_err_code == 9 /* FAILED_PRECONDITION */ ||
+            resp_err_code == 10 /* ABORTED */ ||
+            resp_err_code == 14 /* UNAVAILABLE */ ||
+            (resp_err_code == 0 && (
+              status.error_code() == grpc::StatusCode::NOT_FOUND ||
+              status.error_code() == grpc::StatusCode::FAILED_PRECONDITION ||
+              status.error_code() == grpc::StatusCode::ABORTED ||
+              status.error_code() == grpc::StatusCode::UNAVAILABLE ||
+              status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED ||
+              !all_assigned_acked
+            ))
+          );
         }
-        pending_replay = std::move(sent_this_attempt);
+      }
+      if (retryable) {
         int sleep_ms = std::min(4000, 100 * (1 << std::min(attempt, 6)));
         for (int slept = 0; slept < sleep_ms; slept += 50) {
           if (state->cancel.load()) return false;
@@ -540,8 +624,10 @@ public:
 
       if (!resp_error.empty()) {
         if (err_out) *err_out = resp_error;
-      } else if (err_out) {
-        *err_out = "gRPC method AppendRows error -> " + status.error_message();
+      } else if (!status.ok()) {
+        if (err_out) *err_out = "gRPC method AppendRows error -> " + status.error_message();
+      } else {
+        if (err_out) *err_out = "gRPC method AppendRows closed before acknowledging all batches.";
       }
       create_state->CancelAll();
       state->CancelAll();
@@ -1246,11 +1332,12 @@ SEXP bqs_ipc_stream(SEXP client,
 }
 
 // Parse an Arrow IPC stream buffer into the serialized Schema message,
-// individual serialized RecordBatch messages, and total row count.
+// individual serialized RecordBatch messages, per-batch row counts, and total row count.
 static int64_t split_arrow_ipc_stream(const uint8_t* data,
                                       size_t len,
                                       std::string* schema_out,
-                                      std::vector<std::string>* batches_out) {
+                                      std::vector<std::string>* batches_out,
+                                      std::vector<int64_t>* batch_rows_out) {
   int64_t total_rows = 0;
   size_t pos = 0;
   while (pos + 8 <= len) {
@@ -1301,6 +1388,7 @@ static int64_t split_arrow_ipc_stream(const uint8_t* data,
       schema_out->assign(reinterpret_cast<const char*>(data + pos), msg_len);
     } else if (header_type == 3) {
       batches_out->emplace_back(reinterpret_cast<const char*>(data + pos), msg_len);
+      int64_t rb_rows = 0;
       if (vtable_len >= 10) {
         uint16_t hdr_off = 0;
         std::memcpy(&hdr_off, fb + vtable_off + 8, 2);
@@ -1317,13 +1405,13 @@ static int64_t split_arrow_ipc_stream(const uint8_t* data,
             uint16_t len_off = 0;
             std::memcpy(&len_off, fb + rb_vt_off + 4, 2);
             if (len_off > 0) {
-              int64_t rb_rows = 0;
               std::memcpy(&rb_rows, fb + rb_off + len_off, 8);
               total_rows += rb_rows;
             }
           }
         }
       }
+      if (batch_rows_out) batch_rows_out->push_back(rb_rows);
     }
     pos += msg_len;
   }
@@ -1337,6 +1425,7 @@ static int64_t execute_parallel_write(BigQueryReadClient* client_ptr,
                                       const std::string& parent,
                                       const std::string& schema_bytes,
                                       std::vector<std::string>* batches,
+                                      const std::vector<int64_t>& batch_rows,
                                       int64_t total_rows,
                                       const std::string& stream_type,
                                       int num_streams,
@@ -1359,7 +1448,7 @@ static int64_t execute_parallel_write(BigQueryReadClient* client_ptr,
   ParallelRead state(num_streams);
   std::atomic<size_t> next_batch{0};
   std::atomic<bool> all_claimed{false};
-  std::vector<bool> stream_used(static_cast<size_t>(num_streams), false);
+  std::vector<uint8_t> stream_used(static_cast<size_t>(num_streams), 0);
   std::vector<std::string> errors(static_cast<size_t>(num_streams));
   std::vector<int64_t> finalized_rows(static_cast<size_t>(num_streams), 0);
   std::atomic<int> running(num_streams);
@@ -1395,15 +1484,15 @@ static int64_t execute_parallel_write(BigQueryReadClient* client_ptr,
       if (ready && !state.cancel.load()) {
         bool used = false;
         if (!client_ptr->AppendArrowBatchesWorkStealing(
-              w, stream_names[wu], schema_bytes, *batches,
+              w, stream_names[wu], is_default, schema_bytes, *batches, batch_rows,
               &next_batch, &all_claimed, &create_state, &state,
               &used, &errors[wu])) {
           create_state.CancelAll();
           state.CancelAll();
         }
-        stream_used[wu] = used;
+        stream_used[wu] = used ? 1u : 0u;
       }
-      if (!is_default && stream_used[wu] && !state.cancel.load()) {
+      if (!is_default && stream_used[wu] != 0 && !state.cancel.load()) {
         if (!client_ptr->FinalizeWriteStreamWorker(
               wu, stream_names[wu], &finalized_rows[wu], &errors[wu])) {
           create_state.CancelAll();
@@ -1457,7 +1546,7 @@ static int64_t execute_parallel_write(BigQueryReadClient* client_ptr,
     commit_streams.reserve(static_cast<size_t>(num_streams));
     for (int w = 0; w < num_streams; w++) {
       size_t wu = static_cast<size_t>(w);
-      if (stream_used[wu]) {
+      if (stream_used[wu] != 0) {
         commit_streams.push_back(stream_names[wu]);
         committed_rows += finalized_rows[wu];
       }
@@ -1468,7 +1557,7 @@ static int64_t execute_parallel_write(BigQueryReadClient* client_ptr,
     }
   } else {
     for (int w = 0; w < num_streams; w++) {
-      if (stream_used[static_cast<size_t>(w)]) used_count++;
+      if (stream_used[static_cast<size_t>(w)] != 0) used_count++;
     }
   }
 
@@ -1504,7 +1593,9 @@ double bqs_ipc_write(SEXP client,
 
   std::string schema_bytes;
   std::vector<std::string> batches;
-  int64_t total_rows = split_arrow_ipc_stream(RAW(ipc_bytes), ipc_bytes.size(), &schema_bytes, &batches);
+  std::vector<int64_t> batch_rows;
+  int64_t total_rows = split_arrow_ipc_stream(
+    RAW(ipc_bytes), ipc_bytes.size(), &schema_bytes, &batches, &batch_rows);
   if (batches.empty()) {
     return 0;
   }
@@ -1518,7 +1609,7 @@ double bqs_ipc_write(SEXP client,
   int num_streams = std::min<int>({target_threads, by_size, static_cast<int>(batches.size())});
 
   int64_t committed = execute_parallel_write(
-    client_ptr.get(), parent, schema_bytes, &batches, total_rows,
+    client_ptr.get(), parent, schema_bytes, &batches, batch_rows, total_rows,
     stream_type, num_streams, quiet);
   return static_cast<double>(committed);
 }
@@ -1614,13 +1705,13 @@ double bqs_arrow_write(SEXP client,
                       ? std::max(1, std::min(max_stream_count, streams_by_rows))
                       : std::max(1, std::min({max_streams, streams_by_bytes, streams_by_rows}));
 
-  // Target >= 2 * num_streams batches (each <= 5 MB uncompressed) so fast streams
-  // dynamically steal work if any single stream experiences higher latency.
+  // Target >= 2 * num_streams batches (each <= 5 MB uncompressed, down to 1 row
+  // for wide rows) so requests always stay well below BigQuery's 20 MB limit.
   const int64_t max_batch_bytes = 5LL * 1024LL * 1024LL;
   double bytes_per_row = std::max(16.0, static_cast<double>(total_uncompressed_bytes) / static_cast<double>(total_rows));
-  int64_t max_rows_by_bytes = std::max<int64_t>(512, static_cast<int64_t>(static_cast<double>(max_batch_bytes) / bytes_per_row));
+  int64_t max_rows_by_bytes = std::max<int64_t>(1, static_cast<int64_t>(static_cast<double>(max_batch_bytes) / bytes_per_row));
   int target_min_batches = (num_streams > 1) ? (num_streams * 2) : 1;
-  int64_t max_rows_for_stealing = std::max<int64_t>(512, (total_rows + target_min_batches - 1) / target_min_batches);
+  int64_t max_rows_for_stealing = std::max<int64_t>(1, (total_rows + target_min_batches - 1) / target_min_batches);
   int64_t effective_batch_rows = std::min<int64_t>({
     static_cast<int64_t>(std::max(1, row_batch_size)),
     max_rows_by_bytes,
@@ -1630,15 +1721,33 @@ double bqs_arrow_write(SEXP client,
     effective_batch_rows = (effective_batch_rows / 64) * 64;
   }
 
+  const int64_t hard_slice_bytes = 10LL * 1024LL * 1024LL;
   std::vector<bqs_ipc::BatchSliceSpec> specs;
   for (size_t a_idx = 0; a_idx < src_arrays.size(); a_idx++) {
     int64_t alen = src_arrays[a_idx].length;
-    for (int64_t s = 0; s < alen; s += effective_batch_rows) {
-      specs.push_back({a_idx, s, std::min<int64_t>(effective_batch_rows, alen - s)});
+    int64_t s = 0;
+    while (s < alen) {
+      int64_t len = std::min<int64_t>(effective_batch_rows, alen - s);
+      while (len > 1) {
+        int64_t slice_bytes = 0;
+        for (int64_t j = 0; j < schema.n_children; j++) {
+          slice_bytes += bqs_ipc::estimate_field_bytes(
+            schema.children[j], src_arrays[a_idx].children[j], src_arrays[a_idx].offset + s, len);
+        }
+        if (slice_bytes <= hard_slice_bytes) break;
+        len = std::max<int64_t>(1, len / 2);
+      }
+      specs.push_back({a_idx, s, len});
+      s += len;
     }
   }
   num_streams = std::min<int>(num_streams, static_cast<int>(specs.size()));
   client_ptr->EnsureWriteChannels(static_cast<size_t>(num_streams), true);
+
+  std::vector<int64_t> batch_rows(specs.size());
+  for (size_t i = 0; i < specs.size(); i++) {
+    batch_rows[i] = specs[i].row_len;
+  }
 
   // Encode & ZSTD-compress all RecordBatches in parallel across CPU cores (~15-25 ms),
   // then immediately release input Arrow memory and launch work-stealing write streams.
@@ -1654,7 +1763,7 @@ double bqs_arrow_write(SEXP client,
   }
 
   int64_t committed = execute_parallel_write(
-    client_ptr.get(), parent, schema_bytes, &batches, total_rows,
+    client_ptr.get(), parent, schema_bytes, &batches, batch_rows, total_rows,
     stream_type, num_streams, quiet);
   return static_cast<double>(committed);
 }

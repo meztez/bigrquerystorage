@@ -1287,14 +1287,16 @@ static void execute_numeric_col_task(FastColTask& t) {
       const double* src = static_cast<const double*>(t.r_ptr);
       int64_t nulls = 0;
       for (int64_t i = 0; i < n; i++) {
-        if (std::isnan(src[i])) nulls++;
+        if (std::isnan(src[i]) && R_IsNA(src[i])) nulls++;
       }
       t.null_count = nulls;
       if (nulls > 0) {
         priv->validity.assign(static_cast<size_t>((n + 7) >> 3), 0);
         uint8_t* v = priv->validity.data();
         for (int64_t i = 0; i < n; i++) {
-          if (!std::isnan(src[i])) v[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+          if (!(std::isnan(src[i]) && R_IsNA(src[i]))) {
+            v[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+          }
         }
         priv->buffers[0] = v;
       }
@@ -1526,9 +1528,12 @@ static bool build_factor_col_main_thread(SEXP col,
   if (TYPEOF(levels) != STRSXP) return false;
   int n_levels = Rf_length(levels);
   std::vector<std::string> lvl_strs(static_cast<size_t>(n_levels));
+  std::vector<uint8_t> lvl_is_na(static_cast<size_t>(n_levels), 0);
   for (int k = 0; k < n_levels; k++) {
     SEXP elt = STRING_ELT(levels, k);
-    if (elt != NA_STRING) {
+    if (elt == NA_STRING) {
+      lvl_is_na[static_cast<size_t>(k)] = 1;
+    } else {
       const void* vmax = vmaxget();
       const char* u = Rf_translateCharUTF8(elt);
       lvl_strs[static_cast<size_t>(k)] = std::string(u);
@@ -1541,7 +1546,7 @@ static bool build_factor_col_main_thread(SEXP col,
   int64_t nulls = 0;
   for (int64_t i = 0; i < n; i++) {
     int c = codes[i];
-    if (c == NA_INTEGER || c < 1 || c > n_levels) {
+    if (c == NA_INTEGER || c < 1 || c > n_levels || lvl_is_na[static_cast<size_t>(c - 1)] != 0) {
       nulls++;
     } else {
       total_bytes += static_cast<int64_t>(lvl_strs[static_cast<size_t>(c - 1)].size());
@@ -1565,7 +1570,7 @@ static bool build_factor_col_main_thread(SEXP col,
 
   for (int64_t i = 0; i < n; i++) {
     int c = codes[i];
-    if (c != NA_INTEGER && c >= 1 && c <= n_levels) {
+    if (c != NA_INTEGER && c >= 1 && c <= n_levels && lvl_is_na[static_cast<size_t>(c - 1)] == 0) {
       if (vbits) vbits[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
       const std::string& s = lvl_strs[static_cast<size_t>(c - 1)];
       int32_t len = static_cast<int32_t>(s.size());
@@ -2015,7 +2020,7 @@ static void run_numeric_slice_task(NumericSliceTask& task) {
         if (!valid) {
           for (int64_t i = 0; i < len; i++) {
             int64_t v = src[i];
-            if (static_cast<uint64_t>(v + 2147483647LL) > 4294967294ULL) {
+            if (v < -2147483647LL || v > 2147483647LL) {
               dst[i] = NA_INTEGER;
               local_ovf = true;
             } else {
@@ -2026,7 +2031,7 @@ static void run_numeric_slice_task(NumericSliceTask& task) {
           for (int64_t i = 0; i < len; i++) {
             if ((valid[i >> 3] >> (i & 7)) & 1) {
               int64_t v = src[i];
-              if (static_cast<uint64_t>(v + 2147483647LL) > 4294967294ULL) {
+              if (v < -2147483647LL || v > 2147483647LL) {
                 dst[i] = NA_INTEGER;
                 local_ovf = true;
               } else {
@@ -2876,7 +2881,7 @@ SEXP bqs_convert_decoded_streams(
         size_t bpos = col_buf_pos[static_cast<size_t>(col_idx)];
         ArrowArray* ch_a = bqs_ipc::build_borrowed_field_array(
           schema->children[col_idx], *sl.batch, &npos, &bpos);
-        ch_a->length = sl.row_len;
+        bqs_ipc::truncate_borrowed_field_array(ch_a, schema->children[col_idx], sl.row_len);
         root_a.children[k] = ch_a;
       }
     }

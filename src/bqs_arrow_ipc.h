@@ -124,12 +124,14 @@ inline int64_t estimate_field_bytes(const ArrowSchema* sch,
                                     int64_t len) {
   if (!sch || !arr || len <= 0) return 0;
   const char* fmt = sch->format;
-  int64_t start = arr->offset + logical_start;
-  int64_t total = (arr->null_count != 0 && arr->buffers[0] != nullptr) ? ((len + 7) >> 3) : 0;
-
   if (std::strcmp(fmt, "n") == 0) {
     return 0;
   }
+  int64_t start = arr->offset + logical_start;
+  int64_t total = (arr->null_count != 0 && arr->buffers != nullptr && arr->buffers[0] != nullptr)
+                    ? ((len + 7) >> 3)
+                    : 0;
+
   if (std::strcmp(fmt, "b") == 0) {
     return total + ((len + 7) >> 3);
   }
@@ -450,7 +452,9 @@ private:
       return true;
     }
 
-    const uint8_t* valid = static_cast<const uint8_t*>(arr->buffers[0]);
+    const uint8_t* valid = (arr->buffers != nullptr && arr->n_buffers > 0)
+                             ? static_cast<const uint8_t*>(arr->buffers[0])
+                             : nullptr;
     int64_t slice_nulls = 0;
     if (arr->null_count != 0 && valid != nullptr && len > 0) {
       slice_nulls = count_nulls_in_bitmap(valid, start, len);
@@ -1052,6 +1056,34 @@ inline ArrowArray* build_borrowed_field_array(const ArrowSchema* sch,
     arr->children = nullptr;
   }
   return arr;
+}
+
+// Safely truncate a borrowed ArrowArray view to `new_len` logical rows and
+// recompute exact sliced `null_count` (including nested STRUCT / FixedSizeList children).
+inline void truncate_borrowed_field_array(ArrowArray* arr,
+                                          const ArrowSchema* sch,
+                                          int64_t new_len) {
+  if (!arr || !sch || new_len >= arr->length) return;
+  const char* fmt = sch->format ? sch->format : "";
+  arr->length = new_len;
+  if (std::strcmp(fmt, "n") == 0) {
+    arr->null_count = new_len;
+    return;
+  }
+  if (arr->null_count != 0 && arr->buffers != nullptr && arr->buffers[0] != nullptr) {
+    arr->null_count = count_nulls_in_bitmap(
+      static_cast<const uint8_t*>(arr->buffers[0]), arr->offset, new_len);
+  } else {
+    arr->null_count = 0;
+  }
+  if (std::strcmp(fmt, "+s") == 0) {
+    for (int64_t c = 0; c < sch->n_children && c < arr->n_children; c++) {
+      truncate_borrowed_field_array(arr->children[c], sch->children[c], new_len);
+    }
+  } else if (std::strncmp(fmt, "+w:", 3) == 0 && sch->n_children == 1 && arr->n_children == 1) {
+    int64_t w = std::atoll(fmt + 3);
+    truncate_borrowed_field_array(arr->children[0], sch->children[0], new_len * std::max<int64_t>(0, w));
+  }
 }
 
 } // namespace bqs_ipc
