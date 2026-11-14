@@ -17,7 +17,7 @@ PROTO_FILES=google/api/field_behavior.proto google/api/http.proto google/api/lau
 
 GRPC_FILES=google/cloud/bigquery/storage/v1/storage.proto
 
-OBJECTS=bqs.o convert.o RcppExports.o $(PROTO_FILES:.proto=.pb.o) $(GRPC_FILES:.proto=.grpc.pb.o)
+OBJECTS=bqs_arrow_ipc.o bqs_client.o bqs_read.o bqs_write.o arrow_to_r.o r_to_arrow.o RcppExports.o $(PROTO_FILES:.proto=.pb.o) $(GRPC_FILES:.proto=.grpc.pb.o)
 
 all: clean winlibs protos
 

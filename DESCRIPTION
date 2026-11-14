@@ -39,4 +39,4 @@ SystemRequirements: grpc/protobuf headers and compilers. For example
 		protobuf-devel grpc-devel grpc-plugins (Fedora/RHEL)
 Roxygen: list(markdown = TRUE)
 Biarch: TRUE
-Config/roxygen2/version: 8.0.0
+Config/roxygen2/version: 8.1.1

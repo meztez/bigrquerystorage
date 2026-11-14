@@ -57,13 +57,7 @@ bqs_table_download <- function(
     type = c("tibble", "data.frame", "data.table", "arrow"),
     max_stream_count = 0L,
     compression = c("auto", "zstd", "lz4", "none")) {
-  # Parameters validation
-  if (inherits(x, "bq_table")) {
-    bqs_table_name <- c(x$project, x$dataset, x$table)
-  } else {
-    bqs_table_name <- unlist(strsplit(unlist(x), "\\.|:"))
-  }
-  assertthat::assert_that(length(bqs_table_name) >= 3)
+  bqs_table_name <- bqs_parse_table_ref(x)
   assertthat::assert_that(is.character(row_restriction), length(row_restriction) == 1)
   assertthat::assert_that(is.character(selected_fields))
   if (is.na(snapshot_time)) {
@@ -79,6 +73,16 @@ bqs_table_download <- function(
       "bqs_table_download(n_max)"
     )
     n_max <- max_results
+  }
+  missing_type <- missing(type)
+  if (lifecycle::is_present(as_tibble)) {
+    lifecycle::deprecate_warn(
+      "1.0.0", "bqs_table_download(as_tibble)",
+      "bqs_table_download(type)"
+    )
+    if (!isTRUE(as_tibble) && missing_type) {
+      type <- "data.frame"
+    }
   }
   if (!rlang::is_missing(sample_percentage)) {
     assertthat::assert_that(
@@ -116,9 +120,7 @@ bqs_table_download <- function(
   }
 
   compression_codec <- switch(compression,
-    auto = if (type != "arrow" && bqs_has_zstd()) {
-      2L
-    } else if (isTRUE(nanoarrow::nanoarrow_with_zstd())) {
+    auto = if ((type != "arrow" && bqs_has_zstd()) || isTRUE(nanoarrow::nanoarrow_with_zstd())) {
       2L
     } else if (isTRUE(nanoarrow::nanoarrow_with_lz4())) {
       1L
@@ -153,12 +155,6 @@ bqs_table_download <- function(
 
   if (type != "arrow" && (compression_codec == 0L || (compression_codec == 2L && bqs_has_zstd()))) {
     rlang::local_options(nanoarrow.warn_unregistered_extension = FALSE)
-    as_bigint <- switch(bigint,
-      integer = as.integer,
-      integer64 = bit64::as.integer64,
-      numeric = as.numeric,
-      character = as.character
-    )
     tb <- bqs_download_direct(
       client = .global$client$ptr,
       project = bqs_table_name[1],
@@ -177,19 +173,9 @@ bqs_table_download <- function(
       max_threads = threads,
       bigint = bigint,
       as_data_frame = (type != "tibble"),
-      split_streams = split_streams,
-      read_nanoarrow_fn = nanoarrow::read_nanoarrow,
-      int64_ptype_fn = int64_ptype,
-      check_pkg_fn = bqs_check_namespace,
-      na_convert_stream = nanoarrow::convert_array_stream,
-      na_convert_stream_quiet = convert_stream_no_warnings,
-      as_bigint = as_bigint
+      split_streams = split_streams
     )
-    return(switch(type,
-      tibble = tb,
-      "data.frame" = tb,
-      "data.table" = data.table::setDT(tb)
-    ))
+    return(if (type == "data.table") data.table::setDT(tb) else tb)
   }
 
   ipc <- bqs_ipc_stream(
@@ -211,7 +197,6 @@ bqs_table_download <- function(
   )
 
   rlang::local_options(nanoarrow.warn_unregistered_extension = FALSE)
-  # Each read stream is its own IPC buffer, decoded (and decompressed) in parallel
   if (!length(ipc$streams)) {
     ipc$streams <- list(ipc$schema)
   }
@@ -224,16 +209,12 @@ bqs_table_download <- function(
   }
 
   schema <- stream$get_schema()
-  to <- int64_ptype(schema)
-  # Not bound to a variable so it can be post-processed in place
   tb <- parse_postprocess_schema(
-    bqs_convert_stream(stream, to, bigint, nanoarrow::convert_array_stream, convert_stream_no_warnings),
+    bqs_convert_stream(stream, int64_ptype(schema), bigint),
     schema,
     bigint
   )
 
-  # Batches do not support a n_max so we get just enough results before
-  # exiting the streaming loop.
   if (isTRUE(trim_to_n) && nrow(tb) > n_max) {
     tb <- tb[seq_len(n_max), , drop = FALSE]
   }
@@ -338,23 +319,8 @@ bqs_deauth <- function() {
   invisible()
 }
 
-# BigQuery storage --------------------------------------------------------
-#' @noRd
-bqs_initiate <- function() {
-  bqs_init_logger()
-  if (.Platform$OS.type == "windows") {
-    if (Sys.getenv("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH") == "") {
-      warning("On Windows, GRPC_DEFAULT_SSL_ROOTS_FILE_PATH should be set to the PEM file path to load SSL roots from.")
-    }
-  }
-}
-
 # utils ------------------------------------------------------------------
 
-#' Build a conversion target for a nanoarrow stream where every int64 column,
-#' including those nested in structs and lists (REPEATED columns), becomes a
-#' bit64::integer64 instead of the lossy double that the default conversion
-#' produces. See https://github.com/r-dbi/bigrquery/issues/689.
 #' @noRd
 int64_ptype <- function(schema, ptype = nanoarrow::infer_nanoarrow_ptype(schema)) {
   if (identical(schema$format, "l")) {
@@ -370,13 +336,6 @@ int64_ptype <- function(schema, ptype = nanoarrow::infer_nanoarrow_ptype(schema)
   }
 }
 
-#' Post-process converted R data.frame using the Arrow schema directly
-#' (eliminates the redundant REST API call to `bigrquery::bq_table_fields()`).
-#' STRUCT become tibbles, REPEATED become lists, DATETIME are UTC, GEOGRAPHY
-#' are `wk::wkt`, BYTES are `blob::blob` and INT64 follow `bigint`. The
-#' schema walk runs in C++ and all INT64 values are converted with one
-#' `as_bigint()` call, instead of R code evaluated for every row of every
-#' REPEATED column.
 #' @noRd
 parse_postprocess_schema <- function(df, schema, bigint) {
   flags <- bqs_schema_flags(schema)
@@ -386,13 +345,7 @@ parse_postprocess_schema <- function(df, schema, bigint) {
   if (flags[["bytes"]]) {
     bqs_check_namespace("blob", "BYTES")
   }
-  as_bigint <- switch(bigint,
-    integer = as.integer,
-    integer64 = bit64::as.integer64,
-    numeric = as.numeric,
-    character = as.character
-  )
-  bqs_postprocess(df, schema, bigint, as_bigint)
+  bqs_postprocess(df, schema, bigint)
 }
 
 #' @noRd
@@ -413,137 +366,13 @@ bqs_decode_ipc_direct <- function(
     bqs_check_namespace("data.table", "data.table output")
   }
   rlang::local_options(nanoarrow.warn_unregistered_extension = FALSE)
-  as_bigint <- switch(bigint,
-    integer = as.integer,
-    integer64 = bit64::as.integer64,
-    numeric = as.numeric,
-    character = as.character
-  )
   n_val <- if (n_max < 0 || is.infinite(n_max)) -1 else floor(as.numeric(n_max))
   tb <- bqs_decode_arrow_ipc_raw(
     ipc_bytes = ipc_bytes,
     n_max = n_val,
     bigint = bigint,
     as_data_frame = (type != "tibble"),
-    n_threads = as.integer(threads),
-    read_nanoarrow_fn = nanoarrow::read_nanoarrow,
-    int64_ptype_fn = int64_ptype,
-    check_pkg_fn = bqs_check_namespace,
-    na_convert_stream = nanoarrow::convert_array_stream,
-    na_convert_stream_quiet = convert_stream_no_warnings,
-    as_bigint = as_bigint
+    n_threads = as.integer(threads)
   )
-  switch(type,
-    tibble = tb,
-    "data.frame" = tb,
-    "data.table" = data.table::setDT(tb)
-  )
-}
-
-#' @noRd
-parse_postprocess <- function(df, bigint, fields) {
-  tests <- list()
-  as_bigint <- switch(bigint,
-    integer = as.integer,
-    integer64 = bit64::as.integer64,
-    numeric = as.numeric,
-    character = as.character
-  )
-  tests[["bigint"]] <- list(
-  	"test" = function(x,y) y[["type"]] %in% c("INT", "SMALLINT", "INTEGER", "BIGINT", "TINYINT", "BYTEINT", "INT64"),
-  	"func" = function(x) as_bigint(x)
-  )
-	if (has_type(fields, "DATETIME")) {
-		tests[["DATETIME"]] <- list(
-			"test" = function(x,y) {y[["type"]] %in% "DATETIME"},
-			"func" = function(x) {attr(x, "tzone") <- "UTC"; x}
-		)
-	}
-	if (has_type(fields, "GEOGRAPHY")) {
-	  bqs_check_namespace("wk", "GEOGRAPHY")
-		tests[["GEOGRAPHY"]] <- list(
-			"test" = function(x,y) y[["type"]] %in% "GEOGRAPHY",
-			"func" = function(x) {attr(x, "class") <- c("wk_wkt", "wk_vctr");x}
-		)
-	}
-	if (has_type(fields, "BYTES")) {
-		bqs_check_namespace("blob", "BYTES")
-		tests[["BYTES"]] <- list(
-			"test" = function(x,y) y[["type"]] %in% "BYTES",
-			"func" = function(x) {
-				attr(x, "class") <- c("blob", "vctrs_list_of", "vctrs_vctr", "list")
-				attr(x, "ptype") <- raw(0)
-				x
-			}
-		)
-	}
-  if (length(tests)) {
-	  df <- col_mapply(df, list("fields" = fields), tests)
-  }
-  df
-}
-
-#' @noRd
-#' @importFrom rlang is_named
-col_mapply <- function(x, y, tests) {
-	if (is.list(x)) {
-		if (inherits(x, c("arrow_list", "vctrs_list_of"))) {
-			x <- as.list(x)
-		}
-		if (inherits(x, "data.frame") && !inherits(x, "tbl_df")) {
-			x <- tibble::tibble(x)
-		}
-		if (rlang::is_named(x) && length(x) == length(y[["fields"]])) {
-			x[] <- mapply(col_mapply, x, y[["fields"]], MoreArgs = list(tests = tests), SIMPLIFY = FALSE)
-			return(x)
-		} else if (y[["type"]] %in% "RECORD" && y[["mode"]] %in% "REPEATED") {
-			x[] <- lapply(x, col_mapply, y = y, tests = tests)
-			return(x)
-		}
-	}
-	for (t in tests) {
-		if (t[["test"]](x, y)) {
-			if (y[["mode"]] %in% "REPEATED") {
-				x <- lapply(x, t[["func"]])
-			} else {
-				x <- t[["func"]](x)
-			}
-			break
-		}
-	}
-	x
-}
-
-#' @noRd
-#' @importFrom rlang check_installed
-bqs_check_namespace <- function(pkg, bqs_type) {
-	rlang::check_installed(pkg, sprintf("to parse BigQueryStorage '%s' fields.", bqs_type))
-}
-
-#' @noRd
-#' @importFrom utils head
-select_fields <- function(fields, selected_fields) {
-	if (length(selected_fields)) {
-		selected_fields <- strsplit(selected_fields, ".", fixed = TRUE)
-		nm <- vapply(fields, `[[`, character(1), "name")
-		snm <- vapply(selected_fields, utils::head, character(1), 1)
-		for (i in rev(seq_len(length(nm)))) {
-			m <- match(tolower(nm[i]), tolower(snm))
-			if (is.na(m)) {
-				fields[[i]] <- NULL
-			} else {
-				if (length(f <- fields[[i]][["fields"]]) && length(sf <- selected_fields[[m]][-1])) {
-					fields[[i]][["fields"]] <- select_fields(f,	paste0(sf, collapse = "."))
-				}
-			}
-		}
-	}
-	return(fields)
-}
-
-#' @noRd
-has_type <- function(fields, bqs_type) {
-	f <- unlist(fields)
-	w <- which(grepl("type$", names(f)))
-	bqs_type %in% unique(f[w])
+  if (type == "data.table") data.table::setDT(tb) else tb
 }
