@@ -62,7 +62,15 @@ knitr::include_graphics("man/figures/benchmark_bigrquerystorage.png")
 | `usa_names` slice (1.00M x 5) | 1.00M x 5 (32 MB) | **adbc (bigquery driver)** | 4.34 s | 7.3 MB/s | 0.23 M/s | **3.0X faster** | 3.3x slower |
 | `usa_names` slice (1.00M x 5) | 1.00M x 5 (32 MB) | **bigrquery (JSON API)** | 12.97 s | 2.4 MB/s | 0.08 M/s | 1.0x (baseline) | 10.0x slower |
 
-*Benchmarks executed in R (R version 4.6.0 (2026-04-24)) over 3 iterations per workload using `r-dbi/bigrquery#695` (`api = "arrow"` vs `api = "json"`), `duckdb` (`bigquery` extension), and `adbcdrivermanager` (`bigquery` driver); see [`scripts/benchmark_bigrquerystorage.R`](https://github.com/meztez/bigrquerystorage/blob/main/scripts/benchmark_bigrquerystorage.R).*
+#### Benchmark Environment
+
+- **Software & Driver Versions** (3 iterations per workload; see [`scripts/benchmark_bigrquerystorage.R`](https://github.com/meztez/bigrquerystorage/blob/main/scripts/benchmark_bigrquerystorage.R)):
+  - **R**: `4.6.0 (2026-04-24)`
+  - **`bigrquerystorage`**: `1.3.0.9000` (`nanoarrow 0.9.0`, `gRPC 1.46.7`, `Protobuf 3.14.0`, `libzstd 1.5.1`)
+  - **`bigrquery`**: `1.6.2.9000` (`r-dbi/bigrquery#695`, `api = "arrow"` vs `api = "json"`)
+  - **`duckdb`**: `2.0.0` + `bigquery` community extension `v0.13.0` (`preserve_insertion_order = false`)
+  - **`adbc`**: `adbcdrivermanager 0.25.0` + ADBC Driver Foundry `bigquery` driver `v1.15.0`
+- **Hardware & OS Profile**: 2x Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz (64 physical cores / 128 vCPUs), 3.9 TiB RAM, Red Hat Enterprise Linux 9.5 (Plow) (`Linux 5.14.0-503.29.1.el9_5.x86_64`, `x86_64`), BigQuery `US` multi-region.
 
 ## Details
 

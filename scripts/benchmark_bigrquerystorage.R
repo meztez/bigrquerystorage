@@ -504,6 +504,119 @@ make_md_table <- function(df) {
   paste(c(header, rows), collapse = "\n")
 }
 
+detect_benchmark_env_notes <- function(con_duck, n_iterations) {
+  bqs_ver <- as.character(utils::packageVersion("bigrquerystorage"))
+  na_ver <- as.character(utils::packageVersion("nanoarrow"))
+  bq_ver <- as.character(utils::packageVersion("bigrquery"))
+  duck_ver <- as.character(utils::packageVersion("duckdb"))
+  adbc_mgr_ver <- as.character(utils::packageVersion("adbcdrivermanager"))
+
+  pkg_cfg <- function(mod) {
+    out <- tryCatch(
+      suppressWarnings(system2("pkg-config", c("--modversion", mod), stdout = TRUE, stderr = FALSE)),
+      error = function(e) character(0)
+    )
+    if (length(out) > 0 && nzchar(trimws(out[1]))) trimws(out[1]) else NA_character_
+  }
+  bqs_deps <- c(
+    paste0("`nanoarrow ", na_ver, "`"),
+    if (!is.na(g <- pkg_cfg("grpc++"))) paste0("`gRPC ", g, "`"),
+    if (!is.na(p <- pkg_cfg("protobuf"))) paste0("`Protobuf ", p, "`"),
+    if (!is.na(z <- pkg_cfg("libzstd"))) paste0("`libzstd ", z, "`")
+  )
+
+  duck_bq_ver <- tryCatch({
+    res <- DBI::dbGetQuery(
+      con_duck,
+      "SELECT extension_version FROM duckdb_extensions() WHERE extension_name = 'bigquery'"
+    )
+    if (nrow(res) > 0 && nzchar(res$extension_version[1])) res$extension_version[1] else "latest"
+  }, error = function(e) "latest")
+
+  adbc_bq_info <- tryCatch({
+    manifest_candidates <- c(
+      file.path(Sys.getenv("XDG_CONFIG_HOME", "~/.config"), "adbc", "drivers", "bigquery.toml"),
+      file.path(Sys.getenv("XDG_CONFIG_HOME", "~/.config"), "adbc", "bigquery.toml"),
+      "~/Library/Application Support/ADBC/Drivers/bigquery.toml",
+      file.path(Sys.getenv("LOCALAPPDATA"), "ADBC", "Drivers", "bigquery.toml")
+    )
+    mf <- manifest_candidates[file.exists(manifest_candidates)]
+    if (length(mf) > 0) {
+      lines <- trimws(readLines(mf[1], warn = FALSE))
+      sec <- which(grepl("^\\[", lines))
+      top_lines <- if (length(sec) > 0) lines[seq_len(sec[1] - 1L)] else lines
+      drv_v <- sub("^version\\s*=\\s*['\"]([^'\"]+)['\"].*$", "\\1", grep("^version\\s*=", top_lines, value = TRUE)[1])
+      paste0("ADBC Driver Foundry `bigquery` driver `v", sub("^v", "", drv_v), "`")
+    } else {
+      "`bigquery` ADBC driver"
+    }
+  }, error = function(e) "`bigquery` ADBC driver")
+
+  sys <- Sys.info()
+  os_label <- sprintf("`%s %s (%s)`", sys[["sysname"]], sys[["release"]], sys[["machine"]])
+  if (file.exists("/etc/os-release")) {
+    os_rel <- readLines("/etc/os-release", warn = FALSE)
+    pn <- sub("^PRETTY_NAME=['\"]?([^'\"]+)['\"]?$", "\\1", grep("^PRETTY_NAME=", os_rel, value = TRUE))
+    if (length(pn) > 0 && nzchar(pn[1])) {
+      os_label <- sprintf("%s (`%s %s`, `%s`)", pn[1], sys[["sysname"]], sys[["release"]], sys[["machine"]])
+    }
+  }
+
+  cpu_label <- tryCatch({
+    vcpus <- parallel::detectCores(logical = TRUE)
+    if (file.exists("/proc/cpuinfo")) {
+      ci <- readLines("/proc/cpuinfo", warn = FALSE)
+      mn <- trimws(sub("^model name\\s*:\\s*", "", grep("^model name\\s*:", ci, value = TRUE)[1]))
+      phys <- trimws(sub("^physical id\\s*:\\s*", "", grep("^physical id\\s*:", ci, value = TRUE)))
+      core <- trimws(sub("^core id\\s*:\\s*", "", grep("^core id\\s*:", ci, value = TRUE)))
+      n_sockets <- length(unique(phys))
+      n_pcores <- if (length(phys) == length(core) && length(phys) > 0) {
+        length(unique(paste(phys, core)))
+      } else {
+        NA_integer_
+      }
+      prefix <- if (n_sockets > 1L) paste0(n_sockets, "x ") else ""
+      cores_desc <- if (!is.na(n_pcores)) {
+        sprintf("%d physical cores / %d vCPUs", n_pcores, vcpus)
+      } else {
+        sprintf("%d vCPUs", vcpus)
+      }
+      sprintf("%s%s (%s)", prefix, mn, cores_desc)
+    } else if (sys[["sysname"]] == "Darwin") {
+      mn <- trimws(system("sysctl -n machdep.cpu.brand_string", intern = TRUE)[1])
+      sprintf("%s (%d vCPUs)", mn, vcpus)
+    } else {
+      sprintf("%d vCPUs", vcpus)
+    }
+  }, error = function(e) sprintf("%d vCPUs", parallel::detectCores()))
+
+  ram_label <- tryCatch({
+    if (file.exists("/proc/meminfo")) {
+      mi <- readLines("/proc/meminfo", warn = FALSE)
+      kb <- as.numeric(sub("^MemTotal:\\s+([0-9]+)\\s+kB.*$", "\\1", grep("^MemTotal:", mi, value = TRUE)[1]))
+      gib <- kb / (1024^2)
+      if (gib >= 1024) sprintf("%.1f TiB RAM", gib / 1024) else sprintf("%.0f GiB RAM", gib)
+    } else if (sys[["sysname"]] == "Darwin") {
+      bytes <- as.numeric(system("sysctl -n hw.memsize", intern = TRUE)[1])
+      sprintf("%.0f GiB RAM", bytes / (1024^3))
+    } else {
+      NA_character_
+    }
+  }, error = function(e) NA_character_)
+
+  hw_parts <- stats::na.omit(c(cpu_label, ram_label, os_label, "BigQuery `US` multi-region"))
+  paste0(
+    "#### Benchmark Environment\n\n",
+    "- **Software & Driver Versions** (", n_iterations, " iterations per workload; see [`scripts/benchmark_bigrquerystorage.R`](https://github.com/meztez/bigrquerystorage/blob/main/scripts/benchmark_bigrquerystorage.R)):\n",
+    "  - **R**: `", sub("^R version ", "", R.version.string), "`\n",
+    "  - **`bigrquerystorage`**: `", bqs_ver, "` (", paste(bqs_deps, collapse = ", "), ")\n",
+    "  - **`bigrquery`**: `", bq_ver, "` (`r-dbi/bigrquery#695`, `api = \"arrow\"` vs `api = \"json\"`)\n",
+    "  - **`duckdb`**: `", duck_ver, "` + `bigquery` community extension `", duck_bq_ver, "` (`preserve_insertion_order = false`)\n",
+    "  - **`adbc`**: `adbcdrivermanager ", adbc_mgr_ver, "` + ", adbc_bq_info, "\n",
+    "- **Hardware & OS Profile**: ", paste(hw_parts, collapse = ", "), ".\n"
+  )
+}
+
 readme_md <- paste0(
   "### Performance (`bigrquerystorage` Arrow API vs `bigrquery` JSON, `duckdb`, and `adbc`)\n\n",
   templated_sentence, "\n\n",
@@ -512,10 +625,7 @@ readme_md <- paste0(
   make_md_table(dl_summary), "\n\n",
   "#### Upload Benchmark — Time to Table (TTT)\n\n",
   make_md_table(ul_summary), "\n\n",
-  "*Benchmarks executed in R (", R.version.string, ") over ", n_iterations,
-  " iterations per workload using `r-dbi/bigrquery#695` (`api = \"arrow\"` vs `api = \"json\"`), ",
-  "`duckdb` (`bigquery` extension), and `adbcdrivermanager` (`bigquery` driver); see ",
-  "[`scripts/benchmark_bigrquerystorage.R`](https://github.com/meztez/bigrquerystorage/blob/main/scripts/benchmark_bigrquerystorage.R).*\n"
+  detect_benchmark_env_notes(con_duck, n_iterations)
 )
 
 writeLines(readme_md, file.path(out_dir, "benchmark_bigrquerystorage_readme.md"))
