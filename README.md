@@ -9,84 +9,106 @@
 [![R-CMD-check](https://github.com/meztez/bigrquerystorage/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/meztez/bigrquerystorage/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
-<figure>
-<img src="./docs/bigrquerystorage.gif"
-alt="Comparing bq_table_download from bigrquery to bgs_table_download from bigrquerystorage" />
-<figcaption aria-hidden="true">Comparing bq_table_download from
-bigrquery to bgs_table_download from bigrquerystorage</figcaption>
-</figure>
-
-Use [BigQuery Storage
+Use Google’s [BigQuery Storage
 API](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1)
-from R.
-
-The main utility is to replace `bigrquery::bq_table_download` and
-`bigrquery::bq_table_upload` methods.
-
-It supports both
+from R, supporting both the
 [BigQueryRead](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigqueryread)
 and
 [BigQueryWrite](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigquerywrite)
-interfaces.
+gRPC interfaces.
+
+`bigrquerystorage` powers high-throughput Arrow transfers in
+`bigrquery::bq_table_download(..., api = "arrow")` and
+`bigrquery::bq_table_upload(..., api = "arrow")`, and can also be called
+directly via `bqs_table_download()` and `bqs_table_upload()`.
 
 ## Advantages over BigQuery REST API
 
-BigQuery Storage API is not rate limited and per project quota do not
-apply. It is an rpc protocol and provides faster downloads and uploads
-using native binary Apache Arrow serialization instead of JSON.
+Unlike the BigQuery REST API, the BigQuery Storage API streams native
+binary Apache Arrow `RecordBatch` payloads over parallel gRPC (HTTP/2)
+connections with `ZSTD` / `LZ4` compression instead of paginated JSON,
+and does not count against per-project REST tabledata/extract job
+quotas.
 
 ### Performance (`bigrquerystorage` Arrow API vs `bigrquery` JSON, `duckdb`, and `adbc`)
 
 In R benchmarks on BigQuery public datasets, **`bigrquerystorage`**
-(`bigrquery` with `api = "arrow"`) is **23X to 46X times faster** on
-download (*Time to Tibble*) and **5X to 16X times faster** on upload
+(`bigrquery` with `api = "arrow"`) is **21X to 47X times faster** on
+download (*Time to Tibble*) and **10X to 20X times faster** on upload
 (*Time to Table*) than `bigrquery` without the Arrow API
-(`api = "json"`), while performing **1.8X to 2.0X times faster** on
-download (and **3.0X to 5.1X times faster** on upload) than `duckdb`
-(`bigquery` extension), and **3.5X to 7.3X times faster** on download
-(and **1.7X to 2.1X times faster** on upload) than the `adbc` BigQuery
+(`api = "json"`), while performing **1.6X to 2.3X times faster** on
+download (and **4.1X to 5.6X times faster** on upload) than `duckdb`
+(`bigquery` extension), and **2.6X to 7.1X times faster** on download
+(and **3.1X to 3.3X times faster** on upload) than the `adbc` BigQuery
 driver.
+
+<img src="man/figures/benchmark_bigrquerystorage.png" alt="BigQuery R Benchmarks: Time to Tibble (Download) and Time to Table (Upload)" width="100%" />
 
 #### Download Benchmark — Time to Tibble (TTT)
 
 | Dataset | Dimensions (In-Memory) | Method | Median TTT (s) | Transfer Speed (MB/s) | Throughput (M rows/s) | vs `bigrquery` (JSON) | vs `bigrquerystorage` (Arrow) |
 |:---|:---|:---|---:|---:|---:|---:|:---|
-| `samples.gsod` `year >= 2009` (4.58M x 31) | 4.58M x 31 (752 MB) | **bigrquerystorage (Arrow API)** | 1.30 s | 577.3 MB/s | 3.52 M/s | **45.7X faster** | 1.0x (baseline) |
-| `samples.gsod` `year >= 2009` (4.58M x 31) | 4.58M x 31 (752 MB) | **duckdb (bigquery ext)** | 2.33 s | 322.9 MB/s | 1.97 M/s | **25.5X faster** | 1.8x slower |
-| `samples.gsod` `year >= 2009` (4.58M x 31) | 4.58M x 31 (752 MB) | **adbc (bigquery driver)** | 9.55 s | 78.7 MB/s | 0.48 M/s | **6.2X faster** | 7.3x slower |
-| `samples.gsod` `year >= 2009` (4.58M x 31) | 4.58M x 31 (752 MB) | **bigrquery (JSON API)** | 59.39 s | 12.7 MB/s | 0.08 M/s | 1.0x (baseline) | 45.7x slower |
-| `usa_names.usa_1910_current` (6.31M x 5) | 6.31M x 5 (194 MB) | **bigrquerystorage (Arrow API)** | 1.00 s | 194.8 MB/s | 6.32 M/s | **22.7X faster** | 1.0x (baseline) |
-| `usa_names.usa_1910_current` (6.31M x 5) | 6.31M x 5 (194 MB) | **duckdb (bigquery ext)** | 2.05 s | 94.9 MB/s | 3.08 M/s | **11.1X faster** | 2.0x slower |
-| `usa_names.usa_1910_current` (6.31M x 5) | 6.31M x 5 (194 MB) | **adbc (bigquery driver)** | 3.45 s | 56.3 MB/s | 1.83 M/s | **6.6X faster** | 3.5x slower |
-| `usa_names.usa_1910_current` (6.31M x 5) | 6.31M x 5 (194 MB) | **bigrquery (JSON API)** | 22.66 s | 8.6 MB/s | 0.28 M/s | 1.0x (baseline) | 22.7x slower |
+| `samples.gsod` `year >= 2009` (4.58M x 31) | 4.58M x 31 (752 MB) | **bigrquerystorage (Arrow API)** | 1.20 s | 624.8 MB/s | 3.81 M/s | **46.8X faster** | 1.0x (baseline) |
+| `samples.gsod` `year >= 2009` (4.58M x 31) | 4.58M x 31 (752 MB) | **duckdb (bigquery ext)** | 2.74 s | 274.3 MB/s | 1.67 M/s | **20.5X faster** | 2.3x slower |
+| `samples.gsod` `year >= 2009` (4.58M x 31) | 4.58M x 31 (752 MB) | **adbc (bigquery driver)** | 8.53 s | 88.1 MB/s | 0.54 M/s | **6.6X faster** | 7.1x slower |
+| `samples.gsod` `year >= 2009` (4.58M x 31) | 4.58M x 31 (752 MB) | **bigrquery (JSON API)** | 56.12 s | 13.4 MB/s | 0.08 M/s | 1.0x (baseline) | 46.8x slower |
+| `usa_names.usa_1910_current` (6.31M x 5) | 6.31M x 5 (194 MB) | **bigrquerystorage (Arrow API)** | 1.10 s | 176.4 MB/s | 5.73 M/s | **20.8X faster** | 1.0x (baseline) |
+| `usa_names.usa_1910_current` (6.31M x 5) | 6.31M x 5 (194 MB) | **duckdb (bigquery ext)** | 1.73 s | 112.6 MB/s | 3.66 M/s | **13.2X faster** | 1.6x slower |
+| `usa_names.usa_1910_current` (6.31M x 5) | 6.31M x 5 (194 MB) | **adbc (bigquery driver)** | 2.86 s | 67.9 MB/s | 2.20 M/s | **8.0X faster** | 2.6x slower |
+| `usa_names.usa_1910_current` (6.31M x 5) | 6.31M x 5 (194 MB) | **bigrquery (JSON API)** | 22.90 s | 8.5 MB/s | 0.28 M/s | 1.0x (baseline) | 20.8x slower |
 
 #### Upload Benchmark — Time to Table (TTT)
 
 | Dataset | Dimensions (In-Memory) | Method | Median TTT (s) | Transfer Speed (MB/s) | Throughput (M rows/s) | vs `bigrquery` (JSON) | vs `bigrquerystorage` (Arrow) |
 |:---|:---|:---|---:|---:|---:|---:|:---|
-| `samples.gsod` slice (1.00M x 31) | 1.00M x 31 (164 MB) | **bigrquerystorage (Arrow API)** | 2.40 s | 68.4 MB/s | 0.42 M/s | **15.7X faster** | 1.0x (baseline) |
-| `samples.gsod` slice (1.00M x 31) | 1.00M x 31 (164 MB) | **duckdb (bigquery ext)** | 12.18 s | 13.5 MB/s | 0.08 M/s | **3.1X faster** | 5.1x slower |
-| `samples.gsod` slice (1.00M x 31) | 1.00M x 31 (164 MB) | **adbc (bigquery driver)** | 5.01 s | 32.7 MB/s | 0.20 M/s | **7.5X faster** | 2.1x slower |
-| `samples.gsod` slice (1.00M x 31) | 1.00M x 31 (164 MB) | **bigrquery (JSON API)** | 37.71 s | 4.3 MB/s | 0.03 M/s | 1.0x (baseline) | 15.7x slower |
-| `usa_names` slice (1.00M x 5) | 1.00M x 5 (32 MB) | **bigrquerystorage (Arrow API)** | 2.32 s | 13.7 MB/s | 0.43 M/s | **5.4X faster** | 1.0x (baseline) |
-| `usa_names` slice (1.00M x 5) | 1.00M x 5 (32 MB) | **duckdb (bigquery ext)** | 6.97 s | 4.6 MB/s | 0.14 M/s | **1.8X faster** | 3.0x slower |
-| `usa_names` slice (1.00M x 5) | 1.00M x 5 (32 MB) | **adbc (bigquery driver)** | 3.91 s | 8.1 MB/s | 0.26 M/s | **3.2X faster** | 1.7x slower |
-| `usa_names` slice (1.00M x 5) | 1.00M x 5 (32 MB) | **bigrquery (JSON API)** | 12.44 s | 2.5 MB/s | 0.08 M/s | 1.0x (baseline) | 5.4x slower |
+| `samples.gsod` slice (1.00M x 31) | 1.00M x 31 (164 MB) | **bigrquerystorage (Arrow API)** | 2.04 s | 80.6 MB/s | 0.49 M/s | **20.2X faster** | 1.0x (baseline) |
+| `samples.gsod` slice (1.00M x 31) | 1.00M x 31 (164 MB) | **duckdb (bigquery ext)** | 11.42 s | 14.4 MB/s | 0.09 M/s | **3.6X faster** | 5.6x slower |
+| `samples.gsod` slice (1.00M x 31) | 1.00M x 31 (164 MB) | **adbc (bigquery driver)** | 6.26 s | 26.2 MB/s | 0.16 M/s | **6.6X faster** | 3.1x slower |
+| `samples.gsod` slice (1.00M x 31) | 1.00M x 31 (164 MB) | **bigrquery (JSON API)** | 41.16 s | 4.0 MB/s | 0.02 M/s | 1.0x (baseline) | 20.2x slower |
+| `usa_names` slice (1.00M x 5) | 1.00M x 5 (32 MB) | **bigrquerystorage (Arrow API)** | 1.30 s | 24.3 MB/s | 0.77 M/s | **10.0X faster** | 1.0x (baseline) |
+| `usa_names` slice (1.00M x 5) | 1.00M x 5 (32 MB) | **duckdb (bigquery ext)** | 5.33 s | 5.9 MB/s | 0.19 M/s | **2.4X faster** | 4.1x slower |
+| `usa_names` slice (1.00M x 5) | 1.00M x 5 (32 MB) | **adbc (bigquery driver)** | 4.34 s | 7.3 MB/s | 0.23 M/s | **3.0X faster** | 3.3x slower |
+| `usa_names` slice (1.00M x 5) | 1.00M x 5 (32 MB) | **bigrquery (JSON API)** | 12.97 s | 2.4 MB/s | 0.08 M/s | 1.0x (baseline) | 10.0x slower |
 
-*Benchmarks executed in R (R version 4.6.0) over 3 iterations per
-workload using `r-dbi/bigrquery#695` (`api = "arrow"` vs
-`api = "json"`), `duckdb` (`bigquery` extension), and
-`adbcdrivermanager` (`bigquery` driver).*
+#### Benchmark Environment
+
+- **Software & Driver Versions** (3 iterations per workload; see
+  [`scripts/benchmark_bigrquerystorage.R`](https://github.com/meztez/bigrquerystorage/blob/main/scripts/benchmark_bigrquerystorage.R)):
+  - **R**: `4.6.0 (2026-04-24)`
+  - **`bigrquerystorage`**: `1.3.0.9000` (`nanoarrow 0.9.0`,
+    `gRPC 1.46.7`, `Protobuf 3.14.0`, `libzstd 1.5.1`)
+  - **`bigrquery`**: `1.6.2.9000` (`r-dbi/bigrquery#695`,
+    `api = "arrow"` vs `api = "json"`)
+  - **`duckdb`**: `2.0.0` + `bigquery` community extension `v0.13.0`
+    (`preserve_insertion_order = false`)
+  - **`adbc`**: `adbcdrivermanager 0.25.0` + ADBC Driver Foundry
+    `bigquery` driver `v1.15.0`
+- **Hardware & OS Profile**: 2x Intel(R) Xeon(R) Platinum 8375C CPU @
+  2.90GHz (64 physical cores / 128 vCPUs), 3.9 TiB RAM, Red Hat
+  Enterprise Linux 9.5 (Plow) (`Linux 5.14.0-503.29.1.el9_5.x86_64`,
+  `x86_64`), BigQuery `US` multi-region.
 
 ## Details
 
-This implementation uses a C++ gRPC client combined with the `nanoarrow`
-R package to transform Arrow IPC streams to and from R `tibble`,
-`data.frame`, `data.table`, or `nanoarrow_array_stream`.
+`bigrquerystorage` combines a multi-threaded C++17 `gRPC` client with
+the [`nanoarrow`](https://arrow.apache.org/nanoarrow/) R package to
+stream Arrow IPC `RecordBatch` payloads directly to and from R `tibble`,
+`data.frame`, `data.table`, or `nanoarrow_array_stream` objects:
 
-`bqs_table_download` and `bqs_table_upload` are the main functions of
-this package. Other functions are helpers to facilitate authentication
-and debugging.
+- **Parallel multi-stream reads & writes**: Concurrently reads from
+  multiple `ReadSession` streams and appends across parallel
+  `WriteStream` workers (`options(bigrquerystorage.threads = n)`).
+- **Server-side pushdown & snapshots**: Supports column projection
+  (`selected_fields`), SQL predicate filtering (`row_restriction`),
+  table sampling (`sample_percentage`), and table time-travel
+  (`snapshot_time`).
+- **Arrow buffer compression**: Automatically uses `ZSTD` / `LZ4` Arrow
+  IPC compression when available (`compression = "auto"`).
+- **Full BigQuery type fidelity**: Supports `INT64`
+  (`bit64::integer64`), `NUMERIC` (`Decimal128`), `BIGNUMERIC`
+  (`Decimal256`), `DATE`, `TIME` (`hms`), `DATETIME`, `TIMESTAMP`,
+  `BYTES` (`blob`), `GEOGRAPHY` (`wk::wkt`), and nested `STRUCT` /
+  `RECORD` and `REPEATED` (`ARRAY`) columns.
 
 ## Installation
 
@@ -96,132 +118,113 @@ and debugging.
 install.packages("bigrquerystorage")
 ```
 
-#### Github
+#### GitHub (development version)
 
 ``` r
-remotes::install_github("meztez/bigrquerystorage")
+# Using pak or remotes:
+pak::pak("meztez/bigrquerystorage")
+# remotes::install_github("meztez/bigrquerystorage")
 ```
 
-### System requirements:
+### System requirements (when building from source)
 
-- [gRPC](https://github.com/grpc/grpc)
-- [protoc](https://github.com/protocolbuffers/protobuf)
+Pre-compiled binary packages from CRAN on macOS and Windows do not
+require additional system dependencies. Building from source requires:
 
-#### Debian 11 & 12 / Ubuntu 22.04
+- [gRPC](https://github.com/grpc/grpc) (`libgrpc++` and
+  `grpc_cpp_plugin`)
+- [Protocol Buffers](https://github.com/protocolbuffers/protobuf)
+  (`libprotobuf` and `protoc`)
+- `pkg-config` (or `pkgconf`) and a C++17 compiler
+- *Optional (recommended for `ZSTD` / `LZ4` Arrow compression)*:
+  `libzstd` and `liblz4`
+
+#### Debian 11 & 12 / Ubuntu 22.04 & 24.04
 
 ``` sh
-# install protoc and grpc
 apt-get install -y libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc \
-                   pkg-config
+                   libzstd-dev pkg-config
 ```
 
-#### Fedora 36 & 37 & 38 / Rocky Linux 9
+#### Fedora 40 & 41 / Rocky Linux 9
 
 ``` sh
-# install grpc, protoc is automatically installed
-dnf install -y grpc-devel pkgconf
+dnf install -y grpc-devel libzstd-devel pkgconf
 ```
 
-<details>
+<details><summary>Other Linux distributions</summary>
 
-<summary>
+See
+[`tools/build/linux`](https://github.com/meztez/bigrquerystorage/tree/main/tools/build/linux)
+for tested Dockerfiles across supported Linux distributions, and please
+[open an
+issue](https://github.com/meztez/bigrquerystorage/issues/new/choose) if
+any instructions need updating.
 
-Other Linux distributions
-</summary>
-
-Please [let us
-know](https://github.com/meztez/bigrquerystorage/issues/new/choose) if
-these instructions do not work any more.
-
-##### Alpine Linux
+##### Alpine Linux (3.19, 3.20, 3.21, Edge)
 
 ``` sh
-apk add grpc-dev protobuf-dev re2-dev c-ares-dev
+apk add grpc-dev protobuf-dev re2-dev c-ares-dev zstd-dev
 ```
 
-Alpine Linux 3.19 and Edge do not work currently, because the
-installation of the arrow package fails.
+##### Older distributions (Ubuntu 20.04, CentOS/RHEL 7 & 8, OpenSUSE 15.x)
 
-##### Debian 10
-
-Needs the buster-backports repository.
+System `grpc` packages on these older distributions are either
+unavailable or too old; compile a recent `gRPC` + `protobuf` toolchain
+from source and pass `INCLUDE_DIR` / `LIB_DIR` if `pkg-config` is not on
+`PATH`:
 
 ``` sh
-echo "deb https://deb.debian.org/debian buster-backports main" >> \
-    /etc/apt/sources.list.d/backports.list && \
-    apt-get update && \
-apt-get install -y 'libgrpc\+\+-dev'/buster-backports \
-    protobuf-compiler-grpc/buster-backports \
-    libprotobuf-dev/buster-backports \
-    protobuf-compiler/buster-backports pkg-config
+R CMD INSTALL --configure-vars='INCLUDE_DIR=/usr/local/include LIB_DIR=/usr/local/lib' .
 ```
-
-##### OpenSUSE
-
-In OpenSUSE 15.4 and 15.5 the version of the grpc package is too old, so
-installation fails. You can potentially compile a newer version of grpc
-from source.
-
-##### Ubuntu 20.04
-
-In Ubuntu 20.04 the version of the grpc package is too old, so
-installation fails. You can potentially compile a newer version of grpc
-from source.
-
-##### CentOS 7 & 8 / RHEL 7 & 8
-
-These distros do not have a grpc package. You can potentially compile
-grpc from source.
 
 </details>
 
 #### macOS
 
-If you use Homebrew you may install the `grpc` package, plus
-`pkg-config`. If you don’t have Homebrew installed, the package will
-download static builds of the system dependencies during installation.
-This works with macOS Big Sur, or later, on Intel and Arm64 machines.
+If you use Homebrew, install `grpc`, `zstd`, and `pkg-config`. If
+Homebrew is not installed, the `configure` script automatically
+downloads static pre-built `grpc` libraries during source installation
+(macOS Big Sur or later on Intel and Apple Silicon).
 
 ``` sh
-brew install grpc pkg-config
+brew install grpc zstd pkg-config
 ```
 
 #### Windows
 
-From Rtools43, grpc is included in the toolchain.
+To build from source on Windows with R \>= 4.3, install
+[Rtools](https://cran.r-project.org/bin/windows/Rtools/) (`Rtools43` or
+newer), which includes `grpc`, `protobuf`, and `zstd` in the toolchain.
+(On R 4.1–4.2, `configure.win` downloads static pre-built `grpc`
+bundles.)
 
-The package used to automatically download static builds of the system
-requirements during installation but this was removed per CRAN policy.
-Only, R 4.3.x (with Rtools43) or later is currently supported.
+## Usage
 
-## Example
-
-This is a basic example which shows you how to solve a common problem.
-BigQuery Storage API requires a billing project.
+BigQuery Storage API sessions are billed to a parent Google Cloud
+project (`parent`). You can either use `bigrquery` directly
+(`api = "arrow"`) or call `bqs_table_download()` and
+`bqs_table_upload()`:
 
 ``` r
-
-# Auth is done automagically using Application Default Credentials.
-# or reusing bigrquery auth.
-
-# Use the following command once to set it up :
-# gcloud auth application-default login --billing-project={project}
-
 library(bigrquery)
 library(bigrquerystorage)
 
-# TODO: (developer): Set the project_id variable to your billing project.
-# The read session will bill this project. This project can be
-# different from the one that contains the table.
-project_id <- 'your-project-id'
+# Set your billing project (can differ from the project hosting the dataset)
+project_id <- "your-project-id"
 
+# Option 1: Seamless integration with bigrquery (requires bigrquery with api = "arrow" support)
+# df <- bq_table_download("bigquery-public-data.usa_names.usa_1910_current", page_size = NULL, api = "arrow")
+# bq_table_upload(bq_table(project_id, "my_dataset", "my_table"), values = mtcars, api = "arrow")
+
+# Option 2: Direct bigrquerystorage calls with server-side column & row filtering
 rows <- bqs_table_download(
   x = "bigquery-public-data:usa_names.usa_1910_current",
-  parent = project_id
-  # , snapshot_time = Sys.time() # a POSIXct time
-  , selected_fields = c("name", "number", "state"),
+  parent = project_id,
+  selected_fields = c("name", "number", "state"),
   row_restriction = 'state = "WA"'
-  # , sample_percentage = 50
+  # snapshot_time = Sys.time(), # optional POSIXct table snapshot time
+  # type = "arrow"              # return a zero-copy nanoarrow_array_stream
 )
 
 sprintf(
@@ -230,7 +233,7 @@ sprintf(
   paste(unique(rows$state), collapse = " ")
 )
 
-# Upload a data frame using the BigQuery Storage Write API
+# Upload a data.frame, tibble, data.table, or nanoarrow stream via BigQuery Storage Write API
 bqs_table_upload(
   x = paste0(project_id, ".my_dataset.my_table"),
   values = mtcars,
@@ -239,22 +242,39 @@ bqs_table_upload(
 )
 ```
 
+Concurrency defaults to up to 16 parallel streams on download and 4–8
+parallel streams on upload depending on payload size, and can be tuned
+globally via `options(bigrquerystorage.threads = 8L)`.
+
 ## Authentication
 
-Done using Google Application Default Credentials (ADC) or by recycling
-`bigrquery` authentication. Auth will be done automatically the first
-time a request is made.
+Authentication runs automatically on the first request (`bqs_auth()`):
+
+1.  **`bigrquery` credentials**: If `bigrquery` already holds an active
+    token (e.g. via `bigrquery::bq_auth()`), `bigrquerystorage` reuses
+    its OAuth refresh token or access token automatically. Call
+    `bqs_deauth()` if you switch `bigrquery` credentials during an
+    active session.
+2.  **Application Default Credentials (ADC)**: Otherwise, `gRPC` falls
+    back to Google Application Default Credentials:
+    - The service account or user credentials file pointed to by
+      `GOOGLE_APPLICATION_CREDENTIALS` (or
+      `gcloud auth application-default login --billing-project={project}`),
+      or
+    - The attached service account when running on Google Cloud (Compute
+      Engine, GKE, Cloud Run, Cloud Functions, App Engine).
 
 ``` r
 bqs_auth()
 bqs_deauth()
 ```
 
-## Stability
+## Notes & Troubleshooting
 
-Does not support AVRO output format. Report any issues to the project
-[issue
-tracker](https://github.com/meztez/bigrquerystorage/issues/new/choose).
-
-Full gRPC debug trace with
-`bigrquerystorage:::bqs_set_log_verbosity(0)`.
+- Only Apache Arrow serialization is supported (`AVRO` output format is
+  not supported).
+- Verbose gRPC logging can be enabled for diagnostics with
+  `bigrquerystorage:::bqs_set_log_verbosity(0)` (`0` = info/verbose, `1`
+  = warning, `2` = error \[default\]).
+- Report issues at
+  <https://github.com/meztez/bigrquerystorage/issues/new/choose>.
