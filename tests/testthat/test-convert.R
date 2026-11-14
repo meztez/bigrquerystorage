@@ -35,7 +35,7 @@ repeated_record_array <- function() {
 convert_download <- function(arr, bigint) {
   stream <- basic_array_stream(list(arr))
   schema <- stream$get_schema()
-  df <- bqs_convert_stream(stream, int64_ptype(schema), bigint, nanoarrow::convert_array_stream, convert_stream_no_warnings)
+  df <- bqs_convert_stream(stream, int64_ptype(schema), bigint)
   parse_postprocess_schema(df, schema, bigint)
 }
 
@@ -69,7 +69,7 @@ test_that("parse_postprocess_schema does not modify a shared input", {
   rr <- repeated_record_array()
   stream <- basic_array_stream(list(rr$array))
   schema <- stream$get_schema()
-  df <- bqs_convert_stream(stream, int64_ptype(schema), "integer64", nanoarrow::convert_array_stream, convert_stream_no_warnings)
+  df <- bqs_convert_stream(stream, int64_ptype(schema), "integer64")
   before <- unserialize(serialize(df, NULL))
   tb <- parse_postprocess_schema(df, schema, "integer64")
   expect_s3_class(tb, "tbl_df")
@@ -210,7 +210,7 @@ test_that("nested INT64 in STRUCT, REPEATED RECORD, and plain data.frames serial
   stream <- read_nanoarrow(ipc)
   sch <- stream$get_schema()
   out <- parse_postprocess_schema(
-    bqs_convert_stream(stream, int64_ptype(sch), "integer64", nanoarrow::convert_array_stream, convert_stream_no_warnings),
+    bqs_convert_stream(stream, int64_ptype(sch), "integer64"),
     sch,
     "integer64"
   )
@@ -261,7 +261,7 @@ test_that("fast C++ column builder and ZSTD Arrow IPC encoder preserve values ac
   stream_raw <- read_nanoarrow(ipc_raw)
   sch_raw <- stream_raw$get_schema()
   out_raw <- parse_postprocess_schema(
-    bqs_convert_stream(stream_raw, int64_ptype(sch_raw), "integer64", nanoarrow::convert_array_stream, convert_stream_no_warnings),
+    bqs_convert_stream(stream_raw, int64_ptype(sch_raw), "integer64"),
     sch_raw,
     "integer64"
   )
@@ -279,7 +279,7 @@ test_that("fast C++ column builder and ZSTD Arrow IPC encoder preserve values ac
     stream_z <- read_nanoarrow(ipc_zstd)
     sch_z <- stream_z$get_schema()
     out_z <- parse_postprocess_schema(
-      bqs_convert_stream(stream_z, int64_ptype(sch_z), "integer64", nanoarrow::convert_array_stream, convert_stream_no_warnings),
+      bqs_convert_stream(stream_z, int64_ptype(sch_z), "integer64"),
       sch_z,
       "integer64"
     )

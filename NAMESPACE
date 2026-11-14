@@ -7,13 +7,19 @@ export(bqs_table_upload)
 import(nanoarrow)
 importFrom(Rcpp,sourceCpp)
 importFrom(bit64,is.integer64)
-importFrom(lifecycle,deprecate_warn)
-importFrom(lifecycle,deprecated)
-importFrom(rlang,check_installed)
-importFrom(rlang,is_missing)
-importFrom(rlang,is_named)
-importFrom(rlang,local_options)
-importFrom(tibble,new_tibble)
-importFrom(tibble,tibble)
-importFrom(utils,head)
+importFrom(lifecycle,
+  deprecate_warn,
+  deprecated
+)
+importFrom(rlang,
+  "%||%",
+  check_installed,
+  is_missing,
+  is_named,
+  local_options
+)
+importFrom(tibble,
+  new_tibble,
+  tibble
+)
 useDynLib(bigrquerystorage, .registration = TRUE)

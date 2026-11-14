@@ -9,4 +9,4 @@ OBJECTS=google/api/field_behavior.pb.o google/api/http.pb.o google/api/launch_st
 	google/api/annotations.pb.o google/api/client.pb.o google/cloud/bigquery/storage/v1/protobuf.pb.o \
 	google/cloud/bigquery/storage/v1/stream.pb.o google/rpc/status.pb.o \
 	google/cloud/bigquery/storage/v1/storage.pb.o google/cloud/bigquery/storage/v1/storage.grpc.pb.o \
-	bqs.o convert.o RcppExports.o
+	bqs_arrow_ipc.o bqs_client.o bqs_read.o bqs_write.o arrow_to_r.o r_to_arrow.o RcppExports.o

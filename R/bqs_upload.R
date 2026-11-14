@@ -55,17 +55,10 @@ bqs_table_upload <- function(
     max_stream_count = 0L,
     compression = c("auto", "zstd", "none"),
     ...) {
-  if (inherits(x, "bq_table")) {
-    project <- x$project
-    dataset <- x$dataset
-    table <- x$table
-  } else {
-    bqs_table_name <- unlist(strsplit(unlist(x), "\\.|:"))
-    assertthat::assert_that(length(bqs_table_name) >= 3)
-    project <- bqs_table_name[1]
-    dataset <- bqs_table_name[2]
-    table <- bqs_table_name[3]
-  }
+  ref <- bqs_parse_table_ref(x)
+  project <- ref[[1]]
+  dataset <- ref[[2]]
+  table <- ref[[3]]
 
   create_disposition <- match.arg(create_disposition)
   write_disposition <- match.arg(write_disposition)
@@ -87,36 +80,113 @@ bqs_table_upload <- function(
     none = FALSE
   )
 
-  if (is.na(quiet)) {
-    quiet <- !interactive()
-  } else {
-    quiet <- isTRUE(quiet)
-  }
-
+  quiet <- if (is.na(quiet)) !interactive() else isTRUE(quiet)
   if (!is.data.frame(values)) {
     values <- nanoarrow::as_nanoarrow_array_stream(values)
   }
 
   bqs_auth()
 
-  # Pre-warm gRPC HTTP/2 write channels asynchronously so TLS handshakes overlap
-  # with REST table creation/metadata calls and Arrow buffer preparation.
   if (!is.data.frame(values) || nrow(values) >= 4096L) {
-    warm_n <- if (max_stream_count > 0L) max_stream_count else threads
-    bqs_warm_write_channels(.global$client$ptr, warm_n)
+    bqs_warm_write_channels(.global$client$ptr, if (max_stream_count > 0L) max_stream_count else threads)
   }
 
   bq_tbl <- bigrquery::bq_table(project, dataset, table)
-
-  if (!is.null(fields)) {
-    fields <- bqs_normalize_fields(fields)
+  prep <- bqs_prepare_upload_table(
+    bq_tbl = bq_tbl,
+    project = project,
+    dataset = dataset,
+    table = table,
+    values = values,
+    fields = bqs_normalize_fields(fields),
+    create_disposition = create_disposition,
+    write_disposition = write_disposition,
+    ...
+  )
+  target_fields <- prep$target_fields
+  effective_stream_type <- if (stream_type == "AUTO") {
+    if (prep$created_brand_new) "DEFAULT" else "PENDING"
+  } else {
+    stream_type
   }
 
-  created_brand_new <- FALSE
+  upload_ok <- FALSE
+  if (prep$created_brand_new && effective_stream_type == "DEFAULT") {
+    on.exit(
+      if (!upload_ok) try(bigrquery::bq_table_delete(bq_tbl), silent = TRUE),
+      add = TRUE
+    )
+  }
+
+  fast_stream <- NULL
+  if (is.data.frame(values)) {
+    if (nrow(values) == 0L || ncol(values) == 0L) {
+      upload_ok <- TRUE
+      return(invisible(x))
+    }
+    arr <- bqs_df_to_arrow_array(values, target_fields)
+    sch <- nanoarrow::infer_nanoarrow_schema(arr)
+    fast_stream <- nanoarrow::basic_array_stream(list(arr), schema = sch, validate = FALSE)
+  } else {
+    sch <- values$get_schema()
+    if (bqs_can_fast_encode(sch)) {
+      fast_stream <- values
+    }
+  }
+
+  if (!is.null(fast_stream)) {
+    bqs_arrow_write(
+      client = .global$client$ptr,
+      project = project,
+      dataset = dataset,
+      table = table,
+      stream_xptr = fast_stream,
+      schema_ipc = bqs_schema_to_ipc(sch),
+      row_batch_size = row_batch_size,
+      stream_type = effective_stream_type,
+      use_zstd = use_zstd,
+      quiet = quiet,
+      max_stream_count = max_stream_count,
+      max_threads = threads
+    )
+    upload_ok <- TRUE
+    return(invisible(x))
+  }
+
+  ipc_bytes <- bqs_serialize_to_ipc(values, target_fields, row_batch_size, use_zstd = use_zstd)
+  if (length(ipc_bytes)) {
+    bqs_ipc_write(
+      client = .global$client$ptr,
+      project = project,
+      dataset = dataset,
+      table = table,
+      ipc_bytes = ipc_bytes,
+      stream_type = effective_stream_type,
+      quiet = quiet,
+      max_stream_count = max_stream_count,
+      max_threads = threads
+    )
+  }
+  upload_ok <- TRUE
+  invisible(x)
+}
+
+# Destination DDL helpers -------------------------------------------------
+
+#' @noRd
+bqs_prepare_upload_table <- function(
+    bq_tbl,
+    project,
+    dataset,
+    table,
+    values,
+    fields,
+    create_disposition,
+    write_disposition,
+    ...) {
+  tbl_id <- sprintf("%s.%s.%s", project, dataset, table)
   if (create_disposition == "CREATE_IF_NEEDED" && write_disposition != "WRITE_TRUNCATE") {
-    # Optimistic single-roundtrip table creation: avoids an extra REST GET
-    # (`bq_table_exists`) whenever uploading to a brand-new destination table.
-    create_fields <- if (!is.null(fields)) fields else bqs_infer_bq_fields(values)
+    create_fields <- fields %||% bqs_infer_bq_fields(values)
     created_now <- tryCatch({
       bqs_create_table(bq_tbl, create_fields, ...)
       TRUE
@@ -132,197 +202,45 @@ bqs_table_upload <- function(
       }
     })
     if (created_now) {
-      created_brand_new <- TRUE
-      target_fields <- create_fields
-    } else {
-      if (write_disposition == "WRITE_EMPTY" && !bqs_table_is_empty(bq_tbl, project)) {
-        stop(sprintf("Table '%s.%s.%s' is not empty and write_disposition is 'WRITE_EMPTY'.", project, dataset, table), call. = FALSE)
-      }
-      target_fields <- if (!is.null(fields)) fields else bqs_get_table_fields(bq_tbl)
+      return(list(target_fields = create_fields, created_brand_new = TRUE))
     }
-  } else if (write_disposition == "WRITE_TRUNCATE") {
+    if (write_disposition == "WRITE_EMPTY" && !bqs_table_is_empty(bq_tbl, project)) {
+      stop(sprintf("Table '%s' is not empty and write_disposition is 'WRITE_EMPTY'.", tbl_id), call. = FALSE)
+    }
+    return(list(target_fields = fields %||% bqs_get_table_fields(bq_tbl), created_brand_new = FALSE))
+  }
+
+  if (write_disposition == "WRITE_TRUNCATE") {
     meta <- tryCatch(
       bigrquery::bq_table_meta(bq_tbl),
       error = function(e) {
-        if (identical(e$status, 404L) || grepl("Not found", conditionMessage(e), ignore.case = TRUE)) {
-          NULL
-        } else {
-          stop(e)
-        }
+        if (identical(e$status, 404L) || grepl("Not found", conditionMessage(e), ignore.case = TRUE)) NULL else stop(e)
       }
     )
     if (is.null(meta)) {
       if (create_disposition == "CREATE_NEVER") {
-        stop(sprintf("Table '%s.%s.%s' does not exist and create_disposition is 'CREATE_NEVER'.", project, dataset, table), call. = FALSE)
+        stop(sprintf("Table '%s' does not exist and create_disposition is 'CREATE_NEVER'.", tbl_id), call. = FALSE)
       }
-      create_fields <- if (!is.null(fields)) fields else bqs_infer_bq_fields(values)
+      create_fields <- fields %||% bqs_infer_bq_fields(values)
       bqs_create_table(bq_tbl, create_fields, ...)
-      created_brand_new <- TRUE
-      target_fields <- create_fields
-    } else {
-      create_fields <- if (!is.null(fields)) {
-        fields
-      } else if (length(meta$schema$fields)) {
-        bqs_normalize_fields(meta$schema$fields)
-      } else {
-        bqs_infer_bq_fields(values)
-      }
-      bqs_with_ddl_retry(bigrquery::bq_table_delete(bq_tbl))
-      extra <- list(...)
-      if (is.null(extra$description) && !is.null(meta$description)) {
-        extra$description <- meta$description
-      }
-      if (is.null(extra$labels) && !is.null(meta$labels)) {
-        extra$labels <- meta$labels
-      }
-      do.call(bqs_create_table, c(list(x = bq_tbl, fields = create_fields), extra))
-      target_fields <- create_fields
+      return(list(target_fields = create_fields, created_brand_new = TRUE))
     }
-  } else {
-    # create_disposition == "CREATE_NEVER" with WRITE_EMPTY or WRITE_APPEND
-    if (!bigrquery::bq_table_exists(bq_tbl)) {
-      stop(sprintf("Table '%s.%s.%s' does not exist and create_disposition is 'CREATE_NEVER'.", project, dataset, table), call. = FALSE)
-    }
-    if (write_disposition == "WRITE_EMPTY" && !bqs_table_is_empty(bq_tbl, project)) {
-      stop(sprintf("Table '%s.%s.%s' is not empty and write_disposition is 'WRITE_EMPTY'.", project, dataset, table), call. = FALSE)
-    }
-    target_fields <- if (!is.null(fields)) fields else bqs_get_table_fields(bq_tbl)
+    create_fields <- fields %||% (if (length(meta$schema$fields)) bqs_normalize_fields(meta$schema$fields) else bqs_infer_bq_fields(values))
+    bqs_with_ddl_retry(bigrquery::bq_table_delete(bq_tbl))
+    extra <- list(...)
+    extra$description <- extra$description %||% meta$description
+    extra$labels <- extra$labels %||% meta$labels
+    do.call(bqs_create_table, c(list(x = bq_tbl, fields = create_fields), extra))
+    return(list(target_fields = create_fields, created_brand_new = FALSE))
   }
 
-  effective_stream_type <- if (stream_type == "AUTO") {
-    if (created_brand_new) "DEFAULT" else "PENDING"
-  } else {
-    stream_type
+  if (!bigrquery::bq_table_exists(bq_tbl)) {
+    stop(sprintf("Table '%s' does not exist and create_disposition is 'CREATE_NEVER'.", tbl_id), call. = FALSE)
   }
-
-  # If we created a brand-new table and write via DEFAULT streams, clean up the
-  # newly created table if an error occurs mid-upload to preserve atomicity.
-  upload_ok <- FALSE
-  if (created_brand_new && effective_stream_type == "DEFAULT") {
-    on.exit(
-      if (!upload_ok) try(bigrquery::bq_table_delete(bq_tbl), silent = TRUE),
-      add = TRUE
-    )
+  if (write_disposition == "WRITE_EMPTY" && !bqs_table_is_empty(bq_tbl, project)) {
+    stop(sprintf("Table '%s' is not empty and write_disposition is 'WRITE_EMPTY'.", tbl_id), call. = FALSE)
   }
-
-  # Fast path: zero-copy ArrowArrayStream -> C++ parallel ZSTD IPC encode + work-stealing multi-stream write
-  if (is.data.frame(values)) {
-    if (nrow(values) == 0L || ncol(values) == 0L) {
-      upload_ok <- TRUE
-      return(invisible(x))
-    }
-    arr <- bqs_df_to_arrow_array(values, target_fields)
-    sch <- nanoarrow::infer_nanoarrow_schema(arr)
-    if (bqs_can_fast_encode(sch)) {
-      stream <- nanoarrow::basic_array_stream(list(arr), schema = sch, validate = FALSE)
-      bqs_arrow_write(
-        client = .global$client$ptr,
-        project = project,
-        dataset = dataset,
-        table = table,
-        stream_xptr = stream,
-        schema_ipc = bqs_schema_to_ipc(sch),
-        row_batch_size = row_batch_size,
-        stream_type = effective_stream_type,
-        use_zstd = use_zstd,
-        quiet = quiet,
-        max_stream_count = max_stream_count,
-        max_threads = threads
-      )
-      upload_ok <- TRUE
-      return(invisible(x))
-    }
-  } else {
-    sch <- values$get_schema()
-    if (bqs_can_fast_encode(sch)) {
-      bqs_arrow_write(
-        client = .global$client$ptr,
-        project = project,
-        dataset = dataset,
-        table = table,
-        stream_xptr = values,
-        schema_ipc = bqs_schema_to_ipc(sch),
-        row_batch_size = row_batch_size,
-        stream_type = effective_stream_type,
-        use_zstd = use_zstd,
-        quiet = quiet,
-        max_stream_count = max_stream_count,
-        max_threads = threads
-      )
-      upload_ok <- TRUE
-      return(invisible(x))
-    }
-  }
-
-  ipc_bytes <- bqs_serialize_to_ipc(values, target_fields, row_batch_size, use_zstd = use_zstd)
-  if (!length(ipc_bytes)) {
-    upload_ok <- TRUE
-    return(invisible(x))
-  }
-
-  bqs_ipc_write(
-    client = .global$client$ptr,
-    project = project,
-    dataset = dataset,
-    table = table,
-    ipc_bytes = ipc_bytes,
-    stream_type = effective_stream_type,
-    quiet = quiet,
-    max_stream_count = max_stream_count,
-    max_threads = threads
-  )
-  upload_ok <- TRUE
-
-  invisible(x)
-}
-
-# Table & Schema helpers --------------------------------------------------
-
-#' @noRd
-bqs_normalize_fields <- function(fields) {
-  if (is.null(fields)) return(NULL)
-  lapply(fields, function(f) {
-    type <- toupper(f$type %||% "STRING")
-    type <- switch(type,
-      INTEGER = "INT64",
-      INT = "INT64",
-      SMALLINT = "INT64",
-      TINYINT = "INT64",
-      BYTEINT = "INT64",
-      BIGINT = "INT64",
-      FLOAT = "FLOAT64",
-      DOUBLE = "FLOAT64",
-      BOOLEAN = "BOOL",
-      STRUCT = "RECORD",
-      type
-    )
-    mode <- toupper(f$mode %||% "NULLABLE")
-    subfields <- if (length(f$fields)) bqs_normalize_fields(f$fields) else list()
-    out <- list(
-      name = as.character(f$name),
-      type = type,
-      mode = mode
-    )
-    if (length(subfields)) {
-      out$fields <- subfields
-    }
-    if (!is.null(f$description) && nzchar(f$description)) {
-      out$description <- as.character(f$description)
-    }
-    if (!is.null(f$rangeElementType)) {
-      out$rangeElementType <- f$rangeElementType
-    }
-    out
-  })
-}
-
-#' @noRd
-`%||%` <- function(x, y) if (is.null(x)) y else x
-
-#' @noRd
-bqs_get_table_fields <- function(bq_tbl) {
-  meta <- bigrquery::bq_table_meta(bq_tbl, fields = "schema")
-  bqs_normalize_fields(meta$schema$fields)
+  list(target_fields = fields %||% bqs_get_table_fields(bq_tbl), created_brand_new = FALSE)
 }
 
 #' @noRd
@@ -330,8 +248,6 @@ bqs_table_is_empty <- function(bq_tbl, parent) {
   if (bigrquery::bq_table_nrow(bq_tbl) > 0) {
     return(FALSE)
   }
-  # Storage Write API commits may not immediately update REST `numRows` metadata;
-  # verify via a 1-row Storage Read check.
   stream <- bqs_table_download(bq_tbl, parent = parent, n_max = 1L, type = "arrow", quiet = TRUE)
   batch <- stream$get_next()
   is.null(batch) || batch$length == 0L
@@ -346,14 +262,9 @@ bqs_with_ddl_retry <- function(expr, max_attempts = 5L) {
       list(ok = TRUE, val = eval(expr_q, envir = env)),
       error = function(e) list(ok = FALSE, err = e)
     )
-    if (res$ok) {
-      return(res$val)
-    }
-    msg <- conditionMessage(res$err)
-    is_rate_limit <- grepl("rateLimitExceeded|too many table update", msg, ignore.case = TRUE)
-    if (!is_rate_limit || attempt == max_attempts) {
-      stop(res$err)
-    }
+    if (res$ok) return(res$val)
+    is_rate_limit <- grepl("rateLimitExceeded|too many table update", conditionMessage(res$err), ignore.case = TRUE)
+    if (!is_rate_limit || attempt == max_attempts) stop(res$err)
     Sys.sleep(min(8, 0.5 * (2^(attempt - 1L))))
   }
 }
@@ -362,162 +273,12 @@ bqs_with_ddl_retry <- function(expr, max_attempts = 5L) {
 bqs_create_table <- function(x, fields, ...) {
   extra <- list(...)
   extra$billing <- NULL
-  if (length(fields)) {
-    bq_fields_list <- bqs_fields_to_bq_fields(fields)
-    bqs_with_ddl_retry(do.call(bigrquery::bq_table_create, c(list(x = x, fields = bq_fields_list), extra)))
+  args <- if (length(fields)) {
+    c(list(x = x, fields = bqs_fields_to_bq_fields(fields)), extra)
   } else {
-    bqs_with_ddl_retry(do.call(bigrquery::bq_table_create, c(list(x = x), extra)))
+    c(list(x = x), extra)
   }
-}
-
-#' @noRd
-bqs_fields_to_bq_fields <- function(fields) {
-  bigrquery::bq_fields(unname(lapply(fields, function(f) {
-    subfields <- if (length(f$fields)) bqs_fields_to_bq_fields(f$fields) else list()
-    bigrquery::bq_field(
-      name = f$name,
-      type = f$type,
-      mode = f$mode %||% "NULLABLE",
-      fields = subfields,
-      description = f$description
-    )
-  })))
-}
-
-#' @noRd
-bqs_infer_bq_fields <- function(values) {
-  if (is.data.frame(values)) {
-    return(unname(Map(bqs_infer_bq_field_from_r, values, names(values))))
-  }
-  sch <- nanoarrow::infer_nanoarrow_schema(values)
-  unname(lapply(sch$children, bqs_infer_bq_field_from_arrow))
-}
-
-#' @noRd
-bqs_infer_bq_field_from_r <- function(col, name) {
-  if (is.data.frame(col)) {
-    return(list(
-      name = name,
-      type = "RECORD",
-      mode = "NULLABLE",
-      fields = unname(Map(bqs_infer_bq_field_from_r, col, names(col)))
-    ))
-  }
-  if (inherits(col, "blob")) {
-    return(list(name = name, type = "BYTES", mode = "NULLABLE"))
-  }
-  if (inherits(col, "wk_wkt")) {
-    return(list(name = name, type = "GEOGRAPHY", mode = "NULLABLE"))
-  }
-  if (inherits(col, "POSIXt")) {
-    tz <- attr(col, "tzone")
-    return(list(name = name, type = "TIMESTAMP", mode = "NULLABLE"))
-  }
-  if (inherits(col, c("hms", "difftime"))) {
-    return(list(name = name, type = "TIME", mode = "NULLABLE"))
-  }
-  if (inherits(col, "Date")) {
-    return(list(name = name, type = "DATE", mode = "NULLABLE"))
-  }
-  if (bit64::is.integer64(col) || is.integer(col)) {
-    return(list(name = name, type = "INT64", mode = "NULLABLE"))
-  }
-  if (is.factor(col) || is.character(col)) {
-    return(list(name = name, type = "STRING", mode = "NULLABLE"))
-  }
-  if (is.logical(col)) {
-    return(list(name = name, type = "BOOL", mode = "NULLABLE"))
-  }
-  if (is.double(col)) {
-    return(list(name = name, type = "FLOAT64", mode = "NULLABLE"))
-  }
-  if (is.list(col)) {
-    ptype <- attr(col, "ptype")
-    if (is.null(ptype)) {
-      non_null <- Filter(Negate(is.null), col)
-      if (length(non_null)) {
-        first_el <- non_null[[1]]
-        if (is.data.frame(first_el)) {
-          # Find the first data.frame element with > 0 rows if possible so nested
-          # list columns inside a REPEATED RECORD retain a sample element for type inference
-          non_empty_df <- Filter(function(d) is.data.frame(d) && nrow(d) > 0L, non_null)
-          ptype <- if (length(non_empty_df)) non_empty_df[[1]] else first_el
-        } else if (is.list(first_el) && rlang::is_named(first_el)) {
-          return(list(
-            name = name,
-            type = "RECORD",
-            mode = "NULLABLE",
-            fields = unname(Map(bqs_infer_bq_field_from_r, first_el, names(first_el)))
-          ))
-        } else {
-          non_empty_vec <- Filter(function(v) length(v) > 0L, non_null)
-          ptype <- if (length(non_empty_vec)) non_empty_vec[[1]][0] else first_el[0]
-        }
-      } else {
-        ptype <- character()
-      }
-    }
-    child_field <- bqs_infer_bq_field_from_r(ptype, name)
-    child_field$mode <- "REPEATED"
-    return(child_field)
-  }
-  stop(sprintf("Unsupported column type '%s' for column '%s'.", paste(class(col), collapse = "/"), name), call. = FALSE)
-}
-
-#' @noRd
-bqs_schema_has_dictionary <- function(sch) {
-  if (!is.null(sch$dictionary)) {
-    return(TRUE)
-  }
-  any(vapply(sch$children, bqs_schema_has_dictionary, logical(1)))
-}
-
-#' @noRd
-bqs_infer_bq_field_from_arrow <- function(sch) {
-  ext <- sch$metadata[["ARROW:extension:name"]]
-  name <- sch$name %||% ""
-  if (!is.null(sch$dictionary)) {
-    out <- bqs_infer_bq_field_from_arrow(sch$dictionary)
-    out$name <- name
-    if (identical(ext, "google:sqlType:geography")) out$type <- "GEOGRAPHY"
-    if (identical(ext, "google:sqlType:datetime")) out$type <- "DATETIME"
-    return(out)
-  }
-  parsed <- nanoarrow::nanoarrow_schema_parse(sch)
-  if (identical(parsed$type, "list") || identical(parsed$type, "large_list")) {
-    child <- bqs_infer_bq_field_from_arrow(sch$children[[1]])
-    child$name <- name
-    child$mode <- "REPEATED"
-    return(child)
-  }
-  if (identical(parsed$type, "struct")) {
-    return(list(
-      name = name,
-      type = "RECORD",
-      mode = "NULLABLE",
-      fields = unname(lapply(sch$children, bqs_infer_bq_field_from_arrow))
-    ))
-  }
-  if (identical(ext, "google:sqlType:geography")) {
-    return(list(name = name, type = "GEOGRAPHY", mode = "NULLABLE"))
-  }
-  if (identical(ext, "google:sqlType:datetime")) {
-    return(list(name = name, type = "DATETIME", mode = "NULLABLE"))
-  }
-  type <- switch(parsed$type,
-    int8 = , int16 = , int32 = , int64 = , uint8 = , uint16 = , uint32 = , uint64 = "INT64",
-    float = , double = , half_float = "FLOAT64",
-    bool = "BOOL",
-    string = , large_string = "STRING",
-    binary = , large_binary = , fixed_size_binary = "BYTES",
-    date32 = , date64 = "DATE",
-    time32 = , time64 = "TIME",
-    timestamp = if (nzchar(parsed$timezone %||% "")) "TIMESTAMP" else "DATETIME",
-    decimal128 = "NUMERIC",
-    decimal256 = "BIGNUMERIC",
-    "STRING"
-  )
-  list(name = name, type = type, mode = "NULLABLE")
+  bqs_with_ddl_retry(do.call(bigrquery::bq_table_create, args))
 }
 
 # Arrow IPC Serialization -------------------------------------------------
@@ -537,29 +298,20 @@ bqs_serialize_to_ipc <- function(values, target_fields, row_batch_size, use_zstd
     stream <- nanoarrow::as_nanoarrow_array_stream(values)
     stream_schema <- stream$get_schema()
     first_batch <- stream$get_next()
-    if (is.null(first_batch)) {
-      return(raw(0))
-    }
+    if (is.null(first_batch)) return(raw(0))
     first_batches <- list(first_batch)
     repeat {
       b <- stream$get_next()
       if (is.null(b)) break
       first_batches[[length(first_batches) + 1L]] <- b
     }
-    total_rows <- sum(vapply(first_batches, function(b) b$length, integer(1)))
-    if (total_rows == 0L) {
+    if (sum(vapply(first_batches, function(b) b$length, integer(1))) == 0L) {
       return(raw(0))
     }
     replay <- nanoarrow::basic_array_stream(first_batches, schema = stream_schema, validate = FALSE)
     if (bqs_schema_has_dictionary(stream_schema)) {
       df_conv <- parse_postprocess_schema(
-        bqs_convert_stream(
-          replay,
-          int64_ptype(stream_schema),
-          "integer64",
-          nanoarrow::convert_array_stream,
-          convert_stream_no_warnings
-        ),
+        bqs_convert_stream(replay, int64_ptype(stream_schema), "integer64"),
         stream_schema,
         "integer64"
       )
@@ -572,8 +324,12 @@ bqs_serialize_to_ipc <- function(values, target_fields, row_batch_size, use_zstd
   }
 
   if (!is.data.frame(values)) {
-    stream <- nanoarrow::as_nanoarrow_array_stream(values)
-    return(bqs_serialize_to_ipc(stream, target_fields, row_batch_size, use_zstd = use_zstd))
+    return(bqs_serialize_to_ipc(
+      nanoarrow::as_nanoarrow_array_stream(values),
+      target_fields,
+      row_batch_size,
+      use_zstd = use_zstd
+    ))
   }
 
   n <- nrow(values)
@@ -581,56 +337,19 @@ bqs_serialize_to_ipc <- function(values, target_fields, row_batch_size, use_zstd
     return(raw(0))
   }
 
-  # Scale batch size for wide tables / large values to keep each serialized batch well under 20 MB
   est_bytes_per_row <- max(64, ncol(values) * 16, as.numeric(utils::object.size(values)) / n)
-  max_rows_by_size <- max(1L, as.integer(8 * 1024 * 1024 / est_bytes_per_row))
-  batch_rows <- min(row_batch_size, max_rows_by_size)
+  batch_rows <- min(row_batch_size, max(1L, as.integer(8 * 1024 * 1024 / est_bytes_per_row)))
 
   arr <- bqs_df_to_arrow_array(values, target_fields)
   sch <- nanoarrow::infer_nanoarrow_schema(arr)
-  if (bqs_can_fast_encode(sch)) {
-    threads <- as.integer(getOption("bigrquerystorage.threads", 0L))
-    return(bqs_encode_arrow_ipc_raw(
-      schema_xptr = sch,
-      array_xptr = arr,
-      schema_ipc = bqs_schema_to_ipc(sch),
-      row_batch_size = batch_rows,
-      use_zstd = isTRUE(use_zstd),
-      n_threads = threads
-    ))
-  }
-
-  if (n <= batch_rows) {
-    stream <- nanoarrow::basic_array_stream(list(arr), schema = sch, validate = FALSE)
-  } else {
-    starts <- seq.int(1L, n, by = batch_rows)
-    batches <- lapply(starts, function(s) {
-      e <- min(n, s + batch_rows - 1L)
-      chunk <- bqs_slice_df(values, s:e)
-      bqs_df_to_arrow_array(chunk, target_fields)
-    })
-    stream <- nanoarrow::basic_array_stream(batches, schema = sch, validate = FALSE)
-  }
-
-  con <- rawConnection(raw(0), "wb")
-  on.exit(close(con))
-  nanoarrow::write_nanoarrow(stream, con)
-  rawConnectionValue(con)
-}
-
-#' @noRd
-bqs_slice_df <- function(df, idx) {
-  out <- lapply(df, function(col) {
-    if (is.data.frame(col)) {
-      bqs_slice_df(col, idx)
-    } else {
-      col[idx]
-    }
-  })
-  attr(out, "names") <- names(df)
-  attr(out, "class") <- "data.frame"
-  attr(out, "row.names") <- .set_row_names(length(idx))
-  out
+  bqs_encode_arrow_ipc_raw(
+    schema_xptr = sch,
+    array_xptr = arr,
+    schema_ipc = bqs_schema_to_ipc(sch),
+    row_batch_size = batch_rows,
+    use_zstd = isTRUE(use_zstd),
+    n_threads = as.integer(getOption("bigrquerystorage.threads", 0L))
+  )
 }
 
 #' @noRd
@@ -905,30 +624,6 @@ bqs_rbind_dfs <- function(dfs) {
 }
 
 #' @noRd
-bqs_empty_col_for_field <- function(field) {
-  if (is.null(field)) return(character(0))
-  mode <- toupper(field$mode %||% "NULLABLE")
-  if (mode == "REPEATED") return(list())
-  type <- toupper(field$type %||% "STRING")
-  if (type %in% c("RECORD", "STRUCT")) {
-    if (!length(field$fields)) return(tibble::tibble())
-    sub <- lapply(field$fields, bqs_empty_col_for_field)
-    names(sub) <- vapply(field$fields, `[[`, character(1), "name")
-    return(tibble::new_tibble(sub, nrow = 0L))
-  }
-  switch(type,
-    INT64 = , INTEGER = , INT = , SMALLINT = , TINYINT = , BYTEINT = , BIGINT = bit64::integer64(0),
-    FLOAT64 = , FLOAT = , DOUBLE = , NUMERIC = , BIGNUMERIC = double(0),
-    BOOL = , BOOLEAN = logical(0),
-    BYTES = list(),
-    DATE = as.Date(character(0)),
-    TIME = structure(numeric(0), units = "secs", class = c("hms", "difftime")),
-    DATETIME = , TIMESTAMP = as.POSIXct(numeric(0), origin = "1970-01-01", tz = "UTC"),
-    character(0)
-  )
-}
-
-#' @noRd
 bqs_concat_vectors <- function(lst) {
   non_empty <- Filter(function(x) length(x) > 0L, lst)
   first <- if (length(non_empty)) non_empty[[1]] else lst[[1]]
@@ -941,8 +636,7 @@ bqs_concat_vectors <- function(lst) {
     return(raw_dbl)
   }
   if (inherits(first, "blob")) {
-    raw_list <- unlist(lapply(lst, unclass), recursive = FALSE, use.names = FALSE)
-    return(blob::as_blob(raw_list))
+    return(blob::as_blob(unlist(lapply(lst, unclass), recursive = FALSE, use.names = FALSE)))
   }
   if (inherits(first, "wk_wkt")) {
     return(wk::wkt(unlist(lapply(lst, as.character), use.names = FALSE)))

@@ -24,12 +24,12 @@ test_that("int64 conversion is lossless (r-dbi/bigrquery#689)", {
     data.frame(x = big),
     schema = na_struct(list(x = na_int64()))
   )
-  fields <- list(list(name = "x", type = "INT64", mode = "NULLABLE"))
 
   convert <- function(bigint) {
     stream <- basic_array_stream(list(arr))
-    df <- convert_array_stream(stream, to = int64_ptype(stream$get_schema()))
-    parse_postprocess(tibble::tibble(df), bigint, fields)
+    schema <- stream$get_schema()
+    df <- convert_array_stream(stream, to = int64_ptype(schema))
+    parse_postprocess_schema(df, schema, bigint)
   }
 
   expect_identical(convert("integer64")$x, big)
@@ -85,7 +85,7 @@ test_that("repeated int64 columns honor bigint and are lossless", {
     stream <- basic_array_stream(list(struct_arr))
     schema <- stream$get_schema()
     to <- int64_ptype(schema)
-    df <- bqs_convert_stream(stream, to, mode, nanoarrow::convert_array_stream, convert_stream_no_warnings)
+    df <- bqs_convert_stream(stream, to, mode)
     parse_postprocess_schema(df, schema, mode)
   }
 
@@ -114,7 +114,7 @@ test_that("bqs_convert_stream and parse_postprocess_schema handle Decimal128 and
     stream <- basic_array_stream(list(arr))
     schema <- stream$get_schema()
     to <- int64_ptype(schema)
-    df <- suppressWarnings(bqs_convert_stream(stream, to, mode, nanoarrow::convert_array_stream, convert_stream_no_warnings))
+    df <- suppressWarnings(bqs_convert_stream(stream, to, mode))
     tb <- suppressWarnings(parse_postprocess_schema(df, schema, mode))
     expect_s3_class(tb, "tbl_df")
     if (mode == "integer") {
@@ -126,4 +126,25 @@ test_that("bqs_convert_stream and parse_postprocess_schema handle Decimal128 and
     }
   }
 })
+
+test_that("shared table-ref parser, .onLoad init, and deprecated as_tibble work", {
+  expect_identical(bqs_parse_table_ref("proj.ds.tbl"), c("proj", "ds", "tbl"))
+  expect_identical(bqs_parse_table_ref("proj:ds.tbl"), c("proj", "ds", "tbl"))
+  bq_ref <- structure(list(project = "p", dataset = "d", table = "t"), class = "bq_table")
+  expect_identical(bqs_parse_table_ref(bq_ref), c("p", "d", "t"))
+  expect_no_error(asNamespace("bigrquerystorage")$.onLoad("", "bigrquerystorage"))
+
+  lifecycle::expect_deprecated(
+    expect_error(
+      bqs_table_download(
+        "proj.ds.tbl",
+        row_restriction = "x > 0",
+        sample_percentage = 10,
+        as_tibble = FALSE
+      ),
+      "cannot be use in the same query"
+    )
+  )
+})
+
 
