@@ -1,0 +1,49 @@
+"operation","workload_id","dataset","rows","cols","size_mb","method","iteration","ttt_seconds","mb_per_sec","mrows_per_sec"
+"Download (Time to Tibble)","dl_usa_names_6.3m","`usa_names.usa_1910_current` (6.31M x 5)",6311504,5,194.39,"bigrquerystorage (Arrow API)",1,0.998,194.78,6.324
+"Download (Time to Tibble)","dl_usa_names_6.3m","`usa_names.usa_1910_current` (6.31M x 5)",6311504,5,194.39,"bigrquerystorage (Arrow API)",2,1.052,184.78,6
+"Download (Time to Tibble)","dl_usa_names_6.3m","`usa_names.usa_1910_current` (6.31M x 5)",6311504,5,194.39,"bigrquerystorage (Arrow API)",3,0.899,216.23,7.021
+"Download (Time to Tibble)","dl_usa_names_6.3m","`usa_names.usa_1910_current` (6.31M x 5)",6311504,5,194.39,"bigrquery (JSON API)",1,22.664,8.58,0.278
+"Download (Time to Tibble)","dl_usa_names_6.3m","`usa_names.usa_1910_current` (6.31M x 5)",6311504,5,194.39,"bigrquery (JSON API)",2,24.016,8.09,0.263
+"Download (Time to Tibble)","dl_usa_names_6.3m","`usa_names.usa_1910_current` (6.31M x 5)",6311504,5,194.39,"bigrquery (JSON API)",3,22.185,8.76,0.284
+"Download (Time to Tibble)","dl_usa_names_6.3m","`usa_names.usa_1910_current` (6.31M x 5)",6311504,5,194.39,"duckdb (bigquery ext)",1,2.241,86.74,2.816
+"Download (Time to Tibble)","dl_usa_names_6.3m","`usa_names.usa_1910_current` (6.31M x 5)",6311504,5,194.39,"duckdb (bigquery ext)",2,1.549,125.5,4.075
+"Download (Time to Tibble)","dl_usa_names_6.3m","`usa_names.usa_1910_current` (6.31M x 5)",6311504,5,194.39,"duckdb (bigquery ext)",3,2.049,94.87,3.08
+"Download (Time to Tibble)","dl_usa_names_6.3m","`usa_names.usa_1910_current` (6.31M x 5)",6311504,5,194.39,"adbc (bigquery driver)",1,8.992,21.62,0.702
+"Download (Time to Tibble)","dl_usa_names_6.3m","`usa_names.usa_1910_current` (6.31M x 5)",6311504,5,194.39,"adbc (bigquery driver)",2,3.453,56.3,1.828
+"Download (Time to Tibble)","dl_usa_names_6.3m","`usa_names.usa_1910_current` (6.31M x 5)",6311504,5,194.39,"adbc (bigquery driver)",3,3.342,58.17,1.889
+"Download (Time to Tibble)","dl_gsod_4.6m","`samples.gsod` `year >= 2009` (4.58M x 31)",4581957,31,751.59,"bigrquerystorage (Arrow API)",1,1.302,577.26,3.519
+"Download (Time to Tibble)","dl_gsod_4.6m","`samples.gsod` `year >= 2009` (4.58M x 31)",4581957,31,751.59,"bigrquerystorage (Arrow API)",2,1.649,455.79,2.779
+"Download (Time to Tibble)","dl_gsod_4.6m","`samples.gsod` `year >= 2009` (4.58M x 31)",4581957,31,751.59,"bigrquerystorage (Arrow API)",3,1.049,716.48,4.368
+"Download (Time to Tibble)","dl_gsod_4.6m","`samples.gsod` `year >= 2009` (4.58M x 31)",4581957,31,751.59,"bigrquery (JSON API)",1,57.72,13.02,0.079
+"Download (Time to Tibble)","dl_gsod_4.6m","`samples.gsod` `year >= 2009` (4.58M x 31)",4581957,31,751.59,"bigrquery (JSON API)",2,59.39,12.66,0.077
+"Download (Time to Tibble)","dl_gsod_4.6m","`samples.gsod` `year >= 2009` (4.58M x 31)",4581957,31,751.59,"bigrquery (JSON API)",3,59.387,12.66,0.077
+"Download (Time to Tibble)","dl_gsod_4.6m","`samples.gsod` `year >= 2009` (4.58M x 31)",4581957,31,751.59,"duckdb (bigquery ext)",1,2.328,322.85,1.968
+"Download (Time to Tibble)","dl_gsod_4.6m","`samples.gsod` `year >= 2009` (4.58M x 31)",4581957,31,751.59,"duckdb (bigquery ext)",2,2.648,283.83,1.73
+"Download (Time to Tibble)","dl_gsod_4.6m","`samples.gsod` `year >= 2009` (4.58M x 31)",4581957,31,751.59,"duckdb (bigquery ext)",3,2.029,370.42,2.258
+"Download (Time to Tibble)","dl_gsod_4.6m","`samples.gsod` `year >= 2009` (4.58M x 31)",4581957,31,751.59,"adbc (bigquery driver)",1,14.162,53.07,0.324
+"Download (Time to Tibble)","dl_gsod_4.6m","`samples.gsod` `year >= 2009` (4.58M x 31)",4581957,31,751.59,"adbc (bigquery driver)",2,9.553,78.68,0.48
+"Download (Time to Tibble)","dl_gsod_4.6m","`samples.gsod` `year >= 2009` (4.58M x 31)",4581957,31,751.59,"adbc (bigquery driver)",3,8.926,84.2,0.513
+"Upload (Time to Table)","ul_usa_names_1m","`usa_names` slice (1.00M x 5)",1000000,5,31.69,"bigrquerystorage (Arrow API)",1,2.316,13.68,0.432
+"Upload (Time to Table)","ul_usa_names_1m","`usa_names` slice (1.00M x 5)",1000000,5,31.69,"bigrquery (JSON API)",1,12.44,2.55,0.08
+"Upload (Time to Table)","ul_usa_names_1m","`usa_names` slice (1.00M x 5)",1000000,5,31.69,"duckdb (bigquery ext)",1,8.586,3.69,0.116
+"Upload (Time to Table)","ul_usa_names_1m","`usa_names` slice (1.00M x 5)",1000000,5,31.69,"adbc (bigquery driver)",1,4.408,7.19,0.227
+"Upload (Time to Table)","ul_usa_names_1m","`usa_names` slice (1.00M x 5)",1000000,5,31.69,"bigrquerystorage (Arrow API)",2,2.518,12.59,0.397
+"Upload (Time to Table)","ul_usa_names_1m","`usa_names` slice (1.00M x 5)",1000000,5,31.69,"bigrquery (JSON API)",2,10.654,2.97,0.094
+"Upload (Time to Table)","ul_usa_names_1m","`usa_names` slice (1.00M x 5)",1000000,5,31.69,"duckdb (bigquery ext)",2,6.64,4.77,0.151
+"Upload (Time to Table)","ul_usa_names_1m","`usa_names` slice (1.00M x 5)",1000000,5,31.69,"adbc (bigquery driver)",2,3.91,8.1,0.256
+"Upload (Time to Table)","ul_usa_names_1m","`usa_names` slice (1.00M x 5)",1000000,5,31.69,"bigrquerystorage (Arrow API)",3,1.349,23.49,0.741
+"Upload (Time to Table)","ul_usa_names_1m","`usa_names` slice (1.00M x 5)",1000000,5,31.69,"bigrquery (JSON API)",3,13.369,2.37,0.075
+"Upload (Time to Table)","ul_usa_names_1m","`usa_names` slice (1.00M x 5)",1000000,5,31.69,"duckdb (bigquery ext)",3,6.968,4.55,0.144
+"Upload (Time to Table)","ul_usa_names_1m","`usa_names` slice (1.00M x 5)",1000000,5,31.69,"adbc (bigquery driver)",3,3.829,8.28,0.261
+"Upload (Time to Table)","ul_gsod_1m","`samples.gsod` slice (1.00M x 31)",1000000,31,164.04,"bigrquerystorage (Arrow API)",1,4.279,38.34,0.234
+"Upload (Time to Table)","ul_gsod_1m","`samples.gsod` slice (1.00M x 31)",1000000,31,164.04,"bigrquery (JSON API)",1,38.871,4.22,0.026
+"Upload (Time to Table)","ul_gsod_1m","`samples.gsod` slice (1.00M x 31)",1000000,31,164.04,"duckdb (bigquery ext)",1,12.184,13.46,0.082
+"Upload (Time to Table)","ul_gsod_1m","`samples.gsod` slice (1.00M x 31)",1000000,31,164.04,"adbc (bigquery driver)",1,5.012,32.73,0.2
+"Upload (Time to Table)","ul_gsod_1m","`samples.gsod` slice (1.00M x 31)",1000000,31,164.04,"bigrquerystorage (Arrow API)",2,1.682,97.52,0.595
+"Upload (Time to Table)","ul_gsod_1m","`samples.gsod` slice (1.00M x 31)",1000000,31,164.04,"bigrquery (JSON API)",2,37.71,4.35,0.027
+"Upload (Time to Table)","ul_gsod_1m","`samples.gsod` slice (1.00M x 31)",1000000,31,164.04,"duckdb (bigquery ext)",2,10.498,15.63,0.095
+"Upload (Time to Table)","ul_gsod_1m","`samples.gsod` slice (1.00M x 31)",1000000,31,164.04,"adbc (bigquery driver)",2,4.66,35.2,0.215
+"Upload (Time to Table)","ul_gsod_1m","`samples.gsod` slice (1.00M x 31)",1000000,31,164.04,"bigrquerystorage (Arrow API)",3,2.397,68.43,0.417
+"Upload (Time to Table)","ul_gsod_1m","`samples.gsod` slice (1.00M x 31)",1000000,31,164.04,"bigrquery (JSON API)",3,35.844,4.58,0.028
+"Upload (Time to Table)","ul_gsod_1m","`samples.gsod` slice (1.00M x 31)",1000000,31,164.04,"duckdb (bigquery ext)",3,13.494,12.16,0.074
+"Upload (Time to Table)","ul_gsod_1m","`samples.gsod` slice (1.00M x 31)",1000000,31,164.04,"adbc (bigquery driver)",3,5.721,28.67,0.175
