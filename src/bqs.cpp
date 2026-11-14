@@ -361,17 +361,26 @@ public:
     google::cloud::bigquery::storage::v1::BatchCommitWriteStreamsResponse resp;
     grpc::Status status;
     for (int attempt = 0; attempt < 6; attempt++) {
+      Rcpp::checkUserInterrupt();
       grpc::ClientContext context;
+      context.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(30000));
       context.AddMetadata("x-goog-request-params", "parent=" + parent);
       context.AddMetadata("x-goog-api-client", client_info_);
       status = write_stubs_[0]->BatchCommitWriteStreams(&context, req, &resp);
       auto code = status.error_code();
       if (status.ok() ||
-          (code != grpc::StatusCode::UNAVAILABLE && code != grpc::StatusCode::NOT_FOUND) ||
+          (code != grpc::StatusCode::UNAVAILABLE &&
+           code != grpc::StatusCode::NOT_FOUND &&
+           code != grpc::StatusCode::DEADLINE_EXCEEDED &&
+           code != grpc::StatusCode::INTERNAL) ||
           attempt == 5) {
         break;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(150 * (1 << attempt)));
+      int sleep_ms = 150 * (1 << attempt);
+      for (int slept = 0; slept < sleep_ms; slept += 50) {
+        Rcpp::checkUserInterrupt();
+        std::this_thread::sleep_for(std::chrono::milliseconds(std::min(50, sleep_ms - slept)));
+      }
     }
     if (!status.ok()) {
       std::string err = "gRPC method BatchCommitWriteStreams error -> " + status.error_message();
@@ -462,6 +471,11 @@ public:
       std::thread reader_thread([&]() {
         google::cloud::bigquery::storage::v1::AppendRowsResponse resp;
         while (stream->Read(&resp)) {
+          if (local_failed.load() || state->cancel.load()) {
+            // Drain remaining server messages after TryCancel() so Finish()
+            // is called strictly after Read() has returned false.
+            continue;
+          }
           size_t slot = 0;
           bool have_slot = false;
           {
@@ -503,7 +517,8 @@ public:
               reader_done = true;
             }
             win_cv.notify_all();
-            break;
+            context.TryCancel();
+            continue;
           }
           bool newly_acked = false;
           {
@@ -581,7 +596,11 @@ public:
         }
       }
 
-      stream->WritesDone();
+      if (local_failed.load() || state->cancel.load()) {
+        context.TryCancel();
+      } else {
+        stream->WritesDone();
+      }
       if (reader_thread.joinable()) reader_thread.join();
       grpc::Status status = stream->Finish();
       state->Unregister(worker);
@@ -616,11 +635,13 @@ public:
             resp_err_code == 5 /* NOT_FOUND */ ||
             resp_err_code == 9 /* FAILED_PRECONDITION */ ||
             resp_err_code == 10 /* ABORTED */ ||
+            resp_err_code == 13 /* INTERNAL */ ||
             resp_err_code == 14 /* UNAVAILABLE */ ||
             (resp_err_code == 0 && (
               status.error_code() == grpc::StatusCode::NOT_FOUND ||
               status.error_code() == grpc::StatusCode::FAILED_PRECONDITION ||
               status.error_code() == grpc::StatusCode::ABORTED ||
+              status.error_code() == grpc::StatusCode::INTERNAL ||
               status.error_code() == grpc::StatusCode::UNAVAILABLE ||
               status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED ||
               !all_assigned_acked
@@ -830,9 +851,11 @@ public:
       int64_t total = state->rows.fetch_add(batch_rows) + batch_rows;
       if (state->n > 0 && total >= state->n) {
         state->CancelAll();
+        context.TryCancel();
         break;
       }
       if (state->cancel.load()) {
+        context.TryCancel();
         break;
       }
     }
@@ -1012,6 +1035,7 @@ public:
         if (!ok) {
           *error_msg = dec_err;
           state->CancelAll();
+          context.TryCancel();
           break;
         }
         out->push_back(std::move(decoded));
@@ -1026,9 +1050,11 @@ public:
       int64_t total = state->rows.fetch_add(batch_rows) + batch_rows;
       if (state->n > 0 && total >= state->n) {
         state->CancelAll();
+        context.TryCancel();
         break;
       }
       if (state->cancel.load()) {
+        context.TryCancel();
         break;
       }
     }
@@ -1180,7 +1206,7 @@ SEXP bqs_ipc_stream(SEXP client,
   int target_threads = max_threads > 0 ? max_threads : BQS_DEFAULT_THREADS;
 
   int32_t requested_streams = max_stream_count;
-  if (n > 0 && n <= 100000 && requested_streams == 0) {
+  if (n >= 0 && n <= 100000 && requested_streams == 0) {
     requested_streams = 1;
   }
   // Ask for at least as many streams as workers so the download can be parallel
@@ -1204,7 +1230,7 @@ SEXP bqs_ipc_stream(SEXP client,
     compression_codec,
     preferred_min_streams);
 
-  int n_streams = read_session.streams_size();
+  int n_streams = (n == 0) ? 0 : read_session.streams_size();
   const std::string& schema_bytes = read_session.arrow_schema().serialized_schema();
 
   std::vector<StreamBatches> stream_batches(std::max(1, n_streams));
@@ -1354,69 +1380,10 @@ static int64_t split_arrow_ipc_stream(const uint8_t* data,
                                       std::vector<std::string>* batches_out,
                                       std::vector<int64_t>* batch_rows_out) {
   int64_t total_rows = 0;
-  size_t pos = 0;
-  while (pos + 8 <= len) {
-    uint32_t continuation = 0;
-    int32_t meta_len = 0;
-    std::memcpy(&continuation, data + pos, 4);
-    if (continuation == 0xFFFFFFFFu) {
-      std::memcpy(&meta_len, data + pos + 4, 4);
-      if (meta_len <= 0) {
-        break; // EOS marker (0xFFFFFFFF 0x00000000)
-      }
-    } else {
-      meta_len = static_cast<int32_t>(continuation);
-    }
-    if (meta_len < 4 || pos + 8 + static_cast<size_t>(meta_len) > len) {
-      Rcpp::stop("Invalid Arrow IPC stream: truncated metadata.");
-    }
-    const size_t meta_size = static_cast<size_t>(meta_len);
-    const uint8_t* fb = data + pos + 8;
-    uint32_t root_off = bqs_ipc::fb_read_u32(fb);
-    uint32_t msg_vt_off = 0;
-    uint16_t msg_vt_len = 0;
-    if (!bqs_ipc::fb_open_table(fb, meta_size, root_off, &msg_vt_off, &msg_vt_len)) {
-      Rcpp::stop("Invalid Arrow IPC stream: out-of-bounds Message table.");
-    }
-
-    uint32_t ht_pos = 0, hdr_pos = 0, bl_pos = 0;
-    if (!bqs_ipc::fb_field_checked(fb, meta_size, root_off, msg_vt_off, msg_vt_len, 1, 1, &ht_pos) ||
-        !bqs_ipc::fb_field_checked(fb, meta_size, root_off, msg_vt_off, msg_vt_len, 2, 4, &hdr_pos) ||
-        !bqs_ipc::fb_field_checked(fb, meta_size, root_off, msg_vt_off, msg_vt_len, 3, 8, &bl_pos)) {
-      Rcpp::stop("Invalid Arrow IPC stream: out-of-bounds Message fields.");
-    }
-
-    uint8_t header_type = ht_pos ? fb[ht_pos] : 0;
-    int64_t body_len = bl_pos ? bqs_ipc::fb_read_i64(fb + bl_pos) : 0;
-    if (body_len < 0 || static_cast<uint64_t>(body_len) > static_cast<uint64_t>(len - (pos + 8 + meta_size))) {
-      Rcpp::stop("Invalid Arrow IPC stream: truncated message body.");
-    }
-    size_t msg_len = 8 + meta_size + static_cast<size_t>(body_len);
-
-    if (header_type == 1) {
-      schema_out->assign(reinterpret_cast<const char*>(data + pos), msg_len);
-    } else if (header_type == 3) {
-      batches_out->emplace_back(reinterpret_cast<const char*>(data + pos), msg_len);
-      int64_t rb_rows = 0;
-      if (hdr_pos) {
-        uint64_t rb_off64 = static_cast<uint64_t>(hdr_pos) + bqs_ipc::fb_read_u32(fb + hdr_pos);
-        uint32_t rb_vt_off = 0;
-        uint16_t rb_vt_len = 0;
-        uint32_t len_pos = 0;
-        if (rb_off64 > meta_size ||
-            !bqs_ipc::fb_open_table(fb, meta_size, static_cast<uint32_t>(rb_off64), &rb_vt_off, &rb_vt_len) ||
-            !bqs_ipc::fb_field_checked(fb, meta_size, static_cast<uint32_t>(rb_off64), rb_vt_off, rb_vt_len, 0, 8, &len_pos)) {
-          Rcpp::stop("Invalid Arrow IPC stream: out-of-bounds RecordBatch header.");
-        }
-        if (len_pos) {
-          rb_rows = bqs_ipc::fb_read_i64(fb + len_pos);
-          if (rb_rows < 0) Rcpp::stop("Invalid Arrow IPC stream: negative RecordBatch row count.");
-          total_rows += rb_rows;
-        }
-      }
-      if (batch_rows_out) batch_rows_out->push_back(rb_rows);
-    }
-    pos += msg_len;
+  std::string err;
+  if (!bqs_ipc::split_arrow_ipc_stream(
+        data, len, schema_out, batches_out, batch_rows_out, &total_rows, &err)) {
+    Rcpp::stop(err.c_str());
   }
   return total_rows;
 }
@@ -1805,7 +1772,7 @@ SEXP bqs_download_direct(SEXP client,
   int target_threads = max_threads > 0 ? max_threads : 24;
 
   int32_t requested_streams = max_stream_count;
-  if (n > 0 && n <= 100000 && requested_streams == 0) {
+  if (n >= 0 && n <= 100000 && requested_streams == 0) {
     requested_streams = 1;
   }
   int32_t preferred_min_streams = target_threads;
@@ -1829,7 +1796,7 @@ SEXP bqs_download_direct(SEXP client,
     compression_codec,
     preferred_min_streams);
 
-  int orig_n = read_session.streams_size();
+  int orig_n = (n == 0) ? 0 : read_session.streams_size();
   const std::string& schema_bytes = read_session.arrow_schema().serialized_schema();
 
   bool do_async_split = split_streams && n < 0 && orig_n >= 2 &&

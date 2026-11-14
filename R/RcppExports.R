@@ -73,3 +73,7 @@ bqs_encode_arrow_ipc_raw <- function(schema_xptr, array_xptr, schema_ipc, row_ba
     .Call(`_bigrquerystorage_bqs_encode_arrow_ipc_raw`, schema_xptr, array_xptr, schema_ipc, row_batch_size, use_zstd, n_threads)
 }
 
+bqs_decode_arrow_ipc_raw <- function(ipc_bytes, n_max, bigint, as_data_frame, n_threads, read_nanoarrow_fn, int64_ptype_fn, check_pkg_fn, na_convert_stream, na_convert_stream_quiet, as_bigint) {
+    .Call(`_bigrquerystorage_bqs_decode_arrow_ipc_raw`, ipc_bytes, n_max, bigint, as_data_frame, n_threads, read_nanoarrow_fn, int64_ptype_fn, check_pkg_fn, na_convert_stream, na_convert_stream_quiet, as_bigint)
+}
+

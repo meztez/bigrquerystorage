@@ -27,6 +27,13 @@ inline bool has_zstd_support() {
 #endif
 }
 
+template <typename T>
+inline T load_unaligned(const void* ptr) {
+  T val;
+  std::memcpy(&val, ptr, sizeof(T));
+  return val;
+}
+
 // Determine fixed-width byte size for primitive/temporal/decimal Arrow formats,
 // or -1 if not a fixed-width leaf format.
 inline int fixed_width_bytes(const char* fmt) {
@@ -140,38 +147,50 @@ inline int64_t estimate_field_bytes(const ArrowSchema* sch,
     return total + len * fw;
   }
   if (std::strcmp(fmt, "u") == 0 || std::strcmp(fmt, "z") == 0) {
-    const int32_t* offs = static_cast<const int32_t*>(arr->buffers[1]);
-    int64_t data_bytes = offs ? (offs[start + len] - offs[start]) : 0;
-    return total + (len + 1) * 4 + data_bytes;
+    const int32_t* offs = (arr->buffers != nullptr && arr->n_buffers > 1)
+                            ? static_cast<const int32_t*>(arr->buffers[1])
+                            : nullptr;
+    int64_t data_bytes = offs ? (static_cast<int64_t>(offs[start + len]) - static_cast<int64_t>(offs[start])) : 0;
+    return total + (len + 1) * 4 + std::max<int64_t>(0, data_bytes);
   }
   if (std::strcmp(fmt, "U") == 0 || std::strcmp(fmt, "Z") == 0) {
-    const int64_t* offs = static_cast<const int64_t*>(arr->buffers[1]);
+    const int64_t* offs = (arr->buffers != nullptr && arr->n_buffers > 1)
+                            ? static_cast<const int64_t*>(arr->buffers[1])
+                            : nullptr;
     int64_t data_bytes = offs ? (offs[start + len] - offs[start]) : 0;
-    return total + (len + 1) * 8 + data_bytes;
+    return total + (len + 1) * 8 + std::max<int64_t>(0, data_bytes);
   }
   if (std::strcmp(fmt, "+s") == 0) {
     for (int64_t j = 0; j < sch->n_children; j++) {
-      total += estimate_field_bytes(sch->children[j], arr->children[j], start, len);
+      const ArrowArray* child_arr = (arr->children != nullptr && j < arr->n_children) ? arr->children[j] : nullptr;
+      total += estimate_field_bytes(sch->children[j], child_arr, start, len);
     }
     return total;
   }
   if (std::strcmp(fmt, "+l") == 0) {
-    const int32_t* offs = static_cast<const int32_t*>(arr->buffers[1]);
+    const int32_t* offs = (arr->buffers != nullptr && arr->n_buffers > 1)
+                            ? static_cast<const int32_t*>(arr->buffers[1])
+                            : nullptr;
     int32_t c_start = offs ? offs[start] : 0;
     int32_t c_end = offs ? offs[start + len] : 0;
+    const ArrowArray* child_arr = (arr->children != nullptr && arr->n_children > 0) ? arr->children[0] : nullptr;
     return total + (len + 1) * 4 +
-           estimate_field_bytes(sch->children[0], arr->children[0], c_start, c_end - c_start);
+           estimate_field_bytes(sch->children[0], child_arr, c_start, std::max<int32_t>(0, c_end - c_start));
   }
   if (std::strcmp(fmt, "+L") == 0) {
-    const int64_t* offs = static_cast<const int64_t*>(arr->buffers[1]);
+    const int64_t* offs = (arr->buffers != nullptr && arr->n_buffers > 1)
+                            ? static_cast<const int64_t*>(arr->buffers[1])
+                            : nullptr;
     int64_t c_start = offs ? offs[start] : 0;
     int64_t c_end = offs ? offs[start + len] : 0;
+    const ArrowArray* child_arr = (arr->children != nullptr && arr->n_children > 0) ? arr->children[0] : nullptr;
     return total + (len + 1) * 8 +
-           estimate_field_bytes(sch->children[0], arr->children[0], c_start, c_end - c_start);
+           estimate_field_bytes(sch->children[0], child_arr, c_start, std::max<int64_t>(0, c_end - c_start));
   }
   if (std::strncmp(fmt, "+w:", 3) == 0) {
-    int64_t w = std::atoll(fmt + 3);
-    return total + estimate_field_bytes(sch->children[0], arr->children[0], start * w, len * w);
+    int64_t w = std::max<int64_t>(0, std::atoll(fmt + 3));
+    const ArrowArray* child_arr = (arr->children != nullptr && arr->n_children > 0) ? arr->children[0] : nullptr;
+    return total + estimate_field_bytes(sch->children[0], child_arr, start * w, len * w);
   }
   return total;
 }
@@ -469,6 +488,10 @@ private:
     }
 
     if (std::strcmp(fmt, "+s") == 0) {
+      if (!arr->children || arr->n_children < sch->n_children) {
+        if (err_out) *err_out = "Invalid ArrowArray struct: missing child arrays.";
+        return false;
+      }
       for (int64_t j = 0; j < sch->n_children; j++) {
         if (!visit_field(sch->children[j], arr->children[j], start, len, err_out)) {
           return false;
@@ -478,7 +501,13 @@ private:
     }
 
     if (std::strcmp(fmt, "+l") == 0) {
-      const int32_t* offs = static_cast<const int32_t*>(arr->buffers[1]);
+      if (!arr->children || arr->n_children < 1) {
+        if (err_out) *err_out = "Invalid ArrowArray list: missing child array.";
+        return false;
+      }
+      const int32_t* offs = (arr->buffers != nullptr && arr->n_buffers > 1)
+                              ? static_cast<const int32_t*>(arr->buffers[1])
+                              : nullptr;
       if (len <= 0 || offs == nullptr) {
         int32_t zero = 0;
         if (!append_buffer(reinterpret_cast<const uint8_t*>(&zero), 4, err_out)) return false;
@@ -507,7 +536,13 @@ private:
     }
 
     if (std::strcmp(fmt, "+L") == 0) {
-      const int64_t* offs = static_cast<const int64_t*>(arr->buffers[1]);
+      if (!arr->children || arr->n_children < 1) {
+        if (err_out) *err_out = "Invalid ArrowArray large_list: missing child array.";
+        return false;
+      }
+      const int64_t* offs = (arr->buffers != nullptr && arr->n_buffers > 1)
+                              ? static_cast<const int64_t*>(arr->buffers[1])
+                              : nullptr;
       if (len <= 0 || offs == nullptr) {
         int64_t zero = 0;
         if (!append_buffer(reinterpret_cast<const uint8_t*>(&zero), 8, err_out)) return false;
@@ -536,12 +571,18 @@ private:
     }
 
     if (std::strncmp(fmt, "+w:", 3) == 0) {
-      int64_t w = std::atoll(fmt + 3);
+      if (!arr->children || arr->n_children < 1) {
+        if (err_out) *err_out = "Invalid ArrowArray fixed_size_list: missing child array.";
+        return false;
+      }
+      int64_t w = std::max<int64_t>(0, std::atoll(fmt + 3));
       return visit_field(sch->children[0], arr->children[0], start * w, len * w, err_out);
     }
 
     if (std::strcmp(fmt, "b") == 0) {
-      const uint8_t* bits = static_cast<const uint8_t*>(arr->buffers[1]);
+      const uint8_t* bits = (arr->buffers != nullptr && arr->n_buffers > 1)
+                              ? static_cast<const uint8_t*>(arr->buffers[1])
+                              : nullptr;
       if (len <= 0 || bits == nullptr) {
         return append_buffer(nullptr, 0, err_out);
       }
@@ -550,8 +591,12 @@ private:
     }
 
     if (std::strcmp(fmt, "u") == 0 || std::strcmp(fmt, "z") == 0) {
-      const int32_t* offs = static_cast<const int32_t*>(arr->buffers[1]);
-      const uint8_t* data = static_cast<const uint8_t*>(arr->buffers[2]);
+      const int32_t* offs = (arr->buffers != nullptr && arr->n_buffers > 1)
+                              ? static_cast<const int32_t*>(arr->buffers[1])
+                              : nullptr;
+      const uint8_t* data = (arr->buffers != nullptr && arr->n_buffers > 2)
+                              ? static_cast<const uint8_t*>(arr->buffers[2])
+                              : nullptr;
       if (len <= 0 || offs == nullptr) {
         int32_t zero = 0;
         if (!append_buffer(reinterpret_cast<const uint8_t*>(&zero), 4, err_out)) return false;
@@ -581,8 +626,12 @@ private:
     }
 
     if (std::strcmp(fmt, "U") == 0 || std::strcmp(fmt, "Z") == 0) {
-      const int64_t* offs = static_cast<const int64_t*>(arr->buffers[1]);
-      const uint8_t* data = static_cast<const uint8_t*>(arr->buffers[2]);
+      const int64_t* offs = (arr->buffers != nullptr && arr->n_buffers > 1)
+                              ? static_cast<const int64_t*>(arr->buffers[1])
+                              : nullptr;
+      const uint8_t* data = (arr->buffers != nullptr && arr->n_buffers > 2)
+                              ? static_cast<const uint8_t*>(arr->buffers[2])
+                              : nullptr;
       if (len <= 0 || offs == nullptr) {
         int64_t zero = 0;
         if (!append_buffer(reinterpret_cast<const uint8_t*>(&zero), 8, err_out)) return false;
@@ -613,7 +662,9 @@ private:
 
     int fw = fixed_width_bytes(fmt);
     if (fw >= 0) {
-      const uint8_t* data = static_cast<const uint8_t*>(arr->buffers[1]);
+      const uint8_t* data = (arr->buffers != nullptr && arr->n_buffers > 1)
+                              ? static_cast<const uint8_t*>(arr->buffers[1])
+                              : nullptr;
       int64_t data_len = len * fw;
       return append_buffer((data && data_len > 0) ? (data + start * fw) : nullptr,
                            data_len,
@@ -699,13 +750,59 @@ struct DecodedBatch {
   int64_t length = 0;
   std::vector<FieldNodeDesc> nodes;
   std::vector<BufferDesc> buffers;
-  std::string raw_ipc;                        // Kept zero-copy when uncompressed
-  std::unique_ptr<uint8_t[]> decompressed;    // Allocated once (uninitialized) when ZSTD-decompressed
+  std::string raw_ipc;                        // Kept zero-copy when uncompressed & 8-byte aligned
+  size_t raw_body_offset = 0;
+  std::unique_ptr<uint8_t[]> decompressed;    // Allocated once (8-byte aligned) when decompressed/repacked
   const uint8_t* body_ptr = nullptr;
   size_t body_size = 0;
 
+  DecodedBatch() = default;
+  DecodedBatch(const DecodedBatch&) = delete;
+  DecodedBatch& operator=(const DecodedBatch&) = delete;
+
+  DecodedBatch(DecodedBatch&& other) noexcept
+      : length(other.length),
+        nodes(std::move(other.nodes)),
+        buffers(std::move(other.buffers)),
+        raw_ipc(std::move(other.raw_ipc)),
+        raw_body_offset(other.raw_body_offset),
+        decompressed(std::move(other.decompressed)),
+        body_ptr(nullptr),
+        body_size(other.body_size) {
+    refresh_body_ptr();
+    other.body_ptr = nullptr;
+    other.body_size = 0;
+  }
+
+  DecodedBatch& operator=(DecodedBatch&& other) noexcept {
+    if (this != &other) {
+      length = other.length;
+      nodes = std::move(other.nodes);
+      buffers = std::move(other.buffers);
+      raw_ipc = std::move(other.raw_ipc);
+      raw_body_offset = other.raw_body_offset;
+      decompressed = std::move(other.decompressed);
+      body_size = other.body_size;
+      refresh_body_ptr();
+      other.body_ptr = nullptr;
+      other.body_size = 0;
+    }
+    return *this;
+  }
+
+  void refresh_body_ptr() {
+    if (decompressed) {
+      body_ptr = decompressed.get();
+    } else if (!raw_ipc.empty() && raw_body_offset <= raw_ipc.size()) {
+      body_ptr = reinterpret_cast<const uint8_t*>(raw_ipc.data()) + raw_body_offset;
+    } else {
+      body_ptr = nullptr;
+    }
+  }
+
   void clear_memory() {
     std::string().swap(raw_ipc);
+    raw_body_offset = 0;
     decompressed.reset();
     body_ptr = nullptr;
     body_size = 0;
@@ -969,11 +1066,64 @@ inline bool decode_ipc_record_batch(std::string&& raw_msg,
   }
 
   if (!is_compressed) {
-    out->buffers = std::move(raw_bufs);
-    out->raw_ipc = std::move(raw_msg);
-    out->decompressed.reset();
-    out->body_ptr = reinterpret_cast<const uint8_t*>(out->raw_ipc.data()) + body_offset_in_msg;
-    out->body_size = static_cast<size_t>(body_len);
+    static const uint64_t MAX_UNCOMPRESSED_BATCH_BYTES = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+    bool offsets_aligned = true;
+    for (const auto& bd : raw_bufs) {
+      if (bd.length > 0 && (static_cast<uint64_t>(bd.offset) & 7ULL) != 0ULL) {
+        offsets_aligned = false;
+        break;
+      }
+    }
+    if (offsets_aligned) {
+      out->buffers = std::move(raw_bufs);
+      out->raw_ipc = std::move(raw_msg);
+      out->raw_body_offset = body_offset_in_msg;
+      out->decompressed.reset();
+      out->body_size = static_cast<size_t>(body_len);
+      out->refresh_body_ptr();
+      if (out->body_size == 0 || (reinterpret_cast<uintptr_t>(out->body_ptr) & 7u) == 0u) {
+        return true;
+      }
+      // Recover raw_msg if std::string buffer was not 8-byte aligned (e.g. legacy 4-byte framing)
+      raw_bufs = std::move(out->buffers);
+      raw_msg = std::move(out->raw_ipc);
+      data = reinterpret_cast<const uint8_t*>(raw_msg.data());
+    }
+
+    const uint8_t* src_body = data + body_offset_in_msg;
+    uint64_t total_aligned64 = 0;
+    for (const auto& bd : raw_bufs) {
+      if (bd.length > 0) {
+        total_aligned64 += (static_cast<uint64_t>(bd.length) + 7ULL) & ~7ULL;
+        if (total_aligned64 > MAX_UNCOMPRESSED_BATCH_BYTES) {
+          if (err_out) *err_out = "Arrow RecordBatch exceeds 2 GiB safety limit.";
+          return false;
+        }
+      }
+    }
+    size_t total_aligned = static_cast<size_t>(total_aligned64);
+    out->decompressed.reset(total_aligned > 0 ? new uint8_t[total_aligned] : nullptr);
+    uint8_t* dst_base = out->decompressed.get();
+    size_t dst_pos = 0;
+    out->buffers.resize(raw_bufs.size());
+    for (size_t i = 0; i < raw_bufs.size(); i++) {
+      int64_t blen = raw_bufs[i].length;
+      int64_t boff = raw_bufs[i].offset;
+      if (blen <= 0) {
+        out->buffers[i] = {static_cast<int64_t>(dst_pos), 0};
+        continue;
+      }
+      size_t slen = static_cast<size_t>(blen);
+      std::memcpy(dst_base + dst_pos, src_body + boff, slen);
+      out->buffers[i] = {static_cast<int64_t>(dst_pos), blen};
+      size_t padded = (slen + 7u) & ~static_cast<size_t>(7u);
+      if (padded > slen) std::memset(dst_base + dst_pos + slen, 0, padded - slen);
+      dst_pos += padded;
+    }
+    std::string().swap(raw_msg);
+    out->raw_body_offset = 0;
+    out->body_ptr = dst_base;
+    out->body_size = total_aligned;
     return true;
   }
 
@@ -1084,6 +1234,199 @@ inline void count_schema_nodes_and_buffers(const ArrowSchema* sch,
   }
 }
 
+// Validate node lengths, validity bitmaps, monotonic list/string/binary offsets,
+// and leaf data buffer capacities recursively before building borrowed ArrowArray views.
+inline bool validate_borrowed_field_buffers(const ArrowSchema* sch,
+                                            const DecodedBatch& batch,
+                                            int64_t min_len,
+                                            bool exact_len,
+                                            size_t* node_pos,
+                                            size_t* buf_pos,
+                                            std::string* err_out) {
+  if (!sch || !sch->format || sch->dictionary != nullptr) {
+    if (err_out) *err_out = "Unsupported Arrow schema in direct RecordBatch decoder.";
+    return false;
+  }
+  if (*node_pos >= batch.nodes.size()) {
+    if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: missing FieldNode.";
+    return false;
+  }
+  const char* fmt = sch->format;
+  const FieldNodeDesc& nd = batch.nodes[(*node_pos)++];
+  if (nd.length < min_len || (exact_len && nd.length != min_len) || nd.null_count > nd.length) {
+    if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: inconsistent FieldNode length/null_count.";
+    return false;
+  }
+
+  if (std::strcmp(fmt, "n") == 0) {
+    return true;
+  }
+
+  if (*buf_pos >= batch.buffers.size()) {
+    if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: missing validity buffer.";
+    return false;
+  }
+  const BufferDesc& vbuf = batch.buffers[(*buf_pos)++];
+  if (nd.null_count > 0 && nd.length > 0 &&
+      (vbuf.length < ((nd.length + 7) >> 3) || !batch.body_ptr)) {
+    if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: validity bitmap shorter than row count.";
+    return false;
+  }
+
+  if (std::strcmp(fmt, "+s") == 0) {
+    for (int64_t c = 0; c < sch->n_children; c++) {
+      if (!validate_borrowed_field_buffers(
+            sch->children[c], batch, nd.length, true, node_pos, buf_pos, err_out)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (std::strncmp(fmt, "+w:", 3) == 0) {
+    int64_t w = std::atoll(fmt + 3);
+    if (w < 0 || sch->n_children != 1) {
+      if (err_out) *err_out = "Invalid Arrow FixedSizeList schema.";
+      return false;
+    }
+    return validate_borrowed_field_buffers(
+      sch->children[0], batch, nd.length * w, true, node_pos, buf_pos, err_out);
+  }
+
+  if (std::strcmp(fmt, "+l") == 0 || std::strcmp(fmt, "+L") == 0) {
+    if (sch->n_children != 1 || *buf_pos >= batch.buffers.size()) {
+      if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: missing list offset buffer.";
+      return false;
+    }
+    const BufferDesc& obuf = batch.buffers[(*buf_pos)++];
+    bool is_large = (std::strcmp(fmt, "+L") == 0);
+    int64_t elem_sz = is_large ? 8 : 4;
+    int64_t child_min_len = 0;
+    if (nd.length > 0) {
+      if (obuf.length < (nd.length + 1) * elem_sz || !batch.body_ptr) {
+        if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: list offset buffer shorter than row count.";
+        return false;
+      }
+      const uint8_t* op = batch.body_ptr + obuf.offset;
+      if (!is_large) {
+        int32_t prev = load_unaligned<int32_t>(op);
+        if (prev < 0) {
+          if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: negative list offset.";
+          return false;
+        }
+        for (int64_t i = 1; i <= nd.length; i++) {
+          int32_t cur = load_unaligned<int32_t>(op + i * 4);
+          if (cur < prev) {
+            if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: non-monotonic list offsets.";
+            return false;
+          }
+          prev = cur;
+        }
+        child_min_len = prev;
+      } else {
+        int64_t prev = load_unaligned<int64_t>(op);
+        if (prev < 0) {
+          if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: negative list offset.";
+          return false;
+        }
+        for (int64_t i = 1; i <= nd.length; i++) {
+          int64_t cur = load_unaligned<int64_t>(op + i * 8);
+          if (cur < prev) {
+            if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: non-monotonic list offsets.";
+            return false;
+          }
+          prev = cur;
+        }
+        child_min_len = prev;
+      }
+    }
+    return validate_borrowed_field_buffers(
+      sch->children[0], batch, child_min_len, false, node_pos, buf_pos, err_out);
+  }
+
+  if (std::strcmp(fmt, "u") == 0 || std::strcmp(fmt, "z") == 0 ||
+      std::strcmp(fmt, "U") == 0 || std::strcmp(fmt, "Z") == 0) {
+    if (*buf_pos + 1 >= batch.buffers.size()) {
+      if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: missing binary/string buffers.";
+      return false;
+    }
+    const BufferDesc& obuf = batch.buffers[(*buf_pos)++];
+    const BufferDesc& dbuf = batch.buffers[(*buf_pos)++];
+    bool is_large = (fmt[0] == 'U' || fmt[0] == 'Z');
+    int64_t elem_sz = is_large ? 8 : 4;
+    if (nd.length > 0) {
+      if (obuf.length < (nd.length + 1) * elem_sz || !batch.body_ptr) {
+        if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: offset buffer shorter than row count.";
+        return false;
+      }
+      const uint8_t* op = batch.body_ptr + obuf.offset;
+      int64_t last_off = 0;
+      if (!is_large) {
+        int32_t prev = load_unaligned<int32_t>(op);
+        if (prev < 0) {
+          if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: negative string/binary offset.";
+          return false;
+        }
+        for (int64_t i = 1; i <= nd.length; i++) {
+          int32_t cur = load_unaligned<int32_t>(op + i * 4);
+          if (cur < prev) {
+            if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: non-monotonic string/binary offsets.";
+            return false;
+          }
+          prev = cur;
+        }
+        last_off = prev;
+      } else {
+        int64_t prev = load_unaligned<int64_t>(op);
+        if (prev < 0) {
+          if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: negative string/binary offset.";
+          return false;
+        }
+        for (int64_t i = 1; i <= nd.length; i++) {
+          int64_t cur = load_unaligned<int64_t>(op + i * 8);
+          if (cur < prev) {
+            if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: non-monotonic string/binary offsets.";
+            return false;
+          }
+          prev = cur;
+        }
+        last_off = prev;
+      }
+      if (last_off > dbuf.length || (last_off > 0 && !batch.body_ptr)) {
+        if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: offsets exceed data buffer bounds.";
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (*buf_pos >= batch.buffers.size()) {
+    if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: missing data buffer.";
+    return false;
+  }
+  const BufferDesc& dbuf = batch.buffers[(*buf_pos)++];
+  if (std::strcmp(fmt, "b") == 0) {
+    int64_t req = (nd.length + 7) >> 3;
+    if (req > 0 && (dbuf.length < req || !batch.body_ptr)) {
+      if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: boolean buffer shorter than row count.";
+      return false;
+    }
+    return true;
+  }
+
+  int fw = fixed_width_bytes(fmt);
+  if (fw < 0) {
+    if (err_out) *err_out = std::string("Unsupported Arrow format in direct RecordBatch decoder: ") + fmt;
+    return false;
+  }
+  int64_t req = nd.length * fw;
+  if (req > 0 && (dbuf.length < req || !batch.body_ptr)) {
+    if (err_out) *err_out = "Invalid Arrow IPC RecordBatch: data buffer shorter than row count.";
+    return false;
+  }
+  return true;
+}
+
 struct BorrowedArrayPriv {
   const void* buffers[3] = {nullptr, nullptr, nullptr};
 };
@@ -1183,6 +1526,131 @@ inline void truncate_borrowed_field_array(ArrowArray* arr,
     int64_t w = std::atoll(fmt + 3);
     truncate_borrowed_field_array(arr->children[0], sch->children[0], new_len * std::max<int64_t>(0, w));
   }
+}
+
+// Parse an Arrow IPC stream buffer (supporting both modern 8-byte 0xFFFFFFFF
+// continuation framing and legacy 4-byte V4 framing) into canonical 8-byte
+// framed Schema and RecordBatch messages, per-batch row counts, and total rows.
+inline bool split_arrow_ipc_stream(const uint8_t* data,
+                                   size_t len,
+                                   std::string* schema_out,
+                                   std::vector<std::string>* batches_out,
+                                   std::vector<int64_t>* batch_rows_out,
+                                   int64_t* total_rows_out,
+                                   std::string* err_out) {
+  int64_t total_rows = 0;
+  size_t pos = 0;
+  while (pos < len) {
+    if (pos + 4 > len) {
+      if (err_out) *err_out = "Invalid Arrow IPC stream: truncated message prefix.";
+      return false;
+    }
+    uint32_t continuation = 0;
+    int32_t meta_len = 0;
+    size_t prefix_len = 0;
+    std::memcpy(&continuation, data + pos, 4);
+    if (continuation == 0xFFFFFFFFu) {
+      if (pos + 8 > len) {
+        if (err_out) *err_out = "Invalid Arrow IPC stream: truncated continuation prefix.";
+        return false;
+      }
+      std::memcpy(&meta_len, data + pos + 4, 4);
+      if (meta_len == 0) {
+        break; // 8-byte EOS marker (0xFFFFFFFF 0x00000000)
+      }
+      prefix_len = 8;
+    } else {
+      meta_len = static_cast<int32_t>(continuation);
+      if (meta_len == 0) {
+        break; // Legacy 4-byte EOS marker (0x00000000)
+      }
+      prefix_len = 4;
+    }
+    if (meta_len < 4 || pos + prefix_len + static_cast<size_t>(meta_len) > len) {
+      if (err_out) *err_out = "Invalid Arrow IPC stream: truncated metadata.";
+      return false;
+    }
+    const size_t meta_size = static_cast<size_t>(meta_len);
+    const uint8_t* fb = data + pos + prefix_len;
+    uint32_t root_off = fb_read_u32(fb);
+    uint32_t msg_vt_off = 0;
+    uint16_t msg_vt_len = 0;
+    if (!fb_open_table(fb, meta_size, root_off, &msg_vt_off, &msg_vt_len)) {
+      if (err_out) *err_out = "Invalid Arrow IPC stream: out-of-bounds Message table.";
+      return false;
+    }
+
+    uint32_t ht_pos = 0, hdr_pos = 0, bl_pos = 0;
+    if (!fb_field_checked(fb, meta_size, root_off, msg_vt_off, msg_vt_len, 1, 1, &ht_pos) ||
+        !fb_field_checked(fb, meta_size, root_off, msg_vt_off, msg_vt_len, 2, 4, &hdr_pos) ||
+        !fb_field_checked(fb, meta_size, root_off, msg_vt_off, msg_vt_len, 3, 8, &bl_pos)) {
+      if (err_out) *err_out = "Invalid Arrow IPC stream: out-of-bounds Message fields.";
+      return false;
+    }
+
+    uint8_t header_type = ht_pos ? fb[ht_pos] : 0;
+    int64_t body_len = bl_pos ? fb_read_i64(fb + bl_pos) : 0;
+    if (body_len < 0 ||
+        static_cast<uint64_t>(body_len) > static_cast<uint64_t>(len - (pos + prefix_len + meta_size))) {
+      if (err_out) *err_out = "Invalid Arrow IPC stream: truncated message body.";
+      return false;
+    }
+    size_t msg_len = prefix_len + meta_size + static_cast<size_t>(body_len);
+
+    auto pack_canonical_msg = [&]() -> std::string {
+      if (prefix_len == 8) {
+        return std::string(reinterpret_cast<const char*>(data + pos), msg_len);
+      }
+      size_t aligned_meta = (meta_size + 7u) & ~static_cast<size_t>(7u);
+      std::string out(8u + aligned_meta + static_cast<size_t>(body_len), '\0');
+      const uint32_t cont_tag = 0xFFFFFFFFu;
+      const int32_t mlen_i32 = static_cast<int32_t>(aligned_meta);
+      std::memcpy(&out[0], &cont_tag, 4);
+      std::memcpy(&out[4], &mlen_i32, 4);
+      std::memcpy(&out[8], fb, meta_size);
+      if (body_len > 0) {
+        std::memcpy(&out[8u + aligned_meta],
+                    fb + meta_size,
+                    static_cast<size_t>(body_len));
+      }
+      return out;
+    };
+
+    if (header_type == 1) {
+      if (schema_out) *schema_out = pack_canonical_msg();
+    } else if (header_type == 3) {
+      if (batches_out) batches_out->push_back(pack_canonical_msg());
+      int64_t rb_rows = 0;
+      if (hdr_pos) {
+        uint64_t rb_off64 = static_cast<uint64_t>(hdr_pos) + fb_read_u32(fb + hdr_pos);
+        uint32_t rb_vt_off = 0;
+        uint16_t rb_vt_len = 0;
+        uint32_t len_pos = 0;
+        if (rb_off64 > meta_size ||
+            !fb_open_table(fb, meta_size, static_cast<uint32_t>(rb_off64), &rb_vt_off, &rb_vt_len) ||
+            !fb_field_checked(fb, meta_size, static_cast<uint32_t>(rb_off64), rb_vt_off, rb_vt_len, 0, 8, &len_pos)) {
+          if (err_out) *err_out = "Invalid Arrow IPC stream: out-of-bounds RecordBatch header.";
+          return false;
+        }
+        if (len_pos) {
+          rb_rows = fb_read_i64(fb + len_pos);
+          if (rb_rows < 0) {
+            if (err_out) *err_out = "Invalid Arrow IPC stream: negative RecordBatch row count.";
+            return false;
+          }
+          total_rows += rb_rows;
+        }
+      }
+      if (batch_rows_out) batch_rows_out->push_back(rb_rows);
+    }
+    pos += msg_len;
+  }
+  if (batches_out && !batches_out->empty() && schema_out && schema_out->empty()) {
+    if (err_out) *err_out = "Invalid Arrow IPC stream: missing Schema message.";
+    return false;
+  }
+  if (total_rows_out) *total_rows_out = total_rows;
+  return true;
 }
 
 } // namespace bqs_ipc

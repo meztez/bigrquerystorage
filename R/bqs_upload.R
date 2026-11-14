@@ -93,6 +93,10 @@ bqs_table_upload <- function(
     quiet <- isTRUE(quiet)
   }
 
+  if (!is.data.frame(values)) {
+    values <- nanoarrow::as_nanoarrow_array_stream(values)
+  }
+
   bqs_auth()
 
   # Pre-warm gRPC HTTP/2 write channels asynchronously so TLS handshakes overlap
@@ -229,15 +233,14 @@ bqs_table_upload <- function(
       return(invisible(x))
     }
   } else {
-    stream <- nanoarrow::as_nanoarrow_array_stream(values)
-    sch <- stream$get_schema()
+    sch <- values$get_schema()
     if (bqs_can_fast_encode(sch)) {
       bqs_arrow_write(
         client = .global$client$ptr,
         project = project,
         dataset = dataset,
         table = table,
-        stream_xptr = stream,
+        stream_xptr = values,
         schema_ipc = bqs_schema_to_ipc(sch),
         row_batch_size = row_batch_size,
         stream_type = effective_stream_type,
@@ -249,7 +252,6 @@ bqs_table_upload <- function(
       upload_ok <- TRUE
       return(invisible(x))
     }
-    values <- stream
   }
 
   ipc_bytes <- bqs_serialize_to_ipc(values, target_fields, row_batch_size, use_zstd = use_zstd)
@@ -463,10 +465,25 @@ bqs_infer_bq_field_from_r <- function(col, name) {
 }
 
 #' @noRd
+bqs_schema_has_dictionary <- function(sch) {
+  if (!is.null(sch$dictionary)) {
+    return(TRUE)
+  }
+  any(vapply(sch$children, bqs_schema_has_dictionary, logical(1)))
+}
+
+#' @noRd
 bqs_infer_bq_field_from_arrow <- function(sch) {
-  parsed <- nanoarrow::nanoarrow_schema_parse(sch)
   ext <- sch$metadata[["ARROW:extension:name"]]
   name <- sch$name %||% ""
+  if (!is.null(sch$dictionary)) {
+    out <- bqs_infer_bq_field_from_arrow(sch$dictionary)
+    out$name <- name
+    if (identical(ext, "google:sqlType:geography")) out$type <- "GEOGRAPHY"
+    if (identical(ext, "google:sqlType:datetime")) out$type <- "DATETIME"
+    return(out)
+  }
+  parsed <- nanoarrow::nanoarrow_schema_parse(sch)
   if (identical(parsed$type, "list") || identical(parsed$type, "large_list")) {
     child <- bqs_infer_bq_field_from_arrow(sch$children[[1]])
     child$name <- name
@@ -534,6 +551,20 @@ bqs_serialize_to_ipc <- function(values, target_fields, row_batch_size, use_zstd
       return(raw(0))
     }
     replay <- nanoarrow::basic_array_stream(first_batches, schema = stream_schema, validate = FALSE)
+    if (bqs_schema_has_dictionary(stream_schema)) {
+      df_conv <- parse_postprocess_schema(
+        bqs_convert_stream(
+          replay,
+          int64_ptype(stream_schema),
+          "integer64",
+          nanoarrow::convert_array_stream,
+          convert_stream_no_warnings
+        ),
+        stream_schema,
+        "integer64"
+      )
+      return(bqs_serialize_to_ipc(df_conv, target_fields, row_batch_size, use_zstd = use_zstd))
+    }
     con <- rawConnection(raw(0), "wb")
     on.exit(close(con))
     nanoarrow::write_nanoarrow(replay, con)

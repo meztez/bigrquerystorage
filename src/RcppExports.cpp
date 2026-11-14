@@ -268,6 +268,26 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// bqs_decode_arrow_ipc_raw
+SEXP bqs_decode_arrow_ipc_raw(Rcpp::RawVector ipc_bytes, double n_max, std::string bigint, bool as_data_frame, int n_threads, Rcpp::Function read_nanoarrow_fn, Rcpp::Function int64_ptype_fn, Rcpp::Function check_pkg_fn, Rcpp::Function na_convert_stream, Rcpp::Function na_convert_stream_quiet, Rcpp::Function as_bigint);
+RcppExport SEXP _bigrquerystorage_bqs_decode_arrow_ipc_raw(SEXP ipc_bytesSEXP, SEXP n_maxSEXP, SEXP bigintSEXP, SEXP as_data_frameSEXP, SEXP n_threadsSEXP, SEXP read_nanoarrow_fnSEXP, SEXP int64_ptype_fnSEXP, SEXP check_pkg_fnSEXP, SEXP na_convert_streamSEXP, SEXP na_convert_stream_quietSEXP, SEXP as_bigintSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< Rcpp::RawVector >::type ipc_bytes(ipc_bytesSEXP);
+    Rcpp::traits::input_parameter< double >::type n_max(n_maxSEXP);
+    Rcpp::traits::input_parameter< std::string >::type bigint(bigintSEXP);
+    Rcpp::traits::input_parameter< bool >::type as_data_frame(as_data_frameSEXP);
+    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
+    Rcpp::traits::input_parameter< Rcpp::Function >::type read_nanoarrow_fn(read_nanoarrow_fnSEXP);
+    Rcpp::traits::input_parameter< Rcpp::Function >::type int64_ptype_fn(int64_ptype_fnSEXP);
+    Rcpp::traits::input_parameter< Rcpp::Function >::type check_pkg_fn(check_pkg_fnSEXP);
+    Rcpp::traits::input_parameter< Rcpp::Function >::type na_convert_stream(na_convert_streamSEXP);
+    Rcpp::traits::input_parameter< Rcpp::Function >::type na_convert_stream_quiet(na_convert_stream_quietSEXP);
+    Rcpp::traits::input_parameter< Rcpp::Function >::type as_bigint(as_bigintSEXP);
+    rcpp_result_gen = Rcpp::wrap(bqs_decode_arrow_ipc_raw(ipc_bytes, n_max, bigint, as_data_frame, n_threads, read_nanoarrow_fn, int64_ptype_fn, check_pkg_fn, na_convert_stream, na_convert_stream_quiet, as_bigint));
+    return rcpp_result_gen;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_bigrquerystorage_bqs_set_log_verbosity", (DL_FUNC) &_bigrquerystorage_bqs_set_log_verbosity, 1},
@@ -288,6 +308,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_bigrquerystorage_bqs_can_fast_encode", (DL_FUNC) &_bigrquerystorage_bqs_can_fast_encode, 1},
     {"_bigrquerystorage_bqs_fast_df_columns", (DL_FUNC) &_bigrquerystorage_bqs_fast_df_columns, 6},
     {"_bigrquerystorage_bqs_encode_arrow_ipc_raw", (DL_FUNC) &_bigrquerystorage_bqs_encode_arrow_ipc_raw, 6},
+    {"_bigrquerystorage_bqs_decode_arrow_ipc_raw", (DL_FUNC) &_bigrquerystorage_bqs_decode_arrow_ipc_raw, 11},
     {NULL, NULL, 0}
 };
 

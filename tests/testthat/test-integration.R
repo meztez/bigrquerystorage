@@ -522,6 +522,14 @@ test_that("edge cases: NaN upload, NA factor level, INT64_MAX overflow, n_max on
   df_ovf <- df_ovf[order(df_ovf$id), ]
   expect_identical(df_ovf$big_i64[1:4], c(NA_integer_, NA_integer_, 42L, NA_integer_))
 
+  df_nmax0 <- bqs_table_download(tb_ovf, bigrquery::bq_test_project(), bigint = "integer64", n_max = 0L, quiet = TRUE)
+  expect_equal(nrow(df_nmax0), 0L)
+  expect_s3_class(df_nmax0$big_i64, "integer64")
+  expect_true(inherits(df_nmax0$null_bytes, "blob"))
+
+  arrow_nmax0 <- bqs_table_download(tb_ovf, bigrquery::bq_test_project(), n_max = 0L, type = "arrow", quiet = TRUE)
+  expect_null(arrow_nmax0$get_next())
+
   df_nmax1 <- bqs_table_download(tb_ovf, bigrquery::bq_test_project(), bigint = "integer64", n_max = 1L, quiet = TRUE)
   expect_equal(nrow(df_nmax1), 1L)
   expect_true(inherits(df_nmax1$null_bytes, "blob"))

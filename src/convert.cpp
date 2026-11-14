@@ -1361,7 +1361,7 @@ static void execute_numeric_col_task(FastColTask& t) {
       int64_t nulls = 0;
       for (int64_t i = 0; i < n; i++) {
         double v = src[i];
-        if (std::isnan(v)) {
+        if (!std::isfinite(v) || v < -2147483648.0 || v > 2147483647.0) {
           dst[i] = 0;
           nulls++;
         } else {
@@ -1373,7 +1373,10 @@ static void execute_numeric_col_task(FastColTask& t) {
         priv->validity.assign(static_cast<size_t>((n + 7) >> 3), 0);
         uint8_t* v = priv->validity.data();
         for (int64_t i = 0; i < n; i++) {
-          if (!std::isnan(src[i])) v[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+          double val = src[i];
+          if (std::isfinite(val) && val >= -2147483648.0 && val <= 2147483647.0) {
+            v[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+          }
         }
         priv->buffers[0] = v;
       }
@@ -1388,7 +1391,7 @@ static void execute_numeric_col_task(FastColTask& t) {
       int64_t nulls = 0;
       for (int64_t i = 0; i < n; i++) {
         double v = src[i];
-        if (std::isnan(v)) {
+        if (!std::isfinite(v) || v < -9.223372036854e12 || v > 9.223372036854e12) {
           dst[i] = 0;
           nulls++;
         } else {
@@ -1400,7 +1403,10 @@ static void execute_numeric_col_task(FastColTask& t) {
         priv->validity.assign(static_cast<size_t>((n + 7) >> 3), 0);
         uint8_t* v = priv->validity.data();
         for (int64_t i = 0; i < n; i++) {
-          if (!std::isnan(src[i])) v[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+          double val = src[i];
+          if (std::isfinite(val) && val >= -9.223372036854e12 && val <= 9.223372036854e12) {
+            v[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
+          }
         }
         priv->buffers[0] = v;
       }
@@ -1814,11 +1820,29 @@ Rcpp::RawVector bqs_encode_arrow_ipc_raw(SEXP schema_xptr,
   std::vector<ArrowArray> src_arrays(1);
   src_arrays[0] = *arr; // Shallow view; not released here
 
+  const int64_t n = arr->length;
+  const int64_t total_uncompressed_bytes = bqs_ipc::estimate_batch_bytes(schema, arr);
+  const int64_t max_batch_bytes = 5LL * 1024LL * 1024LL;
+  double bytes_per_row = std::max(16.0, static_cast<double>(total_uncompressed_bytes) / static_cast<double>(n));
+  int64_t max_rows_by_bytes = std::max<int64_t>(1, static_cast<int64_t>(static_cast<double>(max_batch_bytes) / bytes_per_row));
+  int64_t step = std::min<int64_t>(std::max<int64_t>(1, row_batch_size), max_rows_by_bytes);
+
+  const int64_t hard_slice_bytes = 10LL * 1024LL * 1024LL;
   std::vector<bqs_ipc::BatchSliceSpec> specs;
-  int64_t n = arr->length;
-  int64_t step = std::max<int64_t>(1, row_batch_size);
-  for (int64_t s = 0; s < n; s += step) {
-    specs.push_back({0u, s, std::min<int64_t>(step, n - s)});
+  int64_t s = 0;
+  while (s < n) {
+    int64_t len = std::min<int64_t>(step, n - s);
+    while (len > 1) {
+      int64_t slice_bytes = 0;
+      for (int64_t j = 0; j < schema->n_children; j++) {
+        slice_bytes += bqs_ipc::estimate_field_bytes(
+          schema->children[j], arr->children[j], arr->offset + s, len);
+      }
+      if (slice_bytes <= hard_slice_bytes) break;
+      len = std::max<int64_t>(1, len / 2);
+    }
+    specs.push_back({0u, s, len});
+    s += len;
   }
 
   std::vector<std::string> batches;
@@ -1983,13 +2007,12 @@ static void run_numeric_slice_task(NumericSliceTask& task) {
     switch (c.kind) {
       case DCOL_FLOAT64: {
         double* dst = static_cast<double*>(c.out_ptr) + dst_off;
-        const double* src = reinterpret_cast<const double*>(raw);
         if (!valid) {
-          std::memcpy(dst, src, static_cast<size_t>(len) * sizeof(double));
+          std::memcpy(dst, raw, static_cast<size_t>(len) * sizeof(double));
         } else {
           for (int64_t i = 0; i < len; i++) {
             if ((valid[i >> 3] >> (i & 7)) & 1) {
-              dst[i] = src[i];
+              dst[i] = bqs_ipc::load_unaligned<double>(raw + i * sizeof(double));
             } else {
               std::memcpy(dst + i, &task.na_real_bits, sizeof(uint64_t));
             }
@@ -1999,13 +2022,14 @@ static void run_numeric_slice_task(NumericSliceTask& task) {
       }
       case DCOL_FLOAT32: {
         double* dst = static_cast<double*>(c.out_ptr) + dst_off;
-        const float* src = reinterpret_cast<const float*>(raw);
         if (!valid) {
-          for (int64_t i = 0; i < len; i++) dst[i] = static_cast<double>(src[i]);
+          for (int64_t i = 0; i < len; i++) {
+            dst[i] = static_cast<double>(bqs_ipc::load_unaligned<float>(raw + i * sizeof(float)));
+          }
         } else {
           for (int64_t i = 0; i < len; i++) {
             if ((valid[i >> 3] >> (i & 7)) & 1) {
-              dst[i] = static_cast<double>(src[i]);
+              dst[i] = static_cast<double>(bqs_ipc::load_unaligned<float>(raw + i * sizeof(float)));
             } else {
               std::memcpy(dst + i, &task.na_real_bits, sizeof(uint64_t));
             }
@@ -2015,11 +2039,10 @@ static void run_numeric_slice_task(NumericSliceTask& task) {
       }
       case DCOL_INT64_TO_INT32: {
         int* dst = static_cast<int*>(c.out_ptr) + dst_off;
-        const int64_t* src = reinterpret_cast<const int64_t*>(raw);
         bool local_ovf = false;
         if (!valid) {
           for (int64_t i = 0; i < len; i++) {
-            int64_t v = src[i];
+            int64_t v = bqs_ipc::load_unaligned<int64_t>(raw + i * sizeof(int64_t));
             if (v < -2147483647LL || v > 2147483647LL) {
               dst[i] = NA_INTEGER;
               local_ovf = true;
@@ -2030,7 +2053,7 @@ static void run_numeric_slice_task(NumericSliceTask& task) {
         } else {
           for (int64_t i = 0; i < len; i++) {
             if ((valid[i >> 3] >> (i & 7)) & 1) {
-              int64_t v = src[i];
+              int64_t v = bqs_ipc::load_unaligned<int64_t>(raw + i * sizeof(int64_t));
               if (v < -2147483647LL || v > 2147483647LL) {
                 dst[i] = NA_INTEGER;
                 local_ovf = true;
@@ -2047,26 +2070,28 @@ static void run_numeric_slice_task(NumericSliceTask& task) {
       }
       case DCOL_INT64_TO_INT64: {
         int64_t* dst = static_cast<int64_t*>(c.out_ptr) + dst_off;
-        const int64_t* src = reinterpret_cast<const int64_t*>(raw);
         const int64_t na_i64 = static_cast<int64_t>(1ULL << 63);
         if (!valid) {
-          std::memcpy(dst, src, static_cast<size_t>(len) * sizeof(int64_t));
+          std::memcpy(dst, raw, static_cast<size_t>(len) * sizeof(int64_t));
         } else {
           for (int64_t i = 0; i < len; i++) {
-            dst[i] = ((valid[i >> 3] >> (i & 7)) & 1) ? src[i] : na_i64;
+            dst[i] = ((valid[i >> 3] >> (i & 7)) & 1)
+                       ? bqs_ipc::load_unaligned<int64_t>(raw + i * sizeof(int64_t))
+                       : na_i64;
           }
         }
         break;
       }
       case DCOL_INT64_TO_DBL: {
         double* dst = static_cast<double*>(c.out_ptr) + dst_off;
-        const int64_t* src = reinterpret_cast<const int64_t*>(raw);
         if (!valid) {
-          for (int64_t i = 0; i < len; i++) dst[i] = static_cast<double>(src[i]);
+          for (int64_t i = 0; i < len; i++) {
+            dst[i] = static_cast<double>(bqs_ipc::load_unaligned<int64_t>(raw + i * sizeof(int64_t)));
+          }
         } else {
           for (int64_t i = 0; i < len; i++) {
             if ((valid[i >> 3] >> (i & 7)) & 1) {
-              dst[i] = static_cast<double>(src[i]);
+              dst[i] = static_cast<double>(bqs_ipc::load_unaligned<int64_t>(raw + i * sizeof(int64_t)));
             } else {
               std::memcpy(dst + i, &task.na_real_bits, sizeof(uint64_t));
             }
@@ -2076,12 +2101,13 @@ static void run_numeric_slice_task(NumericSliceTask& task) {
       }
       case DCOL_INT32: {
         int* dst = static_cast<int*>(c.out_ptr) + dst_off;
-        const int32_t* src = reinterpret_cast<const int32_t*>(raw);
         if (!valid) {
-          std::memcpy(dst, src, static_cast<size_t>(len) * sizeof(int32_t));
+          std::memcpy(dst, raw, static_cast<size_t>(len) * sizeof(int32_t));
         } else {
           for (int64_t i = 0; i < len; i++) {
-            dst[i] = ((valid[i >> 3] >> (i & 7)) & 1) ? src[i] : NA_INTEGER;
+            dst[i] = ((valid[i >> 3] >> (i & 7)) & 1)
+                       ? bqs_ipc::load_unaligned<int32_t>(raw + i * sizeof(int32_t))
+                       : NA_INTEGER;
           }
         }
         break;
@@ -2117,13 +2143,14 @@ static void run_numeric_slice_task(NumericSliceTask& task) {
       }
       case DCOL_DATE32: {
         double* dst = static_cast<double*>(c.out_ptr) + dst_off;
-        const int32_t* src = reinterpret_cast<const int32_t*>(raw);
         if (!valid) {
-          for (int64_t i = 0; i < len; i++) dst[i] = static_cast<double>(src[i]);
+          for (int64_t i = 0; i < len; i++) {
+            dst[i] = static_cast<double>(bqs_ipc::load_unaligned<int32_t>(raw + i * sizeof(int32_t)));
+          }
         } else {
           for (int64_t i = 0; i < len; i++) {
             if ((valid[i >> 3] >> (i & 7)) & 1) {
-              dst[i] = static_cast<double>(src[i]);
+              dst[i] = static_cast<double>(bqs_ipc::load_unaligned<int32_t>(raw + i * sizeof(int32_t)));
             } else {
               std::memcpy(dst + i, &task.na_real_bits, sizeof(uint64_t));
             }
@@ -2134,14 +2161,15 @@ static void run_numeric_slice_task(NumericSliceTask& task) {
       case DCOL_TIME64_US:
       case DCOL_TIMESTAMP_US: {
         double* dst = static_cast<double*>(c.out_ptr) + dst_off;
-        const int64_t* src = reinterpret_cast<const int64_t*>(raw);
         const double inv_us = 1e-6;
         if (!valid) {
-          for (int64_t i = 0; i < len; i++) dst[i] = static_cast<double>(src[i]) * inv_us;
+          for (int64_t i = 0; i < len; i++) {
+            dst[i] = static_cast<double>(bqs_ipc::load_unaligned<int64_t>(raw + i * sizeof(int64_t))) * inv_us;
+          }
         } else {
           for (int64_t i = 0; i < len; i++) {
             if ((valid[i >> 3] >> (i & 7)) & 1) {
-              dst[i] = static_cast<double>(src[i]) * inv_us;
+              dst[i] = static_cast<double>(bqs_ipc::load_unaligned<int64_t>(raw + i * sizeof(int64_t))) * inv_us;
             } else {
               std::memcpy(dst + i, &task.na_real_bits, sizeof(uint64_t));
             }
@@ -2251,11 +2279,11 @@ static void run_string_chunk_task(StringChunkTask& task) {
     if (valid) task.has_nulls = true;
 
     if (!is_large) {
-      const int32_t* offs = reinterpret_cast<const int32_t*>(batch.body_ptr + obuf.offset);
+      const uint8_t* op = batch.body_ptr + obuf.offset;
       if (!valid) {
         for (int64_t i = 0; i < len; i++) {
-          int32_t start = offs[i];
-          int32_t slen = offs[i + 1] - start;
+          int32_t start = bqs_ipc::load_unaligned<int32_t>(op + i * 4);
+          int32_t slen = bqs_ipc::load_unaligned<int32_t>(op + (i + 1) * 4) - start;
           codes[out_pos++] = intern_local(data + start, slen);
           if (!checked_cardinality && out_pos >= 2048) {
             checked_cardinality = true;
@@ -2270,8 +2298,8 @@ static void run_string_chunk_task(StringChunkTask& task) {
       } else {
         for (int64_t i = 0; i < len; i++) {
           if ((valid[i >> 3] >> (i & 7)) & 1) {
-            int32_t start = offs[i];
-            int32_t slen = offs[i + 1] - start;
+            int32_t start = bqs_ipc::load_unaligned<int32_t>(op + i * 4);
+            int32_t slen = bqs_ipc::load_unaligned<int32_t>(op + (i + 1) * 4) - start;
             codes[out_pos++] = intern_local(data + start, slen);
           } else {
             codes[out_pos++] = 0xFFFFFFFFu;
@@ -2288,11 +2316,11 @@ static void run_string_chunk_task(StringChunkTask& task) {
         }
       }
     } else {
-      const int64_t* offs = reinterpret_cast<const int64_t*>(batch.body_ptr + obuf.offset);
+      const uint8_t* op = batch.body_ptr + obuf.offset;
       for (int64_t i = 0; i < len; i++) {
         if (!valid || ((valid[i >> 3] >> (i & 7)) & 1)) {
-          int64_t start = offs[i];
-          int64_t slen64 = offs[i + 1] - start;
+          int64_t start = bqs_ipc::load_unaligned<int64_t>(op + i * 8);
+          int64_t slen64 = bqs_ipc::load_unaligned<int64_t>(op + (i + 1) * 8) - start;
           if (slen64 > 2147483647LL) {
             task.use_dict = false;
             std::vector<StrDictEntry>().swap(task.entries);
@@ -2631,17 +2659,34 @@ SEXP bqs_convert_decoded_streams(
     }
   }
 
-  // Validate per-column buffer capacities across all slices before launching C++ workers
+  // Validate per-column buffer capacities and monotonic offsets across all slices before launching C++ workers
   for (int64_t j = 0; j < n_cols; j++) {
     const DirectColSpec& sp = direct_specs[static_cast<size_t>(j)];
-    if (sp.kind == DCOL_FALLBACK) continue;
+    if (sp.kind == DCOL_FALLBACK) {
+      for (const auto& sl : slices) {
+        const bqs_ipc::DecodedBatch& batch = *sl.batch;
+        size_t npos = sp.node_idx;
+        size_t bpos = sp.buf_idx;
+        std::string val_err;
+        if (!bqs_ipc::validate_borrowed_field_buffers(
+              schema->children[j], batch, batch.length, true, &npos, &bpos, &val_err)) {
+          UNPROTECT(7);
+          Rcpp::stop(val_err.c_str());
+        }
+      }
+      continue;
+    }
     for (const auto& sl : slices) {
       const bqs_ipc::DecodedBatch& batch = *sl.batch;
       const int64_t len = sl.row_len;
       if (len <= 0) continue;
       const bqs_ipc::FieldNodeDesc& nd = batch.nodes[sp.node_idx];
+      if (nd.length < len || nd.null_count > nd.length) {
+        UNPROTECT(7);
+        Rcpp::stop("Invalid Arrow IPC RecordBatch: inconsistent FieldNode length/null_count.");
+      }
       const bqs_ipc::BufferDesc& vbuf = batch.buffers[sp.buf_idx];
-      if (nd.null_count > 0 && vbuf.length > 0 && vbuf.length < ((len + 7) >> 3)) {
+      if (nd.null_count > 0 && (vbuf.length < ((len + 7) >> 3) || !batch.body_ptr)) {
         UNPROTECT(7);
         Rcpp::stop("Invalid Arrow IPC RecordBatch: validity bitmap shorter than row count.");
       }
@@ -2653,17 +2698,40 @@ SEXP bqs_convert_decoded_streams(
           UNPROTECT(7);
           Rcpp::stop("Invalid Arrow IPC RecordBatch: string offset buffer shorter than row count.");
         }
-        int64_t first_off = 0, last_off = 0;
+        const uint8_t* op = batch.body_ptr + obuf.offset;
+        int64_t last_off = 0;
         if (sp.kind == DCOL_UTF8) {
-          const int32_t* offs = reinterpret_cast<const int32_t*>(batch.body_ptr + obuf.offset);
-          first_off = offs[0];
-          last_off = offs[len];
+          int32_t prev = bqs_ipc::load_unaligned<int32_t>(op);
+          if (prev < 0) {
+            UNPROTECT(7);
+            Rcpp::stop("Invalid Arrow IPC RecordBatch: negative string offset.");
+          }
+          for (int64_t i = 1; i <= len; i++) {
+            int32_t cur = bqs_ipc::load_unaligned<int32_t>(op + i * 4);
+            if (cur < prev) {
+              UNPROTECT(7);
+              Rcpp::stop("Invalid Arrow IPC RecordBatch: non-monotonic string offsets.");
+            }
+            prev = cur;
+          }
+          last_off = prev;
         } else {
-          const int64_t* offs = reinterpret_cast<const int64_t*>(batch.body_ptr + obuf.offset);
-          first_off = offs[0];
-          last_off = offs[len];
+          int64_t prev = bqs_ipc::load_unaligned<int64_t>(op);
+          if (prev < 0) {
+            UNPROTECT(7);
+            Rcpp::stop("Invalid Arrow IPC RecordBatch: negative string offset.");
+          }
+          for (int64_t i = 1; i <= len; i++) {
+            int64_t cur = bqs_ipc::load_unaligned<int64_t>(op + i * 8);
+            if (cur < prev) {
+              UNPROTECT(7);
+              Rcpp::stop("Invalid Arrow IPC RecordBatch: non-monotonic string offsets.");
+            }
+            prev = cur;
+          }
+          last_off = prev;
         }
-        if (first_off < 0 || last_off < first_off || last_off > dbuf.length) {
+        if (last_off > dbuf.length || (last_off > 0 && !batch.body_ptr)) {
           UNPROTECT(7);
           Rcpp::stop("Invalid Arrow IPC RecordBatch: string offsets out of data buffer bounds.");
         }
@@ -2864,26 +2932,26 @@ SEXP bqs_convert_decoded_streams(
                                ? reinterpret_cast<const char*>(batch.body_ptr + dbuf.offset)
                                : "";
           if (!is_large) {
-            const int32_t* offs = reinterpret_cast<const int32_t*>(batch.body_ptr + obuf.offset);
+            const uint8_t* op = batch.body_ptr + obuf.offset;
             for (int64_t i = 0; i < len; i++) {
               if (valid && !((valid[i >> 3] >> (i & 7)) & 1)) {
                 SET_STRING_ELT(str_vec, dst_off + i, NA_STRING);
               } else {
-                int32_t st = offs[i];
-                int32_t slen = offs[i + 1] - st;
+                int32_t st = bqs_ipc::load_unaligned<int32_t>(op + i * 4);
+                int32_t slen = bqs_ipc::load_unaligned<int32_t>(op + (i + 1) * 4) - st;
                 if (slen > 0) {
                   SET_STRING_ELT(str_vec, dst_off + i, Rf_mkCharLenCE(data + st, slen, CE_UTF8));
                 }
               }
             }
           } else {
-            const int64_t* offs = reinterpret_cast<const int64_t*>(batch.body_ptr + obuf.offset);
+            const uint8_t* op = batch.body_ptr + obuf.offset;
             for (int64_t i = 0; i < len; i++) {
               if (valid && !((valid[i >> 3] >> (i & 7)) & 1)) {
                 SET_STRING_ELT(str_vec, dst_off + i, NA_STRING);
               } else {
-                int64_t st = offs[i];
-                int64_t slen = offs[i + 1] - st;
+                int64_t st = bqs_ipc::load_unaligned<int64_t>(op + i * 8);
+                int64_t slen = bqs_ipc::load_unaligned<int64_t>(op + (i + 1) * 8) - st;
                 if (slen > 0) {
                   SET_STRING_ELT(str_vec, dst_off + i, Rf_mkCharLenCE(data + st, static_cast<int>(slen), CE_UTF8));
                 }
@@ -2984,4 +3052,83 @@ SEXP bqs_convert_decoded_streams(
   UNPROTECT(7); // cls_int64, cls_date, cls_posix, cls_hms, cls_wk, str_utc, str_secs
   return out_cols;
 }
+
+// Decode an in-memory Arrow IPC stream RawVector directly through the in-flight
+// RecordBatch decoder + parallel C++ Arrow-to-R converter (offline-testable).
+// [[Rcpp::export(rng=false)]]
+SEXP bqs_decode_arrow_ipc_raw(Rcpp::RawVector ipc_bytes,
+                              double n_max,
+                              std::string bigint,
+                              bool as_data_frame,
+                              int n_threads,
+                              Rcpp::Function read_nanoarrow_fn,
+                              Rcpp::Function int64_ptype_fn,
+                              Rcpp::Function check_pkg_fn,
+                              Rcpp::Function na_convert_stream,
+                              Rcpp::Function na_convert_stream_quiet,
+                              Rcpp::Function as_bigint) {
+  std::string schema_bytes;
+  std::vector<std::string> raw_batches;
+  int64_t total_rows = 0;
+  std::string split_err;
+  if (!bqs_ipc::split_arrow_ipc_stream(
+        RAW(ipc_bytes),
+        static_cast<size_t>(ipc_bytes.size()),
+        &schema_bytes,
+        &raw_batches,
+        nullptr,
+        &total_rows,
+        &split_err)) {
+    Rcpp::stop(split_err.c_str());
+  }
+  if (schema_bytes.empty()) {
+    Rcpp::stop("Invalid Arrow IPC stream: missing Schema message.");
+  }
+
+  int64_t n = (std::isfinite(n_max) && n_max >= 0.0) ? static_cast<int64_t>(n_max) : -1;
+  std::vector<std::vector<bqs_ipc::DecodedBatch>> stream_batches(1);
+  if (n != 0 && !raw_batches.empty()) {
+    bqs_ipc::ZstdDecompressContext zctx;
+    int64_t acc_rows = 0;
+    for (size_t i = 0; i < raw_batches.size(); i++) {
+      if (n > 0 && acc_rows >= n) break;
+      bqs_ipc::DecodedBatch dec;
+      std::string dec_err;
+      if (!bqs_ipc::decode_ipc_record_batch(std::move(raw_batches[i]), &dec, &zctx, &dec_err)) {
+        Rcpp::stop(dec_err.c_str());
+      }
+      acc_rows += dec.length;
+      stream_batches[0].push_back(std::move(dec));
+    }
+  }
+
+  Rcpp::RawVector schema_raw(schema_bytes.size());
+  std::memcpy(RAW(schema_raw), schema_bytes.data(), schema_bytes.size());
+  SEXP schema_reader_xptr = PROTECT(read_nanoarrow_fn(schema_raw));
+  struct ArrowArrayStream* sch_stream = nanoarrow_array_stream_from_xptr(schema_reader_xptr);
+
+  SEXP schema_xptr = PROTECT(nanoarrow_schema_owning_xptr());
+  struct ArrowSchema* out_schema = nanoarrow_output_schema_from_xptr(schema_xptr);
+  if (sch_stream->get_schema(sch_stream, out_schema) != 0) {
+    const char* err = sch_stream->get_last_error ? sch_stream->get_last_error(sch_stream) : "Failed to parse ArrowSchema";
+    UNPROTECT(2);
+    Rcpp::stop(err ? err : "Failed to parse ArrowSchema");
+  }
+
+  SEXP res = PROTECT(bqs_convert_decoded_streams(
+    schema_xptr,
+    &stream_batches,
+    n,
+    bigint,
+    as_data_frame,
+    n_threads,
+    int64_ptype_fn,
+    check_pkg_fn,
+    na_convert_stream,
+    na_convert_stream_quiet,
+    as_bigint));
+  UNPROTECT(3);
+  return res;
+}
+
 
