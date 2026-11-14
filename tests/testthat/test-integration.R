@@ -384,4 +384,173 @@ test_that("bqs_table_upload supports NUMERIC, BIGNUMERIC, DATETIME, and arrow st
   expect_equal(out_arrow, out_num)
 })
 
+test_that("bqs_table_upload supports multi-stream parallel ZSTD uploads across AUTO, PENDING, and DEFAULT", {
+  auth_fn()
+
+  ds <- bigrquery::bq_test_dataset()
+  n <- 20000L
+  df_multi <- tibble::tibble(
+    id = seq_len(n),
+    val = seq_len(n) * 1.25,
+    flag = seq_len(n) %% 2L == 0L,
+    grp = rep(c("alpha", "beta", "gamma", "delta"), length.out = n)
+  )
+
+  # Multi-stream PENDING with ZSTD/auto compression
+  tb_pend <- bigrquery::bq_table(ds, "test_upload_multi_pending")
+  bqs_table_upload(
+    tb_pend,
+    df_multi,
+    stream_type = "PENDING",
+    max_stream_count = 4L,
+    row_batch_size = 2500L,
+    compression = "auto",
+    quiet = TRUE
+  )
+  out_pend <- bqs_table_download(tb_pend, tb_pend$project, quiet = TRUE)
+  out_pend <- out_pend[order(out_pend$id), ]
+  expect_equal(nrow(out_pend), n)
+  expect_identical(out_pend$id, df_multi$id)
+  expect_equal(out_pend$val, df_multi$val)
+  expect_identical(out_pend$flag, df_multi$flag)
+  expect_identical(out_pend$grp, df_multi$grp)
+
+  # Multi-stream AUTO (uses DEFAULT on brand-new table) + uncompressed WRITE_APPEND (uses PENDING)
+  tb_auto <- bigrquery::bq_table(ds, "test_upload_multi_auto")
+  bqs_table_upload(
+    tb_auto,
+    df_multi[1:10000, ],
+    stream_type = "AUTO",
+    max_stream_count = 3L,
+    row_batch_size = 2500L,
+    quiet = TRUE
+  )
+  bqs_table_upload(
+    tb_auto,
+    df_multi[10001:20000, ],
+    write_disposition = "WRITE_APPEND",
+    stream_type = "AUTO",
+    max_stream_count = 3L,
+    row_batch_size = 2500L,
+    compression = "none",
+    quiet = TRUE
+  )
+  out_auto <- bqs_table_download(tb_auto, tb_auto$project, quiet = TRUE)
+  out_auto <- out_auto[order(out_auto$id), ]
+  expect_equal(nrow(out_auto), n)
+  expect_identical(out_auto$id, df_multi$id)
+})
+
+test_that("fused direct download handles low/high cardinality strings, NaN vs NULL, and n_max", {
+  auth_fn()
+
+  sql <- "
+    SELECT
+      id,
+      IF(MOD(id, 5) = 0, NULL, CONCAT('cat_', CAST(MOD(id, 4) AS STRING))) AS low_card_str,
+      IF(MOD(id, 7) = 0, NULL, GENERATE_UUID()) AS high_card_str,
+      CASE MOD(id, 4)
+        WHEN 0 THEN NULL
+        WHEN 1 THEN IEEE_DIVIDE(0.0, 0.0)
+        ELSE CAST(id AS FLOAT64) * 0.5
+      END AS dbl_val,
+      MOD(id, 3) = 0 AS flag_val
+    FROM UNNEST(GENERATE_ARRAY(1, 5000)) AS id
+  "
+  tb <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql, quiet = TRUE)
+
+  df_none <- bqs_table_download(tb, bigrquery::bq_test_project(), compression = "none", quiet = TRUE)
+  df_none <- df_none[order(df_none$id), ]
+
+  expect_equal(nrow(df_none), 5000L)
+  expect_identical(df_none$id, 1:5000)
+  expect_identical(is.na(df_none$dbl_val), df_none$id %% 4L %in% c(0L, 1L))
+  expect_identical(is.nan(df_none$dbl_val), df_none$id %% 4L == 1L)
+
+  if (bqs_has_zstd() || isTRUE(nanoarrow::nanoarrow_with_zstd())) {
+    df_zstd <- bqs_table_download(tb, bigrquery::bq_test_project(), compression = "zstd", quiet = TRUE)
+    df_zstd <- df_zstd[order(df_zstd$id), ]
+    expect_equal(nrow(df_zstd), 5000L)
+    expect_identical(df_zstd$id, df_none$id)
+    expect_identical(df_zstd$low_card_str, df_none$low_card_str)
+    expect_identical(df_zstd$high_card_str, df_none$high_card_str)
+    expect_identical(is.na(df_zstd$dbl_val), is.na(df_none$dbl_val))
+    expect_identical(is.nan(df_zstd$dbl_val), is.nan(df_none$dbl_val))
+  }
+
+  df_lim <- bqs_table_download(tb, bigrquery::bq_test_project(), n_max = 123L, quiet = TRUE)
+  expect_equal(nrow(df_lim), 123L)
+})
+
+test_that("edge cases: NaN upload, NA factor level, INT64_MAX overflow, n_max on NULL BYTES, and wide uncompressed rows", {
+  auth_fn()
+
+  ds <- bigrquery::bq_test_dataset()
+
+  # 1. NaN vs NA_real_ and explicit NA factor level round-trip
+  tb_edge <- bigrquery::bq_table(ds, "test_edge_nan_fct")
+  df_edge <- tibble::tibble(
+    idx = 1:4,
+    dbl = c(NaN, NA_real_, 1.5, -2.5),
+    fct = factor(c("x", NA, "y", NA), exclude = NULL)
+  )
+  bqs_table_upload(tb_edge, df_edge, stream_type = "PENDING", quiet = TRUE)
+  out_edge <- bqs_table_download(tb_edge, tb_edge$project, quiet = TRUE)
+  out_edge <- out_edge[order(out_edge$idx), ]
+  expect_identical(is.nan(out_edge$dbl), c(TRUE, FALSE, FALSE, FALSE))
+  expect_identical(is.na(out_edge$dbl), c(TRUE, TRUE, FALSE, FALSE))
+  expect_identical(out_edge$fct, c("x", NA_character_, "y", NA_character_))
+
+  # 2. INT64_MAX / INT64_MIN overflow under bigint = "integer" and n_max = 1 on NULL fallback BYTES
+  sql_ovf <- "
+    SELECT
+      id,
+      CASE id
+        WHEN 1 THEN 9223372036854775807
+        WHEN 2 THEN -9223372036854775808
+        WHEN 3 THEN 42
+        ELSE NULL
+      END AS big_i64,
+      CAST(NULL AS BYTES) AS null_bytes
+    FROM UNNEST(GENERATE_ARRAY(1, 1000)) AS id
+  "
+  tb_ovf <- bigrquery::bq_project_query(bigrquery::bq_test_project(), sql_ovf, quiet = TRUE)
+  expect_warning(
+    df_ovf <- bqs_table_download(tb_ovf, bigrquery::bq_test_project(), bigint = "integer", quiet = TRUE),
+    "NAs produced by integer overflow"
+  )
+  df_ovf <- df_ovf[order(df_ovf$id), ]
+  expect_identical(df_ovf$big_i64[1:4], c(NA_integer_, NA_integer_, 42L, NA_integer_))
+
+  df_nmax0 <- bqs_table_download(tb_ovf, bigrquery::bq_test_project(), bigint = "integer64", n_max = 0L, quiet = TRUE)
+  expect_equal(nrow(df_nmax0), 0L)
+  expect_s3_class(df_nmax0$big_i64, "integer64")
+  expect_true(inherits(df_nmax0$null_bytes, "blob"))
+
+  arrow_nmax0 <- bqs_table_download(tb_ovf, bigrquery::bq_test_project(), n_max = 0L, type = "arrow", quiet = TRUE)
+  expect_null(arrow_nmax0$get_next())
+
+  df_nmax1 <- bqs_table_download(tb_ovf, bigrquery::bq_test_project(), bigint = "integer64", n_max = 1L, quiet = TRUE)
+  expect_equal(nrow(df_nmax1), 1L)
+  expect_true(inherits(df_nmax1$null_bytes, "blob"))
+  expect_null(df_nmax1$null_bytes[[1]])
+
+  # 3. Wide rows (~50 KiB strings x 550 rows = ~27.5 MiB uncompressed) with compression = "none"
+  tb_wide <- bigrquery::bq_table(ds, "test_wide_uncompressed")
+  big_str <- strrep("A", 51200L)
+  df_wide <- tibble::tibble(
+    id = seq_len(550L),
+    payload = rep(big_str, 550L)
+  )
+  bqs_table_upload(
+    tb_wide,
+    df_wide,
+    stream_type = "PENDING",
+    compression = "none",
+    quiet = TRUE
+  )
+  out_wide <- bqs_table_download(tb_wide, tb_wide$project, selected_fields = "id", quiet = TRUE)
+  expect_equal(nrow(out_wide), 550L)
+})
+
 

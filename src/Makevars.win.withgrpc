@@ -2,6 +2,11 @@ CXX_STD = CXX17
 PKG_CPPFLAGS=-I.
 
 PKG_LIBS=$(shell pkg-config --libs grpc++ protobuf)
+ZSTD_LIBS=$(shell pkg-config --libs libzstd 2>/dev/null)
+ifneq ($(strip $(ZSTD_LIBS)),)
+PKG_CPPFLAGS += -DHAVE_BQS_ZSTD $(shell pkg-config --cflags libzstd 2>/dev/null)
+PKG_LIBS += $(ZSTD_LIBS)
+endif
 
 PROTO_FILES=google/api/field_behavior.proto google/api/http.proto google/api/launch_stage.proto \
 	google/api/resource.proto google/cloud/bigquery/storage/v1/arrow.proto \

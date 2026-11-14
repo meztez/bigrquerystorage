@@ -242,3 +242,283 @@ test_that("nested INT64 in STRUCT, REPEATED RECORD, and plain data.frames serial
   expect_identical(out_deep$rep_s[[2]]$rep_b, df_deep$rep_s[[2]]$rep_b)
 })
 
+test_that("fast C++ column builder and ZSTD Arrow IPC encoder preserve values across non-aligned batch slices", {
+  n <- 205L
+  df <- tibble::tibble(
+    i = ifelse(seq_len(n) %% 7L == 0L, NA_integer_, seq_len(n)),
+    i64 = bit64::as.integer64(ifelse(seq_len(n) %% 11L == 0L, NA_character_, as.character(9007199254740990 + seq_len(n)))),
+    d = ifelse(seq_len(n) %% 5L == 0L, NA_real_, seq_len(n) * 0.25),
+    b = ifelse(seq_len(n) %% 9L == 0L, NA, seq_len(n) %% 2L == 0L),
+    s = ifelse(seq_len(n) %% 6L == 0L, NA_character_, paste0("val_", seq_len(n))),
+    f = factor(ifelse(seq_len(n) %% 8L == 0L, NA_character_, paste0("lvl_", seq_len(n) %% 4L))),
+    dt = as.Date("2024-01-01") + ifelse(seq_len(n) %% 10L == 0L, NA_integer_, seq_len(n)),
+    ts = as.POSIXct("2024-01-01 00:00:00", tz = "UTC") + ifelse(seq_len(n) %% 13L == 0L, NA_real_, seq_len(n))
+  )
+  fields <- bqs_infer_bq_fields(df)
+
+  # Non-byte-aligned row_batch_size (37 rows) exercises bit-shifted validity & bool slices
+  ipc_raw <- bqs_serialize_to_ipc(df, fields, row_batch_size = 37L, use_zstd = FALSE)
+  stream_raw <- read_nanoarrow(ipc_raw)
+  sch_raw <- stream_raw$get_schema()
+  out_raw <- parse_postprocess_schema(
+    bqs_convert_stream(stream_raw, int64_ptype(sch_raw), "integer64", nanoarrow::convert_array_stream, convert_stream_no_warnings),
+    sch_raw,
+    "integer64"
+  )
+  expect_identical(out_raw$i64, df$i64)
+  expect_equal(out_raw$d, df$d)
+  expect_identical(out_raw$b, df$b)
+  expect_identical(out_raw$s, df$s)
+  expect_identical(out_raw$f, as.character(df$f))
+  expect_identical(out_raw$dt, df$dt)
+  expect_equal(out_raw$ts, df$ts)
+
+  if (bqs_has_zstd() && isTRUE(nanoarrow::nanoarrow_with_zstd())) {
+    ipc_zstd <- bqs_serialize_to_ipc(df, fields, row_batch_size = 37L, use_zstd = TRUE)
+    expect_lt(length(ipc_zstd), length(ipc_raw))
+    stream_z <- read_nanoarrow(ipc_zstd)
+    sch_z <- stream_z$get_schema()
+    out_z <- parse_postprocess_schema(
+      bqs_convert_stream(stream_z, int64_ptype(sch_z), "integer64", nanoarrow::convert_array_stream, convert_stream_no_warnings),
+      sch_z,
+      "integer64"
+    )
+    expect_identical(out_z, out_raw)
+  }
+})
+
+test_that("fast path preserves NaN vs NA_real_, explicit NA factor levels, and null Arrow arrays", {
+  df <- tibble::tibble(
+    dbl = c(NaN, NA_real_, 1.5, -Inf, Inf),
+    fct_na = factor(c("a", NA, "b", NA, "c"), exclude = NULL)
+  )
+  fields <- bqs_infer_bq_fields(df)
+  ipc <- bqs_serialize_to_ipc(df, fields, row_batch_size = 2L, use_zstd = FALSE)
+  out <- convert_array_stream(read_nanoarrow(ipc))
+
+  expect_identical(is.nan(out$dbl), c(TRUE, FALSE, FALSE, FALSE, FALSE))
+  expect_identical(is.na(out$dbl), c(TRUE, TRUE, FALSE, FALSE, FALSE))
+  expect_identical(out$fct_na, c("a", NA_character_, "b", NA_character_, "c"))
+
+  # Null Arrow type ('n') has 0 buffers; ensure fast IPC encoder handles it safely
+  null_sch <- na_struct(list(null_col = na_na(), x = na_int32()))
+  null_child <- nanoarrow_array_modify(
+    nanoarrow_array_init(na_na()),
+    list(length = 4L, null_count = 4L, offset = 0L, buffers = list())
+  )
+  root_arr <- nanoarrow_array_modify(
+    nanoarrow_array_init(null_sch),
+    list(
+      length = 4L,
+      null_count = 0L,
+      offset = 0L,
+      buffers = list(NULL),
+      children = list(null_child, as_nanoarrow_array(1:4))
+    )
+  )
+  nanoarrow_array_set_schema(root_arr, null_sch)
+  expect_true(bqs_can_fast_encode(null_sch))
+  null_ipc <- bqs_encode_arrow_ipc_raw(
+    null_sch, root_arr, bqs_schema_to_ipc(null_sch), row_batch_size = 2L, use_zstd = FALSE
+  )
+  expect_true(length(null_ipc) > 0L)
+  decoded_null <- convert_array_stream(read_nanoarrow(null_ipc))
+  expect_identical(decoded_null$x, 1:4)
+
+  # Malformed 12-byte IPC message with 4-byte metadata and out-of-bounds root_off (1024)
+  bad_ipc <- as.raw(c(
+    0xff, 0xff, 0xff, 0xff,
+    0x04, 0x00, 0x00, 0x00,
+    0x00, 0x04, 0x00, 0x00
+  ))
+  expect_error(
+    bqs_ipc_write(NULL, "p", "d", "t", bad_ipc, quiet = TRUE),
+    "Invalid Arrow IPC"
+  )
+})
+
+test_that("direct C++ IPC decoder handles high-cardinality strings, ZSTD, n_max = 0, and legacy 4-byte framing", {
+  n <- 2500L
+  df <- tibble::tibble(
+    id64 = bit64::as.integer64(ifelse(seq_len(n) %% 13L == 0L, NA_character_, as.character(9007199254740990 + seq_len(n)))),
+    dbl = ifelse(seq_len(n) %% 11L == 0L, NA_real_, ifelse(seq_len(n) %% 17L == 0L, NaN, seq_len(n) * 0.5)),
+    lgl = ifelse(seq_len(n) %% 9L == 0L, NA, seq_len(n) %% 2L == 0L),
+    low_str = ifelse(seq_len(n) %% 7L == 0L, NA_character_, paste0("cat_", seq_len(n) %% 5L)),
+    high_str = ifelse(seq_len(n) %% 19L == 0L, NA_character_, sprintf("uuid_%06d_%06d", seq_len(n), seq_len(n) * 37L)),
+    dt = as.Date("2024-01-01") + ifelse(seq_len(n) %% 15L == 0L, NA_integer_, seq_len(n) %% 400L),
+    ts = as.POSIXct("2024-01-01 00:00:00", tz = "UTC") + ifelse(seq_len(n) %% 14L == 0L, NA_real_, seq_len(n)),
+    raw_b = blob::as_blob(lapply(seq_len(n), function(k) if (k %% 8L == 0L) NULL else as.raw(c(k %% 255L, (k * 3L) %% 255L))))
+  )
+  fields <- bqs_infer_bq_fields(df)
+
+  ipc_uncomp <- bqs_serialize_to_ipc(df, fields, row_batch_size = 600L, use_zstd = FALSE)
+  out_tb <- bqs_decode_ipc_direct(ipc_uncomp, bigint = "integer64", type = "tibble", threads = 2L)
+  expect_s3_class(out_tb, "tbl_df")
+  expect_identical(out_tb$id64, df$id64)
+  expect_identical(is.na(out_tb$dbl), is.na(df$dbl))
+  expect_identical(is.nan(out_tb$dbl), is.nan(df$dbl))
+  expect_identical(out_tb$lgl, df$lgl)
+  expect_identical(out_tb$low_str, df$low_str)
+  expect_identical(out_tb$high_str, df$high_str)
+  expect_identical(out_tb$dt, df$dt)
+  expect_equal(out_tb$ts, df$ts)
+  expect_identical(out_tb$raw_b, df$raw_b)
+
+  # n_max = 0 returns a 0-row tibble with exact column classes without decoding batches
+  out_zero <- bqs_decode_ipc_direct(ipc_uncomp, n_max = 0L, bigint = "integer64", type = "tibble")
+  expect_equal(nrow(out_zero), 0L)
+  expect_identical(names(out_zero), names(df))
+  expect_s3_class(out_zero$id64, "integer64")
+  expect_s3_class(out_zero$dt, "Date")
+  expect_s3_class(out_zero$raw_b, "blob")
+
+  # Partial n_max slice across batches
+  out_sub <- bqs_decode_ipc_direct(ipc_uncomp, n_max = 615L, bigint = "integer64", type = "data.frame")
+  expect_true(is.data.frame(out_sub) && !inherits(out_sub, "tbl_df"))
+  expect_equal(nrow(out_sub), 615L)
+  expect_identical(out_sub$high_str, df$high_str[1:615])
+
+  if (bqs_has_zstd()) {
+    ipc_zstd <- bqs_serialize_to_ipc(df, fields, row_batch_size = 600L, use_zstd = TRUE)
+    out_zstd <- bqs_decode_ipc_direct(ipc_zstd, bigint = "integer64", type = "tibble", threads = 2L)
+    expect_identical(out_zstd$id64, df$id64)
+    expect_identical(out_zstd$high_str, df$high_str)
+    expect_identical(out_zstd$raw_b, df$raw_b)
+  }
+
+  # Legacy 4-byte IPC framing (strips 0xFFFFFFFF continuation prefixes -> 4-mod-8 unaligned body)
+  df_small <- tibble::tibble(
+    i64 = bit64::as.integer64(c("9223372036854775295", "-42", NA)),
+    dbl = c(1.25, NaN, NA_real_),
+    txt = c("alpha", "beta", NA_character_)
+  )
+  f_small <- bqs_infer_bq_fields(df_small)
+  ipc_modern <- bqs_serialize_to_ipc(df_small, f_small, row_batch_size = 10L, use_zstd = FALSE)
+
+  to_legacy_ipc <- function(raw_ipc) {
+    pos <- 1L
+    n_bytes <- length(raw_ipc)
+    chunks <- list()
+    while (pos + 7L <= n_bytes) {
+      mlen <- readBin(raw_ipc[(pos + 4L):(pos + 7L)], "integer", n = 1L, size = 4L, endian = "little")
+      if (mlen == 0L) {
+        chunks[[length(chunks) + 1L]] <- as.raw(rep(0L, 4L))
+        break
+      }
+      fb <- raw_ipc[(pos + 8L):(pos + 7L + mlen)]
+      root_off <- readBin(fb[1:4], "integer", n = 1L, size = 4L, endian = "little")
+      soff <- readBin(fb[(root_off + 1L):(root_off + 4L)], "integer", n = 1L, size = 4L, endian = "little")
+      vt_off <- root_off - soff
+      bl_foff <- readBin(fb[(vt_off + 11L):(vt_off + 12L)], "integer", n = 1L, size = 2L, signed = FALSE, endian = "little")
+      body_len <- if (bl_foff > 0L) {
+        readBin(fb[(root_off + bl_foff + 1L):(root_off + bl_foff + 8L)], "integer", n = 1L, size = 4L, endian = "little")
+      } else {
+        0L
+      }
+      body <- if (body_len > 0L) raw_ipc[(pos + 8L + mlen):(pos + 7L + mlen + body_len)] else raw(0)
+      chunks[[length(chunks) + 1L]] <- c(
+        writeBin(as.integer(mlen), raw(), size = 4L, endian = "little"),
+        fb,
+        body
+      )
+      pos <- pos + 8L + mlen + body_len
+    }
+    unlist(chunks, use.names = FALSE)
+  }
+
+  ipc_legacy <- to_legacy_ipc(ipc_modern)
+  out_legacy <- bqs_decode_ipc_direct(ipc_legacy, bigint = "integer64")
+  expect_identical(out_legacy$i64, df_small$i64)
+  expect_identical(is.nan(out_legacy$dbl), is.nan(df_small$dbl))
+  expect_identical(is.na(out_legacy$dbl), is.na(df_small$dbl))
+  expect_identical(out_legacy$txt, df_small$txt)
+})
+
+test_that("IPC validation rejects negative metadata length, non-monotonic offsets, and missing validity bitmaps", {
+  # 1. Negative metadata length after 0xFFFFFFFF continuation marker (must error, not treat as EOS)
+  neg_meta_ipc <- as.raw(c(0xff, 0xff, 0xff, 0xff, 0xfc, 0xff, 0xff, 0xff))
+  expect_error(bqs_ipc_write(NULL, "p", "d", "t", neg_meta_ipc, quiet = TRUE), "Invalid Arrow IPC")
+  expect_error(bqs_decode_ipc_direct(neg_meta_ipc), "Invalid Arrow IPC")
+
+  # 2. Trailing truncated prefix (< 4 bytes)
+  df1 <- tibble::tibble(s = c("ab", "cd", "ef"))
+  f1 <- bqs_infer_bq_fields(df1)
+  valid_ipc <- bqs_serialize_to_ipc(df1, f1, row_batch_size = 10L, use_zstd = FALSE)
+  trunc_ipc <- c(valid_ipc[seq_len(length(valid_ipc) - 8L)], as.raw(c(0x01, 0x02)))
+  expect_error(bqs_decode_ipc_direct(trunc_ipc), "Invalid Arrow IPC")
+
+  # Helper to locate the start of the first RecordBatch body in valid_ipc
+  first_rb_body_pos <- function(raw_ipc) {
+    sch_mlen <- readBin(raw_ipc[5:8], "integer", n = 1L, size = 4L, endian = "little")
+    rb_pos <- 8L + sch_mlen + 1L
+    rb_mlen <- readBin(raw_ipc[(rb_pos + 4L):(rb_pos + 7L)], "integer", n = 1L, size = 4L, endian = "little")
+    rb_pos + 8L + rb_mlen
+  }
+
+  # 3. Non-monotonic intermediate string offsets: [0, 5, 4, 6] with dbuf.length = 6
+  bad_str_ipc <- valid_ipc
+  bpos <- first_rb_body_pos(bad_str_ipc)
+  bad_str_ipc[(bpos + 4L):(bpos + 7L)] <- writeBin(5L, raw(), size = 4L, endian = "little")
+  expect_error(bqs_decode_ipc_direct(bad_str_ipc), "non-monotonic string offsets")
+
+  # 4. Non-monotonic intermediate BYTES (fallback column) offsets
+  df_bytes <- tibble::tibble(b = blob::as_blob(list(as.raw(1:2), as.raw(3:4), as.raw(5:6))))
+  f_bytes <- bqs_infer_bq_fields(df_bytes)
+  bytes_ipc <- bqs_serialize_to_ipc(df_bytes, f_bytes, row_batch_size = 10L, use_zstd = FALSE)
+  bpos_b <- first_rb_body_pos(bytes_ipc)
+  bytes_ipc[(bpos_b + 4L):(bpos_b + 7L)] <- writeBin(5L, raw(), size = 4L, endian = "little")
+  expect_error(bqs_decode_ipc_direct(bytes_ipc), "non-monotonic")
+
+  # 5. Claimed null_count > 0 when validity bitmap buffer has length 0
+  df_int <- tibble::tibble(x = c(10L, 20L, 30L))
+  int_ipc <- bqs_serialize_to_ipc(df_int, bqs_infer_bq_fields(df_int), row_batch_size = 10L, use_zstd = FALSE)
+  sch_mlen <- readBin(int_ipc[5:8], "integer", n = 1L, size = 4L, endian = "little")
+  rb_fb_pos <- 8L + sch_mlen + 8L + 1L
+  # In RecordBatchEncoder: 2 buffers -> nodes_pos = 0x6C + 2*16 = 0x8C; node[0].null_count at nodes_pos + 4 + 8 = 0x98
+  nc_pos <- rb_fb_pos + 0x98L
+  int_ipc[nc_pos:(nc_pos + 7L)] <- writeBin(c(1L, 0L), raw(), size = 4L, endian = "little")
+  expect_error(bqs_decode_ipc_direct(int_ipc), "validity bitmap shorter than row count")
+})
+
+test_that("upload serialization handles wide interned strings, non-finite Date/POSIXct, and dictionary Arrow streams", {
+  # 1. Interned repeated 50 KiB strings (~58 KB R object.size, ~28 MB uncompressed Arrow buffer)
+  big_str <- strrep("X", 51200L)
+  df_wide <- tibble::tibble(id = seq_len(550L), payload = rep(big_str, 550L))
+  f_wide <- bqs_infer_bq_fields(df_wide)
+  ipc_wide <- bqs_serialize_to_ipc(df_wide, f_wide, row_batch_size = 100000L, use_zstd = FALSE)
+  reader_w <- read_nanoarrow(ipc_wide)
+  batch_lengths <- integer()
+  repeat {
+    b <- reader_w$get_next()
+    if (is.null(b)) break
+    batch_lengths <- c(batch_lengths, b$length)
+  }
+  expect_gt(length(batch_lengths), 2L)
+  expect_equal(sum(batch_lengths), 550L)
+  expect_lte(max(batch_lengths) * 51200L, 10L * 1024L * 1024L)
+
+  # 2. Non-finite Date and POSIXct values become SQL NULL instead of invoking float-cast UB
+  df_nf <- tibble::tibble(
+    d = structure(c(19723, Inf, -Inf, NA_real_), class = "Date"),
+    ts = structure(c(1704067200, Inf, -Inf, NA_real_), class = c("POSIXct", "POSIXt"), tzone = "UTC")
+  )
+  ipc_nf <- bqs_serialize_to_ipc(df_nf, bqs_infer_bq_fields(df_nf), row_batch_size = 10L, use_zstd = FALSE)
+  out_nf <- bqs_decode_ipc_direct(ipc_nf)
+  expect_identical(is.na(out_nf$d), c(FALSE, TRUE, TRUE, TRUE))
+  expect_identical(is.na(out_nf$ts), c(FALSE, TRUE, TRUE, TRUE))
+  expect_equal(out_nf$d[1], as.Date("2024-01-01"))
+
+  # 3. Dictionary-encoded Arrow stream (e.g. factor via nanoarrow::as_nanoarrow_array)
+  arr_dict <- nanoarrow::as_nanoarrow_array(data.frame(
+    f = factor(c("apple", NA, "banana", "apple")),
+    i64 = bit64::as.integer64(c("9223372036854775295", "2", NA, "-5"))
+  ))
+  f_dict <- bqs_infer_bq_fields(arr_dict)
+  expect_identical(f_dict[[1]]$type, "STRING")
+  expect_identical(f_dict[[2]]$type, "INT64")
+  ipc_dict <- bqs_serialize_to_ipc(arr_dict, f_dict, row_batch_size = 2L, use_zstd = FALSE)
+  out_dict <- bqs_decode_ipc_direct(ipc_dict, bigint = "integer64")
+  expect_identical(out_dict$f, c("apple", NA_character_, "banana", "apple"))
+  expect_identical(out_dict$i64, bit64::as.integer64(c("9223372036854775295", "2", NA, "-5")))
+})
+

@@ -98,10 +98,12 @@ bqs_table_download <- function(
     parent <- bqs_table_name[1]
   }
 
+  assertthat::assert_that(is.numeric(n_max), length(n_max) == 1, !is.na(n_max))
   if (n_max < 0 || n_max == Inf) {
     n_max <- -1L
     trim_to_n <- FALSE
   } else {
+    n_max <- floor(n_max)
     trim_to_n <- TRUE
   }
 
@@ -114,16 +116,81 @@ bqs_table_download <- function(
   }
 
   compression_codec <- switch(compression,
-    auto = if (isTRUE(nanoarrow::nanoarrow_with_zstd())) 2L else if (isTRUE(nanoarrow::nanoarrow_with_lz4())) 1L else 0L,
-    zstd = 2L,
-    lz4 = 1L,
+    auto = if (type != "arrow" && bqs_has_zstd()) {
+      2L
+    } else if (isTRUE(nanoarrow::nanoarrow_with_zstd())) {
+      2L
+    } else if (isTRUE(nanoarrow::nanoarrow_with_lz4())) {
+      1L
+    } else {
+      0L
+    },
+    zstd = {
+      can_zstd <- if (type == "arrow") {
+        isTRUE(nanoarrow::nanoarrow_with_zstd())
+      } else {
+        bqs_has_zstd() || isTRUE(nanoarrow::nanoarrow_with_zstd())
+      }
+      if (!can_zstd) {
+        stop("ZSTD decompression is not available in this build; use compression = 'none'.", call. = FALSE)
+      }
+      2L
+    },
+    lz4 = {
+      if (!isTRUE(nanoarrow::nanoarrow_with_lz4())) {
+        stop("LZ4 decompression is not available in nanoarrow; use compression = 'none'.", call. = FALSE)
+      }
+      1L
+    },
     none = 0L
   )
 
   quiet <- isTRUE(quiet)
   threads <- as.integer(getOption("bigrquerystorage.threads", 0L))
+  split_streams <- isTRUE(getOption("bigrquerystorage.split_streams", TRUE))
 
   bqs_auth()
+
+  if (type != "arrow" && (compression_codec == 0L || (compression_codec == 2L && bqs_has_zstd()))) {
+    rlang::local_options(nanoarrow.warn_unregistered_extension = FALSE)
+    as_bigint <- switch(bigint,
+      integer = as.integer,
+      integer64 = bit64::as.integer64,
+      numeric = as.numeric,
+      character = as.character
+    )
+    tb <- bqs_download_direct(
+      client = .global$client$ptr,
+      project = bqs_table_name[1],
+      dataset = bqs_table_name[2],
+      table = bqs_table_name[3],
+      parent = parent,
+      n = as.numeric(n_max),
+      selected_fields = selected_fields,
+      row_restriction = row_restriction,
+      sample_percentage = sample_percentage,
+      timestamp_seconds = timestamp_seconds,
+      timestamp_nanos = timestamp_nanos,
+      quiet = quiet,
+      max_stream_count = as.integer(max_stream_count),
+      compression_codec = compression_codec,
+      max_threads = threads,
+      bigint = bigint,
+      as_data_frame = (type != "tibble"),
+      split_streams = split_streams,
+      read_nanoarrow_fn = nanoarrow::read_nanoarrow,
+      int64_ptype_fn = int64_ptype,
+      check_pkg_fn = bqs_check_namespace,
+      na_convert_stream = nanoarrow::convert_array_stream,
+      na_convert_stream_quiet = convert_stream_no_warnings,
+      as_bigint = as_bigint
+    )
+    return(switch(type,
+      tibble = tb,
+      "data.frame" = tb,
+      "data.table" = data.table::setDT(tb)
+    ))
+  }
 
   ipc <- bqs_ipc_stream(
     client = .global$client$ptr,
@@ -331,6 +398,46 @@ parse_postprocess_schema <- function(df, schema, bigint) {
 #' @noRd
 convert_stream_no_warnings <- function(stream, ptype, size, n) {
   suppressWarnings(nanoarrow::convert_array_stream(stream, ptype, size, n))
+}
+
+#' @noRd
+bqs_decode_ipc_direct <- function(
+    ipc_bytes,
+    n_max = Inf,
+    bigint = c("integer", "integer64", "numeric", "character"),
+    type = c("tibble", "data.frame", "data.table"),
+    threads = 0L) {
+  bigint <- match.arg(bigint)
+  type <- match.arg(type)
+  if (type == "data.table") {
+    bqs_check_namespace("data.table", "data.table output")
+  }
+  rlang::local_options(nanoarrow.warn_unregistered_extension = FALSE)
+  as_bigint <- switch(bigint,
+    integer = as.integer,
+    integer64 = bit64::as.integer64,
+    numeric = as.numeric,
+    character = as.character
+  )
+  n_val <- if (n_max < 0 || is.infinite(n_max)) -1 else floor(as.numeric(n_max))
+  tb <- bqs_decode_arrow_ipc_raw(
+    ipc_bytes = ipc_bytes,
+    n_max = n_val,
+    bigint = bigint,
+    as_data_frame = (type != "tibble"),
+    n_threads = as.integer(threads),
+    read_nanoarrow_fn = nanoarrow::read_nanoarrow,
+    int64_ptype_fn = int64_ptype,
+    check_pkg_fn = bqs_check_namespace,
+    na_convert_stream = nanoarrow::convert_array_stream,
+    na_convert_stream_quiet = convert_stream_no_warnings,
+    as_bigint = as_bigint
+  )
+  switch(type,
+    tibble = tb,
+    "data.frame" = tb,
+    "data.table" = data.table::setDT(tb)
+  )
 }
 
 #' @noRd
