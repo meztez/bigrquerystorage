@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -93,19 +94,39 @@ void encode_double_to_decimal(double v, int scale, int bitwidth, uint8_t* out_by
     std::memset(out_bytes, 0, static_cast<size_t>(byte_width));
     return;
   }
-#if defined(__SIZEOF_INT128__)
-  if (scale <= 9) {
+  if (scale >= 0 && scale <= 9) {
     double scaled = std::round(v * std::pow(10.0, scale));
-    __extension__ __int128 val = static_cast<__int128>(scaled);
-    std::memcpy(out_bytes, &val, 16);
-    if (byte_width == 32) {
-      std::memset(out_bytes + 16, val < 0 ? 0xFF : 0x00, 16);
+    constexpr double kTwoPow63 = 9223372036854775808.0;
+    if (scaled >= -kTwoPow63 && scaled < kTwoPow63) {
+      int64_t lo = static_cast<int64_t>(scaled);
+      std::memcpy(out_bytes, &lo, sizeof(int64_t));
+      std::memset(out_bytes + sizeof(int64_t), lo < 0 ? 0xFF : 0x00, static_cast<size_t>(byte_width - 8));
+      return;
     }
-    return;
+    constexpr double kTwoPow64 = 18446744073709551616.0;
+    constexpr double kTwoPowNeg64 = 1.0 / kTwoPow64;
+    constexpr double kTwoPow127 = kTwoPow64 * kTwoPow63;
+    if (scaled >= -kTwoPow127 && scaled < kTwoPow127) {
+      bool neg = scaled < 0.0;
+      double mag = neg ? -scaled : scaled;
+      double hi_d = std::floor(mag * kTwoPowNeg64);
+      uint64_t u_hi = static_cast<uint64_t>(hi_d);
+      double lo_d = mag - static_cast<double>(u_hi) * kTwoPow64;
+      uint64_t u_lo = static_cast<uint64_t>(lo_d);
+      if (neg) {
+        u_lo = 0ULL - u_lo;
+        u_hi = ~u_hi + static_cast<uint64_t>(u_lo == 0ULL);
+      }
+      std::memcpy(out_bytes, &u_lo, sizeof(uint64_t));
+      std::memcpy(out_bytes + sizeof(uint64_t), &u_hi, sizeof(uint64_t));
+      if (byte_width == 32) {
+        std::memset(out_bytes + 16, neg ? 0xFF : 0x00, 16);
+      }
+      return;
+    }
   }
-#endif
-  char buf[64];
-  std::snprintf(buf, sizeof(buf), "%.*f", std::min(scale, 15), v);
+  char buf[384];
+  std::snprintf(buf, sizeof(buf), "%.*f", std::min(std::max(scale, 0), 15), v);
   parse_decimal_string(buf, scale, bitwidth, out_bytes);
 }
 
@@ -257,7 +278,7 @@ void execute_numeric_col_task(FastColTask& t) {
       break;
     }
     case FCOL_INT64_ZC: {
-      const int64_t na_i64 = static_cast<int64_t>(1ULL << 63);
+      const int64_t na_i64 = INT64_MIN;
       t.null_count = scan_zero_copy_col(
         static_cast<const int64_t*>(t.r_ptr), n, priv, [na_i64](int64_t v) { return v != na_i64; });
       break;
@@ -493,7 +514,7 @@ Rcpp::List bqs_encode_decimal(SEXP x, int scale = 9, int bitwidth = 128) {
     const int64_t* vals = reinterpret_cast<const int64_t*>(REAL(x));
     for (R_xlen_t i = 0; i < n; i++) {
       int64_t v = vals[i];
-      if (v == static_cast<int64_t>(1ULL << 63)) {
+      if (v == INT64_MIN) {
         null_count++;
       } else {
         valid[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));

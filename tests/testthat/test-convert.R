@@ -187,6 +187,122 @@ test_that("bqs_encode_decimal encodes Decimal128 and Decimal256 with NAs", {
   expect_equal(res$num, c(12345.6789, -67.89, NA_real_))
 })
 
+test_that("Decimal128 portable decode handles negative, >2^53, >2^64, INT128_MIN/MAX, and matches nanoarrow", {
+  vals_chr <- c(
+    "0",
+    "0.000000001",
+    "-0.000000001",
+    "-1",
+    "-67.89",
+    "12345.6789",
+    "9007199254740993",
+    "-9007199254740993",
+    "9223372036.854775808",
+    "-9223372036.854775808",
+    "18446744073.709551616",
+    "-18446744073.709551616",
+    "-18446744073.709551617",
+    "-18446744073.709551615",
+    "99999999999999999999999999999.999999999",
+    "-99999999999999999999999999999.999999999",
+    NA_character_
+  )
+  fields <- list(list(name = "num", type = "NUMERIC", mode = "NULLABLE"))
+  df <- tibble::tibble(num = vals_chr)
+  arr <- bqs_df_to_arrow_array(df, fields)
+
+  ref <- convert_array_stream(basic_array_stream(list(arr)))$num
+  out_stream <- convert_download(arr, "integer")$num
+  ipc <- bqs_serialize_to_ipc(df, fields, row_batch_size = 5L, use_zstd = FALSE)
+  out_direct <- bqs_decode_ipc_direct(ipc, bigint = "integer", type = "tibble")$num
+
+  expect_identical(out_stream, out_direct)
+  expect_equal(out_stream, ref, tolerance = 1e-15)
+  expect_identical(is.na(out_stream), is.na(vals_chr))
+  expect_equal(out_stream[1:6], c(0, 1e-9, -1e-9, -1, -67.89, 12345.6789), tolerance = 0)
+  expect_equal(out_stream[11:12], c(18446744073.709551616, -18446744073.709551616), tolerance = 1e-15)
+
+  # Non-null fast path (validity == nullptr in convert_to_double_slice)
+  df_nonnull <- tibble::tibble(num = vals_chr[!is.na(vals_chr)])
+  ipc_nonnull <- bqs_serialize_to_ipc(df_nonnull, fields, row_batch_size = 8L, use_zstd = FALSE)
+  out_nonnull <- bqs_decode_ipc_direct(ipc_nonnull, bigint = "integer", type = "tibble")$num
+  expect_identical(out_nonnull, out_direct[!is.na(vals_chr)])
+
+  # Raw boundary 128-bit two's-complement patterns at scale 0: -1, INT128_MIN (-2^127), INT128_MAX (2^127 - 1)
+  raw_dec <- c(
+    as.raw(rep(0xff, 16)),
+    as.raw(c(rep(0x00, 15), 0x80)),
+    as.raw(c(rep(0xff, 15), 0x7f))
+  )
+  dec_sch <- na_decimal128(38L, 0L)
+  dec_arr <- nanoarrow_array_modify(
+    nanoarrow_array_init(dec_sch),
+    list(length = 3L, null_count = 0L, offset = 0L, buffers = list(NULL, as_nanoarrow_buffer(raw_dec)))
+  )
+  root_sch <- na_struct(list(d = dec_sch))
+  root_arr <- nanoarrow_array_modify(
+    nanoarrow_array_init(root_sch),
+    list(length = 3L, null_count = 0L, offset = 0L, buffers = list(NULL), children = list(dec_arr))
+  )
+  nanoarrow_array_set_schema(root_arr, root_sch)
+
+  out_bounds_stream <- convert_download(root_arr, "integer")$d
+  bounds_ipc <- bqs_encode_arrow_ipc_raw(
+    root_sch, root_arr, bqs_schema_to_ipc(root_sch), row_batch_size = 10L, use_zstd = FALSE
+  )
+  out_bounds_direct <- bqs_decode_ipc_direct(bounds_ipc)$d
+  expected_bounds <- c(-1, -(2^127), 2^127)
+  expect_identical(out_bounds_stream, expected_bounds)
+  expect_identical(out_bounds_direct, expected_bounds)
+})
+
+test_that("bqs_encode_decimal handles double ranges (<2^63, [2^63, 2^127), >=2^127), int, integer64, and BIGNUMERIC", {
+  dbl_vals <- c(
+    0, -0.0, 1e-9, -1e-9, -67.89, 12345.6789,
+    9e9, -9e9,
+    9223372036.854775808, -9223372036.854775808,
+    1e15, -1e15, 1e20, -1e20, 1e28, -1e28,
+    NA_real_, NaN
+  )
+  fields_num <- list(list(name = "num", type = "NUMERIC", mode = "NULLABLE"))
+  df_dbl <- tibble::tibble(num = dbl_vals)
+  ipc_dbl <- bqs_serialize_to_ipc(df_dbl, fields_num, row_batch_size = 7L, use_zstd = FALSE)
+  out_dbl <- bqs_decode_ipc_direct(ipc_dbl)$num
+  expect_identical(is.na(out_dbl), is.na(dbl_vals))
+  ok <- !is.na(dbl_vals)
+  expect_equal(out_dbl[ok], dbl_vals[ok], tolerance = 1e-14)
+
+  # BIGNUMERIC double >= 2^127 scaled (must fall back safely to 256-bit string parser without UB)
+  fields_bn <- list(list(name = "bn", type = "BIGNUMERIC", mode = "NULLABLE"))
+  df_bn <- tibble::tibble(bn = c(1e32, -1e32, -67.89, NA_real_))
+  arr_bn <- bqs_df_to_arrow_array(df_bn, fields_bn)
+  out_bn <- convert_array_stream(basic_array_stream(list(arr_bn)))$bn
+  expect_equal(out_bn, c(1e32, -1e32, -67.89, NA_real_), tolerance = 1e-14)
+
+  # integer and bit64::integer64 (including INT64_MIN sentinel for NA)
+  i64_vals <- bit64::as.integer64(c("9223372036854775295", "-9223372036854775295", NA))
+  fields_i <- list(
+    list(name = "from_int", type = "NUMERIC", mode = "NULLABLE"),
+    list(name = "from_i64", type = "NUMERIC", mode = "NULLABLE")
+  )
+  df_i <- tibble::tibble(
+    from_int = c(0L, -1L, NA_integer_),
+    from_i64 = i64_vals
+  )
+  ipc_i <- bqs_serialize_to_ipc(df_i, fields_i, row_batch_size = 10L, use_zstd = FALSE)
+  out_i <- bqs_decode_ipc_direct(ipc_i)
+  expect_equal(out_i$from_int, c(0, -1, NA_real_))
+  expect_identical(is.na(out_i$from_i64), c(FALSE, FALSE, TRUE))
+  expect_equal(out_i$from_i64[1:2], c(9223372036854775295, -9223372036854775295), tolerance = 1e-15)
+
+  # Exact >53-bit byte-level verification for NUMERIC (Decimal128) and BIGNUMERIC (Decimal256)
+  # 2^64 = 18446744073709551616 -> at scale 0: bytes 0..7 are 0x00, byte 8 is 0x01, rest 0x00
+  enc_128 <- bqs_encode_decimal("18446744073709551616", scale = 0L, bitwidth = 128L)
+  expect_identical(enc_128$data, as.raw(c(rep(0x00, 8), 0x01, rep(0x00, 7))))
+  enc_256 <- bqs_encode_decimal("-1", scale = 0L, bitwidth = 256L)
+  expect_identical(enc_256$data, as.raw(rep(0xff, 32)))
+})
+
 test_that("nested INT64 in STRUCT, REPEATED RECORD, and plain data.frames serialize losslessly", {
   big_vals <- bit64::as.integer64(c("9223372036854775295", "-9007199254740993", NA))
 

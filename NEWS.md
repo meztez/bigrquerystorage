@@ -1,7 +1,12 @@
-# bigrquerystorage (development version)
+# bigrquerystorage 1.3.0
 
 ## New features
 
+* `bqs_table_download()` gains `type = c("tibble", "data.frame", "data.table",
+  "arrow")`, `max_stream_count` and `compression = c("auto", "zstd", "lz4",
+  "none")` arguments.
+* Update the bundled Google BigQuery Storage v1 and Google API `.proto`
+  definitions (raises the maximum `ReadRows` response size to 128 MB).
 * Add `bqs_table_upload()` implementing the `BigQueryWrite` gRPC interface using
   Arrow `RecordBatch` serialization (`AppendRows` with `ArrowData`):
   * Supports `PENDING` streams (atomic multi-batch commit via
@@ -18,8 +23,6 @@
     `GEOGRAPHY` (`wk::wkt`), nested `STRUCT` / `RECORD`, and `REPEATED` columns.
 * `bqs_table_download()` now accepts a `bigrquery::bq_table` object directly in
   `x` in addition to character table references.
-
-# bigrquerystorage 1.3.0
 
 ## Performance
 
@@ -57,14 +60,6 @@
   * Derives the post-processing metadata (`DATETIME`, `GEOGRAPHY`, `BYTES`,
     `INT64`, `STRUCT`, `ARRAY`) from the Arrow schema of the `ReadSession`
     instead of calling `bigrquery::bq_table_fields()` on every download.
-
-## New features
-
-* `bqs_table_download()` gains `type = c("tibble", "data.frame", "data.table",
-  "arrow")`, `max_stream_count` and `compression = c("auto", "zstd", "lz4",
-  "none")` arguments.
-* Update the bundled Google BigQuery Storage v1 and Google API `.proto`
-  definitions (raises the maximum `ReadRows` response size to 128 MB).
 
 ## Bug fixes
 

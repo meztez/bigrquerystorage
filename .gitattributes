@@ -1,3 +1,7 @@
 # Sources
 *.c     text eol=lf
 *.h     text eol=lf
+configure text eol=lf
+cleanup   text eol=lf
+*.sh      text eol=lf
+Makevars* text eol=lf

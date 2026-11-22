@@ -20,7 +20,7 @@ knitr::opts_chunk$set(
 [![R-CMD-check](https://github.com/meztez/bigrquerystorage/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/meztez/bigrquerystorage/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
-Use Google's [BigQuery Storage API](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1) from R, supporting both the [BigQueryRead](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigqueryread) and [BigQueryWrite](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigquerywrite) gRPC interfaces.
+Use Google's [BigQuery Storage API](https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1) from R, supporting both the [BigQueryRead](https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigqueryread) and [BigQueryWrite](https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigquerywrite) gRPC interfaces.
 
 `bigrquerystorage` powers high-throughput Arrow transfers in `bigrquery::bq_table_download(..., api = "arrow")` and `bigrquery::bq_table_upload(..., api = "arrow")`, and can also be called directly via `bqs_table_download()` and `bqs_table_upload()`.
 

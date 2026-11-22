@@ -10,11 +10,11 @@
 <!-- badges: end -->
 
 Use Google’s [BigQuery Storage
-API](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1)
+API](https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1)
 from R, supporting both the
-[BigQueryRead](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigqueryread)
+[BigQueryRead](https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigqueryread)
 and
-[BigQueryWrite](https://cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigquerywrite)
+[BigQueryWrite](https://docs.cloud.google.com/bigquery/docs/reference/storage/rpc/google.cloud.bigquery.storage.v1#bigquerywrite)
 gRPC interfaces.
 
 `bigrquerystorage` powers high-throughput Arrow transfers in

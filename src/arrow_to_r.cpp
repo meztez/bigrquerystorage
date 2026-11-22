@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -135,6 +137,23 @@ bool parse_decimal128_scale(const char* fmt, int* scale_out) {
   return true;
 }
 
+struct Dec128Words {
+  uint64_t lo;
+  int64_t hi;
+};
+static_assert(sizeof(Dec128Words) == 16 && offsetof(Dec128Words, hi) == 8,
+              "Dec128Words must be 16 tightly packed bytes");
+
+inline double decimal128_to_double(Dec128Words v, double scale_mult) {
+  constexpr double kTwoPow64 = 18446744073709551616.0;
+  if (v.hi < 0) {
+    uint64_t u_lo = 0ULL - v.lo;
+    uint64_t u_hi = ~static_cast<uint64_t>(v.hi) + static_cast<uint64_t>(u_lo == 0ULL);
+    return -(static_cast<double>(u_hi) * kTwoPow64 + static_cast<double>(u_lo)) * scale_mult;
+  }
+  return (static_cast<double>(v.hi) * kTwoPow64 + static_cast<double>(v.lo)) * scale_mult;
+}
+
 inline bool is_bit_set(const uint8_t* valid, int64_t idx) {
   return (valid[idx >> 3] >> (idx & 7)) & 1;
 }
@@ -152,7 +171,7 @@ SEXP make_int64_sexp(const int64_t* vals,
   } else {
     for (int64_t i = 0; i < len; i++) {
       int64_t idx = offset + i;
-      dst[i] = is_bit_set(valid, idx) ? vals[idx] : static_cast<int64_t>(1ULL << 63);
+      dst[i] = is_bit_set(valid, idx) ? vals[idx] : INT64_MIN;
     }
   }
   Rf_setAttrib(vec, R_ClassSymbol, int64_class);
@@ -633,7 +652,7 @@ void run_numeric_slice_task(NumericSliceTask& task) {
       }
       case DCOL_INT64_TO_INT64:
         copy_exact_slice<int64_t>(
-          raw, valid, len, static_cast<int64_t*>(c.out_ptr) + dst_off, static_cast<int64_t>(1ULL << 63));
+          raw, valid, len, static_cast<int64_t*>(c.out_ptr) + dst_off, INT64_MIN);
         break;
       case DCOL_INT64_TO_DBL:
         convert_to_double_slice<int64_t>(
@@ -672,12 +691,10 @@ void run_numeric_slice_task(NumericSliceTask& task) {
           [](int64_t v) { return static_cast<double>(v) * 1e-6; });
         break;
       case DCOL_DECIMAL128: {
-#if defined(__SIZEOF_INT128__)
         const double mult = c.dec_scale_mult;
-        convert_to_double_slice<__int128>(
+        convert_to_double_slice<Dec128Words>(
           raw, valid, len, static_cast<double*>(c.out_ptr) + dst_off, task.na_real_bits,
-          [mult](__int128 v) { return static_cast<double>(v) * mult; });
-#endif
+          [mult](Dec128Words v) { return decimal128_to_double(v, mult); });
         break;
       }
       default:
@@ -965,13 +982,7 @@ SEXP bqs_convert_stream(SEXP stream_xptr, SEXP ptype_df, std::string bigint) {
     ArrowSchema* ch = schema.children[j];
     const char* fmt = ch->format;
     int scale = 0;
-    if (
-#if defined(__SIZEOF_INT128__)
-        parse_decimal128_scale(fmt, &scale)
-#else
-        false
-#endif
-    ) {
+    if (parse_decimal128_scale(fmt, &scale)) {
       dec_cols.push_back(static_cast<int>(j));
       dec_scales.push_back(std::pow(10.0, -scale));
     } else if (bigint == "integer" && fmt && std::strcmp(fmt, "l") == 0) {
@@ -1011,7 +1022,6 @@ SEXP bqs_convert_stream(SEXP stream_xptr, SEXP ptype_df, std::string bigint) {
 
   Rcpp::List out_cols(n_cols);
 
-#if defined(__SIZEOF_INT128__)
   for (size_t k = 0; k < dec_cols.size(); k++) {
     int col_idx = dec_cols[k];
     double scale_mult = dec_scales[k];
@@ -1027,8 +1037,8 @@ SEXP bqs_convert_stream(SEXP stream_xptr, SEXP ptype_df, std::string bigint) {
       for (int64_t i = 0; i < len; i++) {
         int64_t idx = offset + i;
         if (!valid || is_bit_set(valid, idx)) {
-          __extension__ __int128 v = bqs_ipc::load_unaligned<__int128>(raw_vals + idx * 16);
-          out_ptr[pos + i] = static_cast<double>(v) * scale_mult;
+          Dec128Words v = bqs_ipc::load_unaligned<Dec128Words>(raw_vals + idx * 16);
+          out_ptr[pos + i] = decimal128_to_double(v, scale_mult);
         } else {
           out_ptr[pos + i] = NA_REAL;
         }
@@ -1037,7 +1047,6 @@ SEXP bqs_convert_stream(SEXP stream_xptr, SEXP ptype_df, std::string bigint) {
     }
     out_cols[col_idx] = col_vec;
   }
-#endif
 
   bool any_int_overflow = false;
   for (int col_idx : int32_cols) {
@@ -1437,13 +1446,7 @@ SEXP bqs_convert_decoded_streams(
       SEXP v = alloc_col(j, REALSXP, sp);
       Rf_setAttrib(v, R_ClassSymbol, cls_posix);
       Rf_setAttrib(v, sym_tzone, str_utc);
-    } else if (
-#if defined(__SIZEOF_INT128__)
-        ext.empty() && parse_decimal128_scale(fmt, &dec_scale)
-#else
-        false
-#endif
-    ) {
+    } else if (ext.empty() && parse_decimal128_scale(fmt, &dec_scale)) {
       sp.kind = DCOL_DECIMAL128;
       sp.dec_scale_mult = std::pow(10.0, -dec_scale);
       alloc_col(j, REALSXP, sp);
