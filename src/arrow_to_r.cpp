@@ -14,6 +14,19 @@
 
 namespace {
 
+// nanoarrow converts string arrays to lazy ALTREP vectors that read from the
+// source ArrowArray on access. Our arrays borrow their buffers (from
+// DecodedBatch) and don't keep them alive, so force materialization while
+// the buffers are still valid.
+void materialize_altrep(SEXP x) {
+  if (TYPEOF(x) == VECSXP) {
+    R_xlen_t n = Rf_xlength(x);
+    for (R_xlen_t i = 0; i < n; i++) materialize_altrep(VECTOR_ELT(x, i));
+  } else if (TYPEOF(x) == STRSXP && ALTREP(x)) {
+    STRING_PTR_RO(x);
+  }
+}
+
 const char* const EXT_DATETIME = "google:sqlType:datetime";
 const char* const EXT_GEOGRAPHY = "google:sqlType:geography";
 
@@ -1000,7 +1013,10 @@ SEXP bqs_convert_stream(SEXP stream_xptr, SEXP ptype_df, std::string bigint) {
   if (dec_cols.empty() && int32_cols.empty() && list_int64_cols.empty() && repair_cols.empty()) {
     schema.release(&schema);
     Rcpp::Function na_convert = RCallbacks::ns_fn("nanoarrow", "convert_array_stream");
-    return na_convert(stream_xptr, ptype_df);
+    SEXP res = PROTECT(na_convert(stream_xptr, ptype_df));
+    materialize_altrep(res);
+    UNPROTECT(1);
+    return res;
   }
 
   std::vector<ArrowArray> batches;
@@ -1135,6 +1151,7 @@ SEXP bqs_convert_stream(SEXP stream_xptr, SEXP ptype_df, std::string bigint) {
       ? RCallbacks::ns_fn("nanoarrow", "convert_array_stream")
       : RCallbacks::ns_fn("bigrquerystorage", "convert_stream_no_warnings");
     SEXP sub_res_sexp = PROTECT(convert_fn(sub_stream_xptr, sub_ptype, static_cast<double>(total_rows), R_PosInf));
+    materialize_altrep(sub_res_sexp);
     Rcpp::List sub_res(sub_res_sexp);
     UNPROTECT(2);
 

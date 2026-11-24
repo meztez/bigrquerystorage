@@ -9,18 +9,6 @@ using google::cloud::bigquery::storage::v1::ReadSession;
 
 namespace {
 
-// nanoarrow converts string arrays to lazy ALTREP vectors that read from the
-// source ArrowArray on access. Our decoded arrays borrow their buffers from
-// DecodedBatch, so force materialization before those batches are freed.
-void materialize_altrep(SEXP x) {
-  if (TYPEOF(x) == VECSXP) {
-    R_xlen_t n = Rf_xlength(x);
-    for (R_xlen_t i = 0; i < n; i++) materialize_altrep(VECTOR_ELT(x, i));
-  } else if (TYPEOF(x) == STRSXP && ALTREP(x)) {
-    STRING_PTR_RO(x);
-  }
-}
-
 struct StreamBatches {
   std::vector<std::string> batches;
   std::vector<int64_t> rows;
@@ -543,7 +531,6 @@ SEXP bqs_download_direct(SEXP client,
     bigint,
     as_data_frame,
     target_threads));
-  materialize_altrep(res);
   UNPROTECT(2);
   return res;
 }
