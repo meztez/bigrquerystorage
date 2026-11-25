@@ -1646,9 +1646,9 @@ SEXP bqs_convert_decoded_streams(
 
     SEXP sub_schema_xptr = PROTECT(nanoarrow_schema_owning_xptr());
     struct ArrowSchema* sub_sch_ptr = nanoarrow_output_schema_from_xptr(sub_schema_xptr);
-    *sub_sch_ptr = fb_impl->borrowed_schema;
-    sub_sch_ptr->children = fb_child_schemas.data();
-    sub_sch_ptr->release = noop_release_schema;
+    ArrowSchema sub_sch_tmp = fb_impl->borrowed_schema;
+    sub_sch_tmp.children = fb_child_schemas.data();
+    bqs_ipc::deep_copy_arrow_schema(&sub_sch_tmp, sub_sch_ptr);
 
     Rcpp::Function int64_ptype = RCallbacks::ns_fn("bigrquerystorage", "int64_ptype");
     SEXP sub_ptype = PROTECT(int64_ptype(sub_schema_xptr));

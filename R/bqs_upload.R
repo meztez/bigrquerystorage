@@ -805,17 +805,11 @@ bqs_repeated_to_arrow_array <- function(col, name, field = NULL) {
     }
     item_arr <- bqs_df_to_arrow_array(combined, if (!is.null(elem_field)) elem_field$fields else NULL)
   } else {
-    if (!is.null(elem_field) && elem_field$type %in% c("INT64", "FLOAT64", "NUMERIC", "BIGNUMERIC") &&
-        length(non_null) > 0) {
-      bad_lgl <- vapply(non_null, function(el) is.logical(el) && !bqs_is_all_na_logical(el), logical(1))
-      if (any(bad_lgl)) {
-        bqs_stop_incompatible_type(name, non_null[[which(bad_lgl)[1L]]], paste("REPEATED", elem_field$type))
-      }
-    }
+    elem_type <- if (!is.null(elem_field)) elem_field$type else ""
     lens <- lengths(col)
     offsets <- c(0L, cumsum(lens))
     if (length(non_null) > 0) {
-      combined <- bqs_concat_vectors(non_null, name = name)
+      combined <- bqs_concat_vectors(non_null, name = name, target_type = elem_type)
     } else {
       combined <- bqs_empty_col_for_field(elem_field)
     }
@@ -852,9 +846,20 @@ bqs_list_of_named_lists_to_df <- function(lst, subfields = NULL) {
   } else {
     character(0)
   }
+  sf_map <- if (length(subfields)) {
+    m <- subfields
+    names(m) <- tolower(col_names)
+    m
+  } else {
+    list()
+  }
   cols <- lapply(col_names, function(nm) {
     pieces <- lapply(lst, function(el) if (is.null(el) || is.null(el[[nm]])) NA else el[[nm]])
-    bqs_concat_vectors(pieces)
+    sf <- sf_map[[tolower(nm)]]
+    sf_mode <- if (!is.null(sf)) toupper(sf$mode %||% "NULLABLE") else "NULLABLE"
+    sf_type <- if (!is.null(sf)) bqs_normalize_type(sf$type %||% "") else ""
+    tt <- if (sf_mode != "REPEATED" && sf_type != "RECORD") sf_type else ""
+    bqs_concat_vectors(pieces, name = nm, target_type = tt)
   })
   names(cols) <- col_names
   tibble::new_tibble(cols, nrow = n)
@@ -882,10 +887,249 @@ bqs_rbind_dfs <- function(dfs) {
 }
 
 #' @noRd
-bqs_concat_vectors <- function(lst, name = "item") {
+bqs_is_raw_list <- function(x) {
+  is.list(x) && !is.data.frame(x) && !inherits(x, "POSIXlt") &&
+    all(vapply(x, function(el) is.null(el) || is.raw(el), logical(1)))
+}
+
+#' @noRd
+bqs_double_to_decimal_chr <- function(x, name, target_type) {
+  out <- rep(NA_character_, length(x))
+  non_na <- !is.na(x)
+  if (any(non_na)) {
+    vals <- x[non_na]
+    if (!all(is.finite(vals))) {
+      bqs_stop_incompatible_type(name, x, target_type, "Cannot convert non-finite value")
+    }
+    out[non_na] <- sprintf("%.9f", vals)
+  }
+  out
+}
+
+#' @noRd
+bqs_concat_vectors <- function(lst, name = "item", target_type = "") {
+  if (length(lst) == 0L) {
+    return(bqs_empty_col_for_field(if (nzchar(target_type)) list(type = target_type, mode = "NULLABLE") else NULL))
+  }
+  if (nzchar(target_type)) {
+    if (target_type == "INT64") {
+      if (all(vapply(lst, function(x) is.integer(x) && !is.object(x), logical(1)))) {
+        return(unlist(lst, recursive = FALSE, use.names = FALSE))
+      }
+      if (all(vapply(lst, function(x) is.double(x) && !is.object(x), logical(1)))) {
+        return(unlist(lst, recursive = FALSE, use.names = FALSE))
+      }
+      raw_dbl <- unlist(lapply(lst, function(x) {
+        if (bit64::is.integer64(x)) {
+          unclass(x)
+        } else if (is.integer(x) && !is.object(x)) {
+          unclass(bit64::as.integer64(x))
+        } else if (is.double(x) && !is.object(x)) {
+          unclass(bqs_double_to_integer64_strict(x, name))
+        } else if (bqs_is_all_na_logical(x)) {
+          unclass(rep(bit64::NA_integer64_, length(x)))
+        } else {
+          bqs_stop_incompatible_type(name, x, "INT64")
+        }
+      }), recursive = FALSE, use.names = FALSE)
+      class(raw_dbl) <- "integer64"
+      return(raw_dbl)
+    }
+
+    if (target_type == "FLOAT64") {
+      if (all(vapply(lst, function(x) is.double(x) && !is.object(x), logical(1)))) {
+        return(unlist(lst, recursive = FALSE, use.names = FALSE))
+      }
+      return(unlist(lapply(lst, function(x) {
+        if (is.double(x) && !is.object(x)) {
+          x
+        } else if ((is.integer(x) && !is.object(x)) || bit64::is.integer64(x)) {
+          as.double(x)
+        } else if (bqs_is_all_na_logical(x)) {
+          rep(NA_real_, length(x))
+        } else {
+          bqs_stop_incompatible_type(name, x, "FLOAT64")
+        }
+      }), recursive = FALSE, use.names = FALSE))
+    }
+
+    if (target_type == "BOOL") {
+      for (x in lst) {
+        if (!(is.logical(x) && !is.object(x))) {
+          bqs_stop_incompatible_type(name, x, "BOOL")
+        }
+      }
+      return(unlist(lst, recursive = FALSE, use.names = FALSE))
+    }
+
+    if (target_type == "STRING") {
+      if (all(vapply(lst, function(x) is.character(x) && !is.object(x), logical(1)))) {
+        return(unlist(lst, recursive = FALSE, use.names = FALSE))
+      }
+      return(unlist(lapply(lst, function(x) {
+        if ((is.character(x) && (!is.object(x) || inherits(x, "wk_wkt"))) ||
+            is.factor(x) ||
+            bit64::is.integer64(x) ||
+            ((is.integer(x) || is.double(x) || is.logical(x)) && !is.object(x))) {
+          as.character(x)
+        } else {
+          bqs_stop_incompatible_type(name, x, "STRING")
+        }
+      }), recursive = FALSE, use.names = FALSE))
+    }
+
+    if (target_type == "JSON") {
+      if (all(vapply(lst, function(x) is.character(x) && !is.object(x), logical(1)))) {
+        return(unlist(lst, recursive = FALSE, use.names = FALSE))
+      }
+      return(unlist(lapply(lst, function(x) {
+        if (is.character(x) && !is.object(x)) {
+          x
+        } else if (bqs_is_all_na_logical(x)) {
+          rep(NA_character_, length(x))
+        } else {
+          bqs_stop_incompatible_type(name, x, "JSON")
+        }
+      }), recursive = FALSE, use.names = FALSE))
+    }
+
+    if (target_type == "GEOGRAPHY") {
+      return(unlist(lapply(lst, function(x) {
+        if (inherits(x, "wk_wkt") || (is.character(x) && !is.object(x))) {
+          as.character(x)
+        } else if (bqs_is_all_na_logical(x)) {
+          rep(NA_character_, length(x))
+        } else {
+          bqs_stop_incompatible_type(name, x, "GEOGRAPHY")
+        }
+      }), recursive = FALSE, use.names = FALSE))
+    }
+
+    if (target_type == "BYTES") {
+      pieces <- lapply(lst, function(x) {
+        if (inherits(x, "blob")) {
+          unclass(x)
+        } else if (bqs_is_all_na_logical(x)) {
+          vector("list", length(x))
+        } else if (bqs_is_raw_list(x)) {
+          unclass(x)
+        } else {
+          bqs_stop_incompatible_type(name, x, "BYTES")
+        }
+      })
+      return(structure(
+        unlist(pieces, recursive = FALSE, use.names = FALSE) %||% list(),
+        ptype = raw(0),
+        class = c("blob", "vctrs_list_of", "vctrs_vctr", "list")
+      ))
+    }
+
+    if (target_type == "DATE") {
+      pieces <- lapply(lst, function(x) {
+        if (inherits(x, "Date")) {
+          as.numeric(x)
+        } else if (is.character(x) && !is.object(x)) {
+          as.numeric(bqs_parse_date_strict(x, name))
+        } else if (bqs_is_all_na_logical(x)) {
+          rep(NA_real_, length(x))
+        } else {
+          bqs_stop_incompatible_type(name, x, "DATE")
+        }
+      })
+      return(as.Date(unlist(pieces, use.names = FALSE), origin = "1970-01-01"))
+    }
+
+    if (target_type == "TIME") {
+      pieces <- lapply(lst, function(x) {
+        if (inherits(x, c("hms", "difftime"))) {
+          as.numeric(x, units = "secs")
+        } else if (is.character(x) && !is.object(x)) {
+          as.numeric(bqs_parse_time_strict(x, name), units = "secs")
+        } else if (bqs_is_all_na_logical(x)) {
+          rep(NA_real_, length(x))
+        } else {
+          bqs_stop_incompatible_type(name, x, "TIME")
+        }
+      })
+      return(structure(unlist(pieces, use.names = FALSE), units = "secs", class = c("hms", "difftime")))
+    }
+
+    if (target_type %in% c("DATETIME", "TIMESTAMP")) {
+      pieces <- lapply(lst, function(x) {
+        if (inherits(x, "POSIXt")) {
+          as.numeric(x)
+        } else if (is.character(x) && !is.object(x)) {
+          as.numeric(bqs_parse_timestamp_strict(x, name, target_type))
+        } else if (bqs_is_all_na_logical(x)) {
+          rep(NA_real_, length(x))
+        } else {
+          bqs_stop_incompatible_type(name, x, target_type)
+        }
+      })
+      return(as.POSIXct(unlist(pieces, use.names = FALSE), origin = "1970-01-01", tz = "UTC"))
+    }
+
+    if (target_type %in% c("NUMERIC", "BIGNUMERIC")) {
+      has_chr <- FALSE
+      has_i64 <- FALSE
+      has_dbl <- FALSE
+      for (x in lst) {
+        if (bit64::is.integer64(x)) {
+          has_i64 <- TRUE
+        } else if (is.character(x) && !is.object(x)) {
+          has_chr <- TRUE
+        } else if (is.double(x) && !is.object(x)) {
+          has_dbl <- TRUE
+        } else if (!((is.integer(x) && !is.object(x)) || bqs_is_all_na_logical(x))) {
+          bqs_stop_incompatible_type(name, x, target_type)
+        }
+      }
+      if (!has_chr && !has_i64) {
+        return(unlist(lst, recursive = FALSE, use.names = FALSE))
+      }
+      if (!has_chr && !has_dbl) {
+        raw_dbl <- unlist(lapply(lst, function(x) {
+          if (bit64::is.integer64(x)) {
+            unclass(x)
+          } else if (is.integer(x) && !is.object(x)) {
+            unclass(bit64::as.integer64(x))
+          } else {
+            unclass(rep(bit64::NA_integer64_, length(x)))
+          }
+        }), recursive = FALSE, use.names = FALSE)
+        class(raw_dbl) <- "integer64"
+        return(raw_dbl)
+      }
+      pieces <- lapply(lst, function(x) {
+        if (is.character(x) && !is.object(x)) {
+          x
+        } else if ((is.integer(x) && !is.object(x)) || bit64::is.integer64(x)) {
+          as.character(x)
+        } else if (is.double(x) && !is.object(x)) {
+          bqs_double_to_decimal_chr(x, name, target_type)
+        } else {
+          rep(NA_character_, length(x))
+        }
+      })
+      return(unlist(pieces, use.names = FALSE))
+    }
+  }
+
   non_empty <- Filter(function(x) length(x) > 0L, lst)
   first <- if (length(non_empty)) non_empty[[1]] else lst[[1]]
-  if (bit64::is.integer64(first)) {
+  if (any(vapply(non_empty, bit64::is.integer64, logical(1)))) {
+    if (any(vapply(non_empty, function(x) is.character(x) || is.factor(x), logical(1)))) {
+      return(unlist(lapply(lst, as.character), use.names = FALSE))
+    }
+    has_non_int_dbl <- any(vapply(non_empty, function(x) {
+      if (!(is.double(x) && !is.object(x))) return(FALSE)
+      if (any(is.nan(x))) return(TRUE)
+      vals <- x[!is.na(x)]
+      length(vals) > 0L && (!all(is.finite(vals)) || !all(trunc(vals) == vals) || any(abs(vals) >= 9223372036854775808))
+    }, logical(1)))
+    if (has_non_int_dbl) {
+      return(unlist(lapply(lst, as.double), use.names = FALSE))
+    }
     raw_dbl <- unlist(lapply(lst, function(x) {
       if (bit64::is.integer64(x)) {
         unclass(x)
@@ -903,20 +1147,71 @@ bqs_concat_vectors <- function(lst, name = "item") {
     return(raw_dbl)
   }
   if (inherits(first, "blob")) {
-    return(blob::as_blob(unlist(lapply(lst, unclass), recursive = FALSE, use.names = FALSE)))
+    pieces <- lapply(lst, function(x) {
+      if (inherits(x, "blob")) {
+        unclass(x)
+      } else if (bqs_is_all_na_logical(x)) {
+        vector("list", length(x))
+      } else if (bqs_is_raw_list(x)) {
+        unclass(x)
+      } else {
+        bqs_stop_incompatible_type(name, x, "BYTES")
+      }
+    })
+    return(blob::as_blob(unlist(pieces, recursive = FALSE, use.names = FALSE) %||% list()))
   }
   if (inherits(first, "wk_wkt")) {
-    return(wk::wkt(unlist(lapply(lst, as.character), use.names = FALSE)))
+    pieces <- lapply(lst, function(x) {
+      if (inherits(x, "wk_wkt") || (is.character(x) && !is.object(x))) {
+        as.character(x)
+      } else if (bqs_is_all_na_logical(x)) {
+        rep(NA_character_, length(x))
+      } else {
+        bqs_stop_incompatible_type(name, x, "GEOGRAPHY")
+      }
+    })
+    return(wk::wkt(unlist(pieces, use.names = FALSE)))
   }
   if (inherits(first, "Date")) {
-    return(as.Date(unlist(lapply(lst, as.numeric), use.names = FALSE), origin = "1970-01-01"))
+    pieces <- lapply(lst, function(x) {
+      if (inherits(x, "Date")) {
+        as.numeric(x)
+      } else if (bqs_is_all_na_logical(x)) {
+        rep(NA_real_, length(x))
+      } else {
+        bqs_stop_incompatible_type(name, x, "DATE")
+      }
+    })
+    return(as.Date(unlist(pieces, use.names = FALSE), origin = "1970-01-01"))
   }
   if (inherits(first, "POSIXt")) {
     tz <- attr(first, "tzone") %||% "UTC"
-    return(as.POSIXct(unlist(lapply(lst, as.numeric), use.names = FALSE), origin = "1970-01-01", tz = tz))
+    pieces <- lapply(lst, function(x) {
+      if (inherits(x, "POSIXt")) {
+        as.numeric(x)
+      } else if (bqs_is_all_na_logical(x)) {
+        rep(NA_real_, length(x))
+      } else {
+        bqs_stop_incompatible_type(name, x, "TIMESTAMP")
+      }
+    })
+    return(as.POSIXct(unlist(pieces, use.names = FALSE), origin = "1970-01-01", tz = tz))
   }
-  if (inherits(first, "hms")) {
-    return(hms::as_hms(unlist(lapply(lst, as.numeric), use.names = FALSE)))
+  if (inherits(first, c("hms", "difftime"))) {
+    pieces <- lapply(lst, function(x) {
+      if (inherits(x, c("hms", "difftime"))) {
+        as.numeric(x, units = "secs")
+      } else if (bqs_is_all_na_logical(x)) {
+        rep(NA_real_, length(x))
+      } else {
+        bqs_stop_incompatible_type(name, x, "TIME")
+      }
+    })
+    return(structure(unlist(pieces, use.names = FALSE), units = "secs", class = c("hms", "difftime")))
+  }
+  if (any(vapply(non_empty, is.factor, logical(1))) &&
+      any(vapply(non_empty, is.character, logical(1)))) {
+    return(unlist(lapply(lst, as.character), use.names = FALSE))
   }
   unlist(lst, recursive = FALSE, use.names = FALSE)
 }

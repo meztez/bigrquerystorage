@@ -100,11 +100,11 @@ bool parse_decimal_string(const char* s, int scale, int bitwidth, uint8_t* out_b
   return true;
 }
 
-void encode_double_to_decimal(double v, int scale, int bitwidth, uint8_t* out_bytes) {
+bool encode_double_to_decimal(double v, int scale, int bitwidth, uint8_t* out_bytes) {
   int byte_width = bitwidth / 8;
   if (!R_finite(v)) {
     std::memset(out_bytes, 0, static_cast<size_t>(byte_width));
-    return;
+    return false;
   }
   if (scale >= 0 && scale <= 9) {
     double scaled = std::round(v * std::pow(10.0, scale));
@@ -113,7 +113,7 @@ void encode_double_to_decimal(double v, int scale, int bitwidth, uint8_t* out_by
       int64_t lo = static_cast<int64_t>(scaled);
       std::memcpy(out_bytes, &lo, sizeof(int64_t));
       std::memset(out_bytes + sizeof(int64_t), lo < 0 ? 0xFF : 0x00, static_cast<size_t>(byte_width - 8));
-      return;
+      return true;
     }
     constexpr double kTwoPow64 = 18446744073709551616.0;
     constexpr double kTwoPowNeg64 = 1.0 / kTwoPow64;
@@ -134,12 +134,12 @@ void encode_double_to_decimal(double v, int scale, int bitwidth, uint8_t* out_by
       if (byte_width == 32) {
         std::memset(out_bytes + 16, neg ? 0xFF : 0x00, 16);
       }
-      return;
+      return true;
     }
   }
   char buf[384];
   std::snprintf(buf, sizeof(buf), "%.*f", std::min(std::max(scale, 0), 15), v);
-  parse_decimal_string(buf, scale, bitwidth, out_bytes);
+  return parse_decimal_string(buf, scale, bitwidth, out_bytes);
 }
 
 struct OwnedSchemaPriv {
@@ -313,7 +313,7 @@ void execute_numeric_col_task(FastColTask& t) {
             break;
           }
         } else if (std::isfinite(v) && std::trunc(v) == v &&
-                   v >= -9223372036854775808.0 && v < 9223372036854775808.0) {
+                   v > -9223372036854775808.0 && v < 9223372036854775808.0) {
           dst[i] = static_cast<int64_t>(v);
         } else {
           t.error = true;
@@ -581,8 +581,10 @@ Rcpp::List bqs_encode_decimal(SEXP x, int scale = 9, int bitwidth = 128) {
       } else if (!R_finite(v)) {
         Rcpp::stop("Cannot convert non-finite value to BigQuery %s.", bq_type);
       } else {
+        if (!encode_double_to_decimal(v, scale, bitwidth, dst + i * byte_width)) {
+          Rcpp::stop("Cannot convert out-of-range value to BigQuery %s.", bq_type);
+        }
         valid[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
-        encode_double_to_decimal(v, scale, bitwidth, dst + i * byte_width);
       }
     }
   } else if (TYPEOF(x) == INTSXP && !Rf_isObject(x)) {
@@ -592,8 +594,10 @@ Rcpp::List bqs_encode_decimal(SEXP x, int scale = 9, int bitwidth = 128) {
       if (v == NA_INTEGER) {
         null_count++;
       } else {
+        if (!encode_double_to_decimal(static_cast<double>(v), scale, bitwidth, dst + i * byte_width)) {
+          Rcpp::stop("Cannot convert out-of-range value to BigQuery %s.", bq_type);
+        }
         valid[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
-        encode_double_to_decimal(static_cast<double>(v), scale, bitwidth, dst + i * byte_width);
       }
     }
   } else if (TYPEOF(x) == STRSXP && !Rf_isObject(x)) {
@@ -682,7 +686,7 @@ Rcpp::List bqs_fast_df_columns(Rcpp::List df,
         continue;
       }
     } else if (TYPEOF(col) == STRSXP &&
-               (!Rf_isObject(col) || Rf_inherits(col, "wk_wkt")) &&
+               (!Rf_isObject(col) || (Rf_inherits(col, "wk_wkt") && type != "JSON")) &&
                (type.empty() || type == "STRING" || type == "GEOGRAPHY" || type == "JSON")) {
       auto priv = std::make_unique<OwnedArrayPriv>();
       int64_t nc = 0;

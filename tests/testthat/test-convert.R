@@ -654,8 +654,12 @@ test_that("ALTREP string columns in single-batch fallback STRUCTs stay valid aft
     out <- bqs_decode_ipc_direct(ipc, bigint = "integer", type = "tibble")
 
     # Shared ownership keeps nanoarrow's lazy ALTREP valid without upfront copy
-    expect_true(nanoarrow:::is_nanoarrow_altrep(out$s$b))
-    expect_false(nanoarrow:::is_nanoarrow_altrep_materialized(out$s$b))
+    na_ns <- asNamespace("nanoarrow")
+    if (exists("is_nanoarrow_altrep", envir = na_ns, inherits = FALSE) &&
+        exists("is_nanoarrow_altrep_materialized", envir = na_ns, inherits = FALSE)) {
+      expect_true(get("is_nanoarrow_altrep", envir = na_ns)(out$s$b))
+      expect_false(get("is_nanoarrow_altrep_materialized", envir = na_ns)(out$s$b))
+    }
 
     # Aggressively churn heap and run GC so freed DecodedBatch / ArrowSchema would crash or corrupt
     invisible(replicate(200L, raw(4096L)))
@@ -702,6 +706,7 @@ test_that("bqs_df_to_arrow_array rejects incompatible types instead of silently 
   expect_error(bqs_df_to_arrow_array(data.frame(x = c(1, -Inf)), f_int64), "cannot be losslessly converted to BigQuery INT64")
   expect_error(bqs_df_to_arrow_array(data.frame(x = 1e20), f_int64), "cannot be losslessly converted to BigQuery INT64")
   expect_error(bqs_df_to_arrow_array(data.frame(x = 2^63), f_int64), "cannot be losslessly converted to BigQuery INT64")
+  expect_error(bqs_df_to_arrow_array(data.frame(x = -2^63), f_int64), "cannot be losslessly converted to BigQuery INT64")
   expect_error(bqs_df_to_arrow_array(data.frame(x = as.Date("2024-01-01")), f_int64), "cannot be converted to BigQuery INT64")
   expect_error(bqs_df_to_arrow_array(data.frame(x = as.POSIXct("2024-01-01", tz = "UTC")), f_int64), "cannot be converted to BigQuery INT64")
 
@@ -750,9 +755,15 @@ test_that("bqs_df_to_arrow_array rejects incompatible types instead of silently 
   expect_error(bqs_df_to_arrow_array(data.frame(x = "999999999999999999999999999999999999999"), f_num), "BigQuery NUMERIC")
   expect_error(bqs_df_to_arrow_array(data.frame(x = Inf), f_num), "BigQuery NUMERIC")
   expect_error(bqs_df_to_arrow_array(data.frame(x = -Inf), f_num), "BigQuery NUMERIC")
+  expect_error(bqs_df_to_arrow_array(data.frame(x = 1e30), f_num), "BigQuery NUMERIC")
+  expect_error(bqs_df_to_arrow_array(data.frame(x = -1e100), f_num), "BigQuery NUMERIC")
   expect_error(bqs_df_to_arrow_array(data.frame(x = TRUE), f_num), "BigQuery NUMERIC")
   expect_no_error(bqs_df_to_arrow_array(data.frame(x = c(" 12.34 ", NA_character_)), f_num))
   expect_no_error(bqs_df_to_arrow_array(data.frame(x = c(NA, NA)), f_num))
+
+  f_bnum <- list(list(name = "x", type = "BIGNUMERIC", mode = "NULLABLE"))
+  expect_error(bqs_df_to_arrow_array(data.frame(x = 1e70), f_bnum), "BigQuery BIGNUMERIC")
+  expect_error(bqs_df_to_arrow_array(data.frame(x = Inf), f_bnum), "BigQuery BIGNUMERIC")
 
   # 5. DATE, TIME, DATETIME, TIMESTAMP: reject partially unparseable strings and non-temporal numbers
   f_date <- list(list(name = "x", type = "DATE", mode = "NULLABLE"))
@@ -790,6 +801,12 @@ test_that("bqs_df_to_arrow_array rejects incompatible types instead of silently 
   expect_no_error(bqs_df_to_arrow_array(data.frame(x = c("POINT(0 0)", NA_character_)), f_geo))
   expect_no_error(bqs_df_to_arrow_array(data.frame(x = c(NA, NA)), f_geo))
 
+  f_json <- list(list(name = "x", type = "JSON", mode = "NULLABLE"))
+  expect_error(bqs_df_to_arrow_array(tibble::tibble(x = wk::wkt("POINT(0 0)")), f_json), "BigQuery JSON")
+  expect_error(bqs_df_to_arrow_array(data.frame(x = 1L), f_json), "BigQuery JSON")
+  expect_no_error(bqs_df_to_arrow_array(data.frame(x = c('{"a":1}', NA_character_)), f_json))
+  expect_no_error(bqs_df_to_arrow_array(data.frame(x = c(NA, NA)), f_json))
+
   # 7. RECORD and REPEATED validation
   f_rec <- list(list(
     name = "s", type = "RECORD", mode = "NULLABLE",
@@ -797,16 +814,31 @@ test_that("bqs_df_to_arrow_array rejects incompatible types instead of silently 
   ))
   expect_error(bqs_df_to_arrow_array(data.frame(s = 1L), f_rec), "BigQuery RECORD")
   expect_error(bqs_df_to_arrow_array(tibble::tibble(s = tibble::tibble(a = "bad")), f_rec), "BigQuery INT64")
+  expect_error(
+    bqs_df_to_arrow_array(tibble::tibble(s = list(list(a = 1L), list(a = TRUE))), f_rec),
+    "BigQuery INT64"
+  )
+  ipc_rec_i64 <- bqs_serialize_to_ipc(
+    tibble::tibble(s = list(NULL, list(a = bit64::as.integer64(2)))),
+    f_rec,
+    row_batch_size = 10L,
+    use_zstd = FALSE
+  )
+  out_rec_i64 <- bqs_decode_ipc_direct(ipc_rec_i64, bigint = "integer64")
+  expect_identical(out_rec_i64$s$a, bit64::as.integer64(c(NA, 2)))
 
   f_rep <- list(list(name = "arr", type = "INT64", mode = "REPEATED"))
   expect_error(bqs_df_to_arrow_array(data.frame(arr = 1:3), f_rep), "BigQuery REPEATED INT64")
   expect_error(bqs_df_to_arrow_array(tibble::tibble(arr = list(1:2, "bad")), f_rep), "BigQuery INT64")
   expect_error(bqs_df_to_arrow_array(tibble::tibble(arr = list(bit64::as.integer64(1), "bad")), f_rep), "BigQuery INT64")
-  expect_error(bqs_df_to_arrow_array(tibble::tibble(arr = list(1:2, TRUE)), f_rep), "BigQuery REPEATED INT64")
+  expect_error(bqs_df_to_arrow_array(tibble::tibble(arr = list(1:2, TRUE)), f_rep), "BigQuery INT64")
+  expect_error(bqs_df_to_arrow_array(tibble::tibble(arr = list(1:2, as.Date("2024-01-01"))), f_rep), "BigQuery INT64")
+  expect_error(bqs_df_to_arrow_array(tibble::tibble(arr = list(1:2, factor("bad"))), f_rep), "BigQuery INT64")
   expect_error(bqs_df_to_arrow_array(tibble::tibble(arr = list(c(1, 1.5))), f_rep), "BigQuery INT64")
+  expect_error(bqs_df_to_arrow_array(tibble::tibble(arr = list(-2^63)), f_rep), "BigQuery INT64")
   expect_no_warning({
     ipc_rep <- bqs_serialize_to_ipc(
-      tibble::tibble(arr = list(c(1, 2), c(3, NA_real_))),
+      tibble::tibble(arr = list(c(1, 2), c(3, NA_real_), bit64::as.integer64(4))),
       f_rep,
       row_batch_size = 10L,
       use_zstd = FALSE
@@ -815,5 +847,57 @@ test_that("bqs_df_to_arrow_array rejects incompatible types instead of silently 
   out_rep <- bqs_decode_ipc_direct(ipc_rep, bigint = "integer64")
   expect_identical(out_rep$arr[[1]], bit64::as.integer64(c(1, 2)))
   expect_identical(out_rep$arr[[2]], bit64::as.integer64(c(3, NA)))
+  expect_identical(out_rep$arr[[3]], bit64::as.integer64(4))
+
+  # REPEATED FLOAT64 with non-first integer64 (must not reinterpret int64 bits as double)
+  f_rep_flt <- list(list(name = "arr", type = "FLOAT64", mode = "REPEATED"))
+  expect_error(bqs_df_to_arrow_array(tibble::tibble(arr = list(1.5, as.Date("2024-01-01"))), f_rep_flt), "BigQuery FLOAT64")
+  ipc_rep_flt <- bqs_serialize_to_ipc(
+    tibble::tibble(arr = list(1.5, bit64::as.integer64(2), NA)),
+    f_rep_flt,
+    row_batch_size = 10L,
+    use_zstd = FALSE
+  )
+  out_rep_flt <- bqs_decode_ipc_direct(ipc_rep_flt)
+  expect_identical(out_rep_flt$arr[[1]], 1.5)
+  expect_identical(out_rep_flt$arr[[2]], 2.0)
+  expect_identical(out_rep_flt$arr[[3]], NA_real_)
+
+  # REPEATED DATE / STRING mixed element validation
+  f_rep_date <- list(list(name = "arr", type = "DATE", mode = "REPEATED"))
+  expect_error(
+    bqs_df_to_arrow_array(tibble::tibble(arr = list(as.Date("2024-01-01"), "not-a-date")), f_rep_date),
+    "BigQuery DATE"
+  )
+  expect_error(
+    bqs_df_to_arrow_array(tibble::tibble(arr = list(as.Date("2024-01-01"), 100)), f_rep_date),
+    "BigQuery DATE"
+  )
+  ipc_rep_date <- bqs_serialize_to_ipc(
+    tibble::tibble(arr = list(as.Date("2024-01-01"), "2024-01-02", NA)),
+    f_rep_date,
+    row_batch_size = 10L,
+    use_zstd = FALSE
+  )
+  out_rep_date <- bqs_decode_ipc_direct(ipc_rep_date)
+  expect_identical(out_rep_date$arr[[1]], as.Date("2024-01-01"))
+  expect_identical(out_rep_date$arr[[2]], as.Date("2024-01-02"))
+  expect_identical(out_rep_date$arr[[3]], as.Date(NA))
+
+  f_rep_str <- list(list(name = "arr", type = "STRING", mode = "REPEATED"))
+  expect_error(
+    bqs_df_to_arrow_array(tibble::tibble(arr = list("a", as.Date("2024-01-01"))), f_rep_str),
+    "BigQuery STRING"
+  )
+  ipc_rep_str <- bqs_serialize_to_ipc(
+    tibble::tibble(arr = list("a", factor("b"), bit64::as.integer64(3))),
+    f_rep_str,
+    row_batch_size = 10L,
+    use_zstd = FALSE
+  )
+  out_rep_str <- bqs_decode_ipc_direct(ipc_rep_str)
+  expect_identical(out_rep_str$arr[[1]], "a")
+  expect_identical(out_rep_str$arr[[2]], "b")
+  expect_identical(out_rep_str$arr[[3]], "3")
 })
 
