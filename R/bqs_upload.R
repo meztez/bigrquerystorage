@@ -452,7 +452,7 @@ bqs_double_to_integer64_strict <- function(col, name) {
   non_na <- !is.na(col)
   if (any(non_na)) {
     vals <- col[non_na]
-    if (!all(is.finite(vals)) || !all(trunc(vals) == vals) || any(abs(vals) >= 9223372036854775808)) {
+    if (!all(is.finite(vals)) || !all(trunc(vals) == vals) || any(abs(vals) >= 2^63)) {
       bqs_stop_incompatible_type(
         name, col, "INT64",
         "contains non-integer, non-finite, or out-of-range double values"
@@ -1125,7 +1125,7 @@ bqs_concat_vectors <- function(lst, name = "item", target_type = "") {
       if (!(is.double(x) && !is.object(x))) return(FALSE)
       if (any(is.nan(x))) return(TRUE)
       vals <- x[!is.na(x)]
-      length(vals) > 0L && (!all(is.finite(vals)) || !all(trunc(vals) == vals) || any(abs(vals) >= 9223372036854775808))
+      length(vals) > 0L && (!all(is.finite(vals)) || !all(trunc(vals) == vals) || any(abs(vals) >= 2^63))
     }, logical(1)))
     if (has_non_int_dbl) {
       return(unlist(lapply(lst, as.double), use.names = FALSE))

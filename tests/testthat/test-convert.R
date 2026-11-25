@@ -835,6 +835,7 @@ test_that("bqs_df_to_arrow_array rejects incompatible types instead of silently 
   expect_error(bqs_df_to_arrow_array(tibble::tibble(arr = list(1:2, as.Date("2024-01-01"))), f_rep), "BigQuery INT64")
   expect_error(bqs_df_to_arrow_array(tibble::tibble(arr = list(1:2, factor("bad"))), f_rep), "BigQuery INT64")
   expect_error(bqs_df_to_arrow_array(tibble::tibble(arr = list(c(1, 1.5))), f_rep), "BigQuery INT64")
+  expect_error(bqs_df_to_arrow_array(tibble::tibble(arr = list(2^63)), f_rep), "BigQuery INT64")
   expect_error(bqs_df_to_arrow_array(tibble::tibble(arr = list(-2^63)), f_rep), "BigQuery INT64")
   expect_no_warning({
     ipc_rep <- bqs_serialize_to_ipc(
