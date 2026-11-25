@@ -15,6 +15,7 @@ namespace {
 
 bool parse_decimal_string(const char* s, int scale, int bitwidth, uint8_t* out_bytes) {
   int byte_width = bitwidth / 8;
+  int n_limbs = byte_width / 4;
   std::memset(out_bytes, 0, static_cast<size_t>(byte_width));
   if (!s) return false;
   while (*s == ' ' || *s == '\t') s++;
@@ -29,13 +30,14 @@ bool parse_decimal_string(const char* s, int scale, int bitwidth, uint8_t* out_b
   }
 
   uint32_t limbs[8] = {0};
-  auto mul10_add = [&](uint32_t digit) {
+  auto mul10_add = [&](uint32_t digit) -> bool {
     uint64_t carry = digit;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < n_limbs; i++) {
       uint64_t cur = static_cast<uint64_t>(limbs[i]) * 10ULL + carry;
       limbs[i] = static_cast<uint32_t>(cur & 0xFFFFFFFFULL);
       carry = cur >> 32;
     }
+    return carry == 0;
   };
 
   bool seen_dot = false;
@@ -52,32 +54,42 @@ bool parse_decimal_string(const char* s, int scale, int bitwidth, uint8_t* out_b
     seen_digit = true;
     if (seen_dot) {
       if (frac_digits < scale) {
-        mul10_add(static_cast<uint32_t>(c - '0'));
+        if (!mul10_add(static_cast<uint32_t>(c - '0'))) return false;
         frac_digits++;
       } else if (frac_digits == scale) {
         if (c >= '5') {
           uint64_t carry = 1;
-          for (int i = 0; i < 8 && carry; i++) {
+          for (int i = 0; i < n_limbs && carry; i++) {
             uint64_t cur = static_cast<uint64_t>(limbs[i]) + carry;
             limbs[i] = static_cast<uint32_t>(cur & 0xFFFFFFFFULL);
             carry = cur >> 32;
           }
+          if (carry != 0) return false;
         }
         frac_digits++;
       }
     } else {
-      mul10_add(static_cast<uint32_t>(c - '0'));
+      if (!mul10_add(static_cast<uint32_t>(c - '0'))) return false;
     }
   }
-  if (!seen_digit) return false;
+  while (*s == ' ' || *s == '\t') s++;
+  if (!seen_digit || *s != '\0') return false;
   while (frac_digits < scale) {
-    mul10_add(0);
+    if (!mul10_add(0)) return false;
     frac_digits++;
+  }
+
+  if ((limbs[n_limbs - 1] & 0x80000000u) != 0) {
+    bool is_min_signed = neg && (limbs[n_limbs - 1] == 0x80000000u);
+    for (int i = 0; i < n_limbs - 1 && is_min_signed; i++) {
+      if (limbs[i] != 0) is_min_signed = false;
+    }
+    if (!is_min_signed) return false;
   }
 
   if (neg) {
     uint64_t carry = 1;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < n_limbs; i++) {
       uint64_t cur = static_cast<uint64_t>(~limbs[i]) + carry;
       limbs[i] = static_cast<uint32_t>(cur & 0xFFFFFFFFULL);
       carry = cur >> 32;
@@ -88,11 +100,11 @@ bool parse_decimal_string(const char* s, int scale, int bitwidth, uint8_t* out_b
   return true;
 }
 
-void encode_double_to_decimal(double v, int scale, int bitwidth, uint8_t* out_bytes) {
+bool encode_double_to_decimal(double v, int scale, int bitwidth, uint8_t* out_bytes) {
   int byte_width = bitwidth / 8;
   if (!R_finite(v)) {
     std::memset(out_bytes, 0, static_cast<size_t>(byte_width));
-    return;
+    return false;
   }
   if (scale >= 0 && scale <= 9) {
     double scaled = std::round(v * std::pow(10.0, scale));
@@ -101,7 +113,7 @@ void encode_double_to_decimal(double v, int scale, int bitwidth, uint8_t* out_by
       int64_t lo = static_cast<int64_t>(scaled);
       std::memcpy(out_bytes, &lo, sizeof(int64_t));
       std::memset(out_bytes + sizeof(int64_t), lo < 0 ? 0xFF : 0x00, static_cast<size_t>(byte_width - 8));
-      return;
+      return true;
     }
     constexpr double kTwoPow64 = 18446744073709551616.0;
     constexpr double kTwoPowNeg64 = 1.0 / kTwoPow64;
@@ -122,12 +134,12 @@ void encode_double_to_decimal(double v, int scale, int bitwidth, uint8_t* out_by
       if (byte_width == 32) {
         std::memset(out_bytes + 16, neg ? 0xFF : 0x00, 16);
       }
-      return;
+      return true;
     }
   }
   char buf[384];
   std::snprintf(buf, sizeof(buf), "%.*f", std::min(std::max(scale, 0), 15), v);
-  parse_decimal_string(buf, scale, bitwidth, out_bytes);
+  return parse_decimal_string(buf, scale, bitwidth, out_bytes);
 }
 
 struct OwnedSchemaPriv {
@@ -197,6 +209,7 @@ enum FastColKind {
   FCOL_UNSUPPORTED = 0,
   FCOL_INT32_ZC,
   FCOL_INT64_ZC,
+  FCOL_INT64_FROM_DBL,
   FCOL_FLOAT64_ZC,
   FCOL_FLOAT64_FROM_INT,
   FCOL_BOOL,
@@ -213,6 +226,7 @@ struct FastColTask {
   int64_t n = 0;
   int64_t null_count = 0;
   OwnedArrayPriv* priv = nullptr;
+  bool error = false;
 };
 
 template <typename SrcT, typename IsValidFn>
@@ -281,6 +295,38 @@ void execute_numeric_col_task(FastColTask& t) {
       const int64_t na_i64 = INT64_MIN;
       t.null_count = scan_zero_copy_col(
         static_cast<const int64_t*>(t.r_ptr), n, priv, [na_i64](int64_t v) { return v != na_i64; });
+      break;
+    }
+    case FCOL_INT64_FROM_DBL: {
+      const double* src = static_cast<const double*>(t.r_ptr);
+      priv->buf1.resize(static_cast<size_t>(n) * sizeof(int64_t));
+      int64_t* dst = reinterpret_cast<int64_t*>(priv->buf1.data());
+      int64_t nulls = 0;
+      for (int64_t i = 0; i < n; i++) {
+        double v = src[i];
+        if (std::isnan(v)) {
+          if (R_IsNA(v)) {
+            dst[i] = 0;
+            nulls++;
+          } else {
+            t.error = true;
+            break;
+          }
+        } else if (std::isfinite(v) && std::trunc(v) == v &&
+                   v > -9223372036854775808.0 && v < 9223372036854775808.0) {
+          dst[i] = static_cast<int64_t>(v);
+        } else {
+          t.error = true;
+          break;
+        }
+      }
+      if (!t.error) {
+        t.null_count = nulls;
+        populate_validity_bitmap(src, n, nulls, priv, [](double v) {
+          return !(std::isnan(v) && R_IsNA(v));
+        });
+        priv->buffers[1] = dst;
+      }
       break;
     }
     case FCOL_FLOAT64_ZC: {
@@ -510,6 +556,7 @@ Rcpp::List bqs_encode_decimal(SEXP x, int scale = 9, int bitwidth = 128) {
   std::memset(valid, 0, static_cast<size_t>(valid_bytes));
   R_xlen_t null_count = 0;
 
+  const char* bq_type = (bitwidth == 128) ? "NUMERIC" : "BIGNUMERIC";
   if (Rf_inherits(x, "integer64") && TYPEOF(x) == REALSXP) {
     const int64_t* vals = reinterpret_cast<const int64_t*>(REAL(x));
     for (R_xlen_t i = 0; i < n; i++) {
@@ -520,42 +567,60 @@ Rcpp::List bqs_encode_decimal(SEXP x, int scale = 9, int bitwidth = 128) {
         valid[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
         char s[32];
         std::snprintf(s, sizeof(s), "%lld", static_cast<long long>(v));
-        parse_decimal_string(s, scale, bitwidth, dst + i * byte_width);
+        if (!parse_decimal_string(s, scale, bitwidth, dst + i * byte_width)) {
+          Rcpp::stop("Cannot convert value '%s' to BigQuery %s.", s, bq_type);
+        }
       }
     }
-  } else if (TYPEOF(x) == REALSXP) {
+  } else if (TYPEOF(x) == REALSXP && !Rf_isObject(x)) {
     const double* vals = REAL(x);
     for (R_xlen_t i = 0; i < n; i++) {
       double v = vals[i];
       if (ISNA(v) || ISNAN(v)) {
         null_count++;
+      } else if (!R_finite(v)) {
+        Rcpp::stop("Cannot convert non-finite value to BigQuery %s.", bq_type);
       } else {
+        if (!encode_double_to_decimal(v, scale, bitwidth, dst + i * byte_width)) {
+          Rcpp::stop("Cannot convert out-of-range value to BigQuery %s.", bq_type);
+        }
         valid[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
-        encode_double_to_decimal(v, scale, bitwidth, dst + i * byte_width);
       }
     }
-  } else if (TYPEOF(x) == INTSXP) {
+  } else if (TYPEOF(x) == INTSXP && !Rf_isObject(x)) {
     const int* vals = INTEGER(x);
     for (R_xlen_t i = 0; i < n; i++) {
       int v = vals[i];
       if (v == NA_INTEGER) {
         null_count++;
       } else {
+        if (!encode_double_to_decimal(static_cast<double>(v), scale, bitwidth, dst + i * byte_width)) {
+          Rcpp::stop("Cannot convert out-of-range value to BigQuery %s.", bq_type);
+        }
         valid[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
-        encode_double_to_decimal(static_cast<double>(v), scale, bitwidth, dst + i * byte_width);
       }
     }
-  } else if (TYPEOF(x) == STRSXP) {
+  } else if (TYPEOF(x) == STRSXP && !Rf_isObject(x)) {
     for (R_xlen_t i = 0; i < n; i++) {
       SEXP elt = STRING_ELT(x, i);
-      if (elt != NA_STRING && parse_decimal_string(CHAR(elt), scale, bitwidth, dst + i * byte_width)) {
+      if (elt == NA_STRING) {
+        null_count++;
+      } else if (parse_decimal_string(CHAR(elt), scale, bitwidth, dst + i * byte_width)) {
         valid[i >> 3] |= static_cast<uint8_t>(1u << (i & 7));
       } else {
-        null_count++;
+        Rcpp::stop("Cannot convert value '%s' to BigQuery %s.", CHAR(elt), bq_type);
       }
     }
+  } else if (TYPEOF(x) == LGLSXP && !Rf_isObject(x)) {
+    const int* vals = LOGICAL(x);
+    for (R_xlen_t i = 0; i < n; i++) {
+      if (vals[i] != NA_LOGICAL) {
+        Rcpp::stop("Cannot convert logical values to BigQuery %s.", bq_type);
+      }
+      null_count++;
+    }
   } else {
-    Rcpp::stop("Unsupported vector type for NUMERIC/BIGNUMERIC conversion.");
+    Rcpp::stop("Unsupported vector type for %s conversion.", bq_type);
   }
 
   return Rcpp::List::create(
@@ -595,7 +660,7 @@ Rcpp::List bqs_fast_df_columns(Rcpp::List df,
   std::vector<SEXP> zc_sexps(static_cast<size_t>(p), R_NilValue);
   std::vector<std::string> col_formats(static_cast<size_t>(p));
   std::vector<int> n_bufs_vec(static_cast<size_t>(p), 2);
-  std::vector<OwnedArrayPriv*> privs(static_cast<size_t>(p), nullptr);
+  std::vector<std::unique_ptr<OwnedArrayPriv>> privs(static_cast<size_t>(p));
   std::vector<int64_t> null_counts(static_cast<size_t>(p), 0);
 
   for (int j = 0; j < p; j++) {
@@ -610,25 +675,24 @@ Rcpp::List bqs_fast_df_columns(Rcpp::List df,
 
     size_t ju = static_cast<size_t>(j);
     if (TYPEOF(col) == INTSXP && Rf_isFactor(col) && (type.empty() || type == "STRING")) {
-      auto* priv = new OwnedArrayPriv();
+      auto priv = std::make_unique<OwnedArrayPriv>();
       int64_t nc = 0;
       std::string fmt;
-      if (build_factor_col_main_thread(col, n_rows, priv, &nc, &fmt)) {
-        privs[ju] = priv;
+      if (build_factor_col_main_thread(col, n_rows, priv.get(), &nc, &fmt)) {
+        privs[ju] = std::move(priv);
         null_counts[ju] = nc;
         col_formats[ju] = std::move(fmt);
         n_bufs_vec[ju] = 3;
         continue;
       }
-      delete priv;
     } else if (TYPEOF(col) == STRSXP &&
-               (!Rf_isObject(col) || Rf_inherits(col, "wk_wkt")) &&
-               (type.empty() || type == "STRING" || type == "GEOGRAPHY")) {
-      auto* priv = new OwnedArrayPriv();
+               (!Rf_isObject(col) || (Rf_inherits(col, "wk_wkt") && type != "JSON")) &&
+               (type.empty() || type == "STRING" || type == "GEOGRAPHY" || type == "JSON")) {
+      auto priv = std::make_unique<OwnedArrayPriv>();
       int64_t nc = 0;
       std::string fmt;
-      build_utf8_col_main_thread(col, n_rows, priv, &nc, &fmt);
-      privs[ju] = priv;
+      build_utf8_col_main_thread(col, n_rows, priv.get(), &nc, &fmt);
+      privs[ju] = std::move(priv);
       null_counts[ju] = nc;
       col_formats[ju] = std::move(fmt);
       n_bufs_vec[ju] = 3;
@@ -663,10 +727,15 @@ Rcpp::List bqs_fast_df_columns(Rcpp::List df,
         kind = FCOL_FLOAT64_FROM_INT;
         fmt = "g";
       }
-    } else if (TYPEOF(col) == REALSXP && !Rf_isObject(col) && (type.empty() || type == "FLOAT64")) {
-      kind = FCOL_FLOAT64_ZC;
-      fmt = "g";
-      zero_copy = true;
+    } else if (TYPEOF(col) == REALSXP && !Rf_isObject(col)) {
+      if (type.empty() || type == "FLOAT64") {
+        kind = FCOL_FLOAT64_ZC;
+        fmt = "g";
+        zero_copy = true;
+      } else if (type == "INT64") {
+        kind = FCOL_INT64_FROM_DBL;
+        fmt = "l";
+      }
     } else if (TYPEOF(col) == LGLSXP && !Rf_isObject(col) && (type.empty() || type == "BOOL")) {
       kind = FCOL_BOOL;
       fmt = "b";
@@ -678,8 +747,7 @@ Rcpp::List bqs_fast_df_columns(Rcpp::List df,
       continue;
     }
 
-    auto* priv = new OwnedArrayPriv();
-    privs[ju] = priv;
+    privs[ju] = std::make_unique<OwnedArrayPriv>();
     col_formats[ju] = std::move(fmt);
     if (zero_copy) zc_sexps[ju] = col;
 
@@ -687,7 +755,7 @@ Rcpp::List bqs_fast_df_columns(Rcpp::List df,
     if (TYPEOF(col) == INTSXP) r_ptr = INTEGER(col);
     else if (TYPEOF(col) == REALSXP) r_ptr = REAL(col);
     else if (TYPEOF(col) == LGLSXP) r_ptr = LOGICAL(col);
-    numeric_tasks.push_back({j, kind, r_ptr, n_rows, 0, priv});
+    numeric_tasks.push_back({j, kind, r_ptr, n_rows, 0, privs[ju].get(), false});
   }
 
   if (!numeric_tasks.empty()) {
@@ -698,20 +766,26 @@ Rcpp::List bqs_fast_df_columns(Rcpp::List df,
       execute_numeric_col_task(numeric_tasks[k]);
     });
     for (const auto& t : numeric_tasks) {
+      if (t.error) {
+        std::string nm = Rcpp::as<std::string>(col_names[t.col_idx]);
+        Rcpp::stop(
+          "Column '%s' contains values that cannot be losslessly converted to BigQuery INT64.",
+          nm.c_str());
+      }
       null_counts[static_cast<size_t>(t.col_idx)] = t.null_count;
     }
   }
 
   for (int j = 0; j < p; j++) {
     size_t ju = static_cast<size_t>(j);
-    OwnedArrayPriv* priv = privs[ju];
-    if (!priv) continue;
+    if (!privs[ju]) continue;
 
     std::string nm = Rcpp::as<std::string>(col_names[j]);
     SEXP sch_xptr = PROTECT(make_leaf_schema_xptr(col_formats[ju].c_str(), nm.c_str()));
     SEXP arr_xptr = PROTECT(nanoarrow_array_owning_xptr());
     struct ArrowArray* arr = nanoarrow_output_array_from_xptr(arr_xptr);
 
+    OwnedArrayPriv* priv = privs[ju].release();
     arr->length = n_rows;
     arr->null_count = null_counts[ju];
     arr->offset = 0;

@@ -4,13 +4,7 @@
 bqs_normalize_fields <- function(fields) {
   if (is.null(fields)) return(NULL)
   lapply(fields, function(f) {
-    type <- switch(toupper(f$type %||% "STRING"),
-      INTEGER = , INT = , SMALLINT = , TINYINT = , BYTEINT = , BIGINT = "INT64",
-      FLOAT = , DOUBLE = "FLOAT64",
-      BOOLEAN = "BOOL",
-      STRUCT = "RECORD",
-      toupper(f$type %||% "STRING")
-    )
+    type <- bqs_normalize_type(f$type %||% "STRING")
     out <- list(
       name = as.character(f$name),
       type = type,

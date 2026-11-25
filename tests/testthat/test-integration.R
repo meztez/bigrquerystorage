@@ -553,4 +553,46 @@ test_that("edge cases: NaN upload, NA factor level, INT64_MAX overflow, n_max on
   expect_equal(nrow(out_wide), 550L)
 })
 
+test_that("STRUCT string ALTREP download stays valid after GC (#94) and incompatible upload types error (#96)", {
+  auth_fn()
+
+  # Issue / PR #94: single-batch STRUCT containing string column
+  tb_struct <- bigrquery::bq_project_query(
+    bigrquery::bq_test_project(),
+    "SELECT STRUCT(1.0 AS a, 'abc' AS b) AS s",
+    quiet = TRUE
+  )
+  df_struct <- bqs_table_download(tb_struct, bigrquery::bq_test_project(), quiet = TRUE)
+  invisible(replicate(200L, raw(4096L)))
+  gc(FALSE)
+  expect_identical(df_struct$s, tibble::tibble(a = 1, b = "abc"))
+
+  # Issue #96: uploading incompatible character column into INT64 table must error, not load NULL
+  ds <- bigrquery::bq_test_dataset()
+  tb_schema <- bigrquery::bq_table(ds, "test_incompatible_upload")
+  bigrquery::bq_table_create(
+    tb_schema,
+    fields = list(bigrquery::bq_field("x", "integer"), bigrquery::bq_field("y", "string"))
+  )
+  expect_error(
+    bqs_table_upload(tb_schema, data.frame(x = "x", y = 1:5), write_disposition = "WRITE_APPEND", quiet = TRUE),
+    "BigQuery INT64"
+  )
+  expect_equal(nrow(bqs_table_download(tb_schema, tb_schema$project, quiet = TRUE)), 0L)
+
+  # Lossless whole-number doubles into INT64 succeed without warning
+  expect_no_warning(
+    bqs_table_upload(
+      tb_schema,
+      data.frame(x = c(1, 2, NA_real_), y = c("a", "b", "c")),
+      write_disposition = "WRITE_APPEND",
+      quiet = TRUE
+    )
+  )
+  out_ok <- bqs_table_download(tb_schema, tb_schema$project, quiet = TRUE)
+  out_ok <- out_ok[order(out_ok$y), ]
+  expect_identical(out_ok$x, c(1L, 2L, NA_integer_))
+  expect_identical(out_ok$y, c("a", "b", "c"))
+})
+
 
