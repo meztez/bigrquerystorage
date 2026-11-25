@@ -1,3 +1,28 @@
+# bigrquerystorage 1.3.1
+
+## Bug fixes
+
+* Fix a use-after-free when downloading tables containing single-batch
+  fallback columns (such as `STRUCT` columns with string fields) via
+  `bqs_table_download()` (#94). Borrowed Arrow arrays now share ownership of
+  their decoded batch storage and deep-copy their `ArrowSchema`, keeping
+  `nanoarrow`'s lazy ALTREP string vectors valid after `bqs_download_direct()`
+  returns without copying strings up front.
+* `bqs_table_upload()` now errors instead of silently coercing incompatible
+  column types or unparseable values to `NULL` (#96):
+  * Uploading incompatible types (such as `character`, `factor`, non-`NA`
+    `logical`, fractional/`NaN`/`Inf`/out-of-range `double`, or mismatched
+    temporal/binary/nested types) into `INT64`, `FLOAT64`, `BOOL`, `DATE`,
+    `TIME`, `DATETIME`, `TIMESTAMP`, `NUMERIC`, `BIGNUMERIC`, `BYTES`,
+    `GEOGRAPHY`, `JSON`, `RECORD`, or `REPEATED` columns now fails with a clear
+    error before sending data.
+  * Lossless casts remain supported, including whole-number `double` vectors
+    into `INT64` (now converted and validated in C++ without warnings),
+    all-`NA` `logical` vectors into any nullable column type, and valid strings
+    into `DATE`, `TIME`, `DATETIME`, `TIMESTAMP`, `NUMERIC`, and `BIGNUMERIC`
+    columns (rejecting partially invalid vectors, trailing garbage, overflow,
+    and `Inf`/`-Inf`).
+
 # bigrquerystorage 1.3.0
 
 ## New features

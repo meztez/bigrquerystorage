@@ -945,16 +945,18 @@ bool decode_ipc_record_batch(std::string&& raw_msg,
     }
     if (offsets_aligned) {
       out->buffers = std::move(raw_bufs);
-      out->raw_ipc = std::move(raw_msg);
+      auto stor = std::make_shared<DecodedBatchStorage>();
+      stor->raw_ipc = std::move(raw_msg);
+      out->storage = std::move(stor);
       out->raw_body_offset = body_offset_in_msg;
-      out->decompressed.reset();
       out->body_size = static_cast<size_t>(frame.body_len);
       out->refresh_body_ptr();
       if (out->body_size == 0 || (reinterpret_cast<uintptr_t>(out->body_ptr) & 7u) == 0u) {
         return true;
       }
       raw_bufs = std::move(out->buffers);
-      raw_msg = std::move(out->raw_ipc);
+      raw_msg = std::move(out->storage->raw_ipc);
+      out->storage.reset();
       data = reinterpret_cast<const uint8_t*>(raw_msg.data());
     }
 
@@ -970,8 +972,9 @@ bool decode_ipc_record_batch(std::string&& raw_msg,
       }
     }
     size_t total_aligned = static_cast<size_t>(total_aligned64);
-    out->decompressed.reset(total_aligned > 0 ? new uint8_t[total_aligned] : nullptr);
-    uint8_t* dst_base = out->decompressed.get();
+    auto stor = std::make_shared<DecodedBatchStorage>();
+    stor->decompressed.reset(total_aligned > 0 ? new uint8_t[total_aligned] : nullptr);
+    uint8_t* dst_base = stor->decompressed.get();
     size_t dst_pos = 0;
     out->buffers.resize(raw_bufs.size());
     for (size_t i = 0; i < raw_bufs.size(); i++) {
@@ -988,6 +991,7 @@ bool decode_ipc_record_batch(std::string&& raw_msg,
       dst_pos += padded;
     }
     std::string().swap(raw_msg);
+    out->storage = std::move(stor);
     out->raw_body_offset = 0;
     out->body_ptr = dst_base;
     out->body_size = total_aligned;
@@ -1022,8 +1026,9 @@ bool decode_ipc_record_batch(std::string&& raw_msg,
       }
     }
     size_t total_out_bytes = static_cast<size_t>(total_out_bytes64);
-    out->decompressed.reset(total_out_bytes > 0 ? new uint8_t[total_out_bytes] : nullptr);
-    uint8_t* dst_base = out->decompressed.get();
+    auto stor = std::make_shared<DecodedBatchStorage>();
+    stor->decompressed.reset(total_out_bytes > 0 ? new uint8_t[total_out_bytes] : nullptr);
+    uint8_t* dst_base = stor->decompressed.get();
     size_t dst_pos = 0;
     ZSTD_DCtx* dctx = zctx ? static_cast<ZSTD_DCtx*>(zctx->get()) : nullptr;
 
@@ -1062,6 +1067,8 @@ bool decode_ipc_record_batch(std::string&& raw_msg,
     }
 
     std::string().swap(raw_msg);
+    out->storage = std::move(stor);
+    out->raw_body_offset = 0;
     out->body_ptr = dst_base;
     out->body_size = total_out_bytes;
     return true;
@@ -1210,6 +1217,96 @@ bool validate_borrowed_field_buffers(const ArrowSchema* sch,
   return true;
 }
 
+namespace {
+
+struct CopiedSchemaPriv {
+  std::string format;
+  std::string name;
+  std::string metadata;
+  bool has_name = false;
+  bool has_metadata = false;
+};
+
+size_t arrow_schema_metadata_size(const char* md) {
+  if (!md) return 0;
+  int32_t n_pairs = load_unaligned<int32_t>(md);
+  if (n_pairs < 0) return 0;
+  size_t off = sizeof(int32_t);
+  for (int32_t i = 0; i < n_pairs; i++) {
+    int32_t klen = load_unaligned<int32_t>(md + off);
+    if (klen < 0) return 0;
+    off += sizeof(int32_t) + static_cast<size_t>(klen);
+    int32_t vlen = load_unaligned<int32_t>(md + off);
+    if (vlen < 0) return 0;
+    off += sizeof(int32_t) + static_cast<size_t>(vlen);
+  }
+  return off;
+}
+
+void release_copied_arrow_schema(struct ArrowSchema* s) {
+  if (!s || !s->release) return;
+  if (s->children) {
+    for (int64_t i = 0; i < s->n_children; i++) {
+      if (s->children[i]) {
+        if (s->children[i]->release) s->children[i]->release(s->children[i]);
+        free(s->children[i]);
+      }
+    }
+    free(s->children);
+  }
+  if (s->dictionary) {
+    if (s->dictionary->release) s->dictionary->release(s->dictionary);
+    free(s->dictionary);
+  }
+  delete static_cast<CopiedSchemaPriv*>(s->private_data);
+  s->private_data = nullptr;
+  s->release = nullptr;
+}
+
+} // namespace
+
+void deep_copy_arrow_schema(const ArrowSchema* src, ArrowSchema* dst) {
+  std::memset(dst, 0, sizeof(ArrowSchema));
+  if (!src) return;
+  auto* priv = new CopiedSchemaPriv();
+  priv->format = src->format ? src->format : "";
+  if (src->name) {
+    priv->name = src->name;
+    priv->has_name = true;
+  }
+  if (src->metadata) {
+    size_t md_len = arrow_schema_metadata_size(src->metadata);
+    if (md_len > 0) {
+      priv->metadata.assign(src->metadata, md_len);
+      priv->has_metadata = true;
+    }
+  }
+  dst->format = priv->format.c_str();
+  dst->name = priv->has_name ? priv->name.c_str() : nullptr;
+  dst->metadata = priv->has_metadata ? priv->metadata.data() : nullptr;
+  dst->flags = src->flags;
+  dst->n_children = src->n_children;
+  dst->children = nullptr;
+  dst->dictionary = nullptr;
+  dst->private_data = priv;
+  dst->release = release_copied_arrow_schema;
+
+  if (src->n_children > 0 && src->children) {
+    dst->children = static_cast<ArrowSchema**>(
+      calloc(static_cast<size_t>(src->n_children), sizeof(ArrowSchema*)));
+    for (int64_t i = 0; i < src->n_children; i++) {
+      if (src->children[i]) {
+        dst->children[i] = static_cast<ArrowSchema*>(malloc(sizeof(ArrowSchema)));
+        deep_copy_arrow_schema(src->children[i], dst->children[i]);
+      }
+    }
+  }
+  if (src->dictionary) {
+    dst->dictionary = static_cast<ArrowSchema*>(malloc(sizeof(ArrowSchema)));
+    deep_copy_arrow_schema(src->dictionary, dst->dictionary);
+  }
+}
+
 void release_borrowed_array(struct ArrowArray* a) {
   if (!a || !a->release) return;
   if (a->children) {
@@ -1231,6 +1328,7 @@ ArrowArray* build_borrowed_field_array(const ArrowSchema* sch,
                                        size_t* buf_pos) {
   ArrowArray* arr = static_cast<ArrowArray*>(malloc(sizeof(ArrowArray)));
   BorrowedArrayPriv* priv = new BorrowedArrayPriv();
+  priv->storage = batch.storage;
   const char* fmt = (sch && sch->format) ? sch->format : "";
 
   const FieldNodeDesc& nd = batch.nodes[(*node_pos)++];

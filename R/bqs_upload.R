@@ -370,7 +370,7 @@ bqs_df_to_arrow_array <- function(df, target_fields = NULL) {
   for (i in seq_len(p)) {
     f <- field_map[[tolower(col_names[[i]])]]
     if (!is.null(f)) {
-      target_types[[i]] <- toupper(f$type %||% "")
+      target_types[[i]] <- bqs_normalize_type(f$type %||% "")
       target_modes[[i]] <- toupper(f$mode %||% "NULLABLE")
     } else {
       target_types[[i]] <- ""
@@ -414,20 +414,295 @@ bqs_df_to_arrow_array <- function(df, target_fields = NULL) {
 }
 
 #' @noRd
+bqs_normalize_type <- function(type) {
+  tp <- toupper(type %||% "")
+  switch(tp,
+    INTEGER = , INT = , SMALLINT = , TINYINT = , BYTEINT = , BIGINT = "INT64",
+    FLOAT = , DOUBLE = "FLOAT64",
+    BOOLEAN = "BOOL",
+    STRUCT = "RECORD",
+    tp
+  )
+}
+
+#' @noRd
+bqs_stop_incompatible_type <- function(name, col, target_type, detail = NULL) {
+  msg <- sprintf(
+    "Column '%s' of type '%s' cannot be converted to BigQuery %s",
+    name,
+    paste(class(col), collapse = "/"),
+    target_type
+  )
+  if (!is.null(detail) && nzchar(detail)) {
+    msg <- paste0(msg, ": ", detail)
+  }
+  stop(paste0(msg, "."), call. = FALSE)
+}
+
+#' @noRd
+bqs_is_all_na_logical <- function(col) {
+  is.logical(col) && !is.object(col) && all(is.na(col))
+}
+
+#' @noRd
+bqs_double_to_integer64_strict <- function(col, name) {
+  if (any(is.nan(col))) {
+    bqs_stop_incompatible_type(name, col, "INT64", "NaN values cannot be converted to INT64")
+  }
+  non_na <- !is.na(col)
+  if (any(non_na)) {
+    vals <- col[non_na]
+    if (!all(is.finite(vals)) || !all(trunc(vals) == vals) || any(abs(vals) >= 9223372036854775808)) {
+      bqs_stop_incompatible_type(
+        name, col, "INT64",
+        "contains non-integer, non-finite, or out-of-range double values"
+      )
+    }
+  }
+  bit64::as.integer64(col)
+}
+
+#' @noRd
+bqs_parse_date_strict <- function(col, name) {
+  non_na <- !is.na(col)
+  if (!any(non_na)) {
+    return(as.Date(rep(NA_real_, length(col)), origin = "1970-01-01"))
+  }
+  parsed <- tryCatch(
+    as.Date(col),
+    error = function(e) bqs_stop_incompatible_type(name, col, "DATE", conditionMessage(e))
+  )
+  if (any(non_na & is.na(parsed))) {
+    bad <- col[which(non_na & is.na(parsed))[1L]]
+    bqs_stop_incompatible_type(name, col, "DATE", sprintf("cannot parse '%s'", bad))
+  }
+  parsed
+}
+
+#' @noRd
+bqs_parse_timestamp_strict <- function(col, name, target_type) {
+  non_na <- !is.na(col)
+  if (!any(non_na)) {
+    return(as.POSIXct(rep(NA_real_, length(col)), origin = "1970-01-01", tz = "UTC"))
+  }
+  parsed <- tryCatch(
+    as.POSIXct(col, tz = "UTC"),
+    error = function(e) bqs_stop_incompatible_type(name, col, target_type, conditionMessage(e))
+  )
+  if (any(non_na & is.na(parsed))) {
+    bad <- col[which(non_na & is.na(parsed))[1L]]
+    bqs_stop_incompatible_type(name, col, target_type, sprintf("cannot parse '%s'", bad))
+  }
+  parsed
+}
+
+#' @noRd
+bqs_parse_time_strict <- function(col, name) {
+  non_na <- !is.na(col)
+  if (!any(non_na)) {
+    return(structure(rep(NA_real_, length(col)), units = "secs", class = c("hms", "difftime")))
+  }
+  bqs_check_namespace("hms", "TIME")
+  parsed <- tryCatch(
+    suppressWarnings(hms::as_hms(col)),
+    error = function(e) bqs_stop_incompatible_type(name, col, "TIME", conditionMessage(e))
+  )
+  if (any(non_na & is.na(parsed))) {
+    bad <- col[which(non_na & is.na(parsed))[1L]]
+    bqs_stop_incompatible_type(name, col, "TIME", sprintf("cannot parse '%s'", bad))
+  }
+  parsed
+}
+
+#' @noRd
 bqs_col_to_arrow_array <- function(col, name, field = NULL) {
   mode <- if (!is.null(field)) toupper(field$mode %||% "NULLABLE") else "NULLABLE"
-  type <- if (!is.null(field)) toupper(field$type %||% "") else ""
+  type <- if (!is.null(field)) bqs_normalize_type(field$type %||% "") else ""
 
   if (mode == "REPEATED") {
+    if (!(is.list(col) && !is.data.frame(col) && !inherits(col, "blob") && !inherits(col, "POSIXlt"))) {
+      bqs_stop_incompatible_type(name, col, paste("REPEATED", if (nzchar(type)) type else "ARRAY"))
+    }
     return(bqs_repeated_to_arrow_array(col, name, field))
   }
 
-  if (is.data.frame(col) || type %in% c("RECORD", "STRUCT")) {
-    if (!is.data.frame(col) && is.list(col)) {
-      col <- bqs_list_of_named_lists_to_df(col, if (!is.null(field)) field$fields else NULL)
+  if (nzchar(type)) {
+    if (type == "RECORD") {
+      subfields <- if (!is.null(field)) field$fields else NULL
+      if (is.data.frame(col)) {
+        return(bqs_df_to_arrow_array(col, subfields))
+      }
+      if (is.list(col) && !inherits(col, "blob") && !inherits(col, "POSIXlt")) {
+        non_null <- Filter(Negate(is.null), col)
+        if (length(non_null) == 0L || all(vapply(non_null, function(el) {
+          is.list(el) && !is.data.frame(el) && (length(el) == 0L || rlang::is_named(el))
+        }, logical(1)))) {
+          col <- bqs_list_of_named_lists_to_df(col, subfields)
+          return(bqs_df_to_arrow_array(col, subfields))
+        }
+      }
+      bqs_stop_incompatible_type(name, col, "RECORD")
     }
-    subfields <- if (!is.null(field)) field$fields else NULL
-    return(bqs_df_to_arrow_array(col, subfields))
+
+    if (type == "INT64") {
+      if (bit64::is.integer64(col) || (is.integer(col) && !is.object(col))) {
+        return(nanoarrow::as_nanoarrow_array(col))
+      }
+      if (is.double(col) && !is.object(col)) {
+        return(nanoarrow::as_nanoarrow_array(bqs_double_to_integer64_strict(col, name)))
+      }
+      if (bqs_is_all_na_logical(col)) {
+        return(nanoarrow::as_nanoarrow_array(rep(bit64::NA_integer64_, length(col))))
+      }
+      bqs_stop_incompatible_type(name, col, "INT64")
+    }
+
+    if (type == "FLOAT64") {
+      if (is.double(col) && !is.object(col)) {
+        return(nanoarrow::as_nanoarrow_array(col))
+      }
+      if ((is.integer(col) && !is.object(col)) || bit64::is.integer64(col)) {
+        return(nanoarrow::as_nanoarrow_array(as.double(col)))
+      }
+      if (bqs_is_all_na_logical(col)) {
+        return(nanoarrow::as_nanoarrow_array(rep(NA_real_, length(col))))
+      }
+      bqs_stop_incompatible_type(name, col, "FLOAT64")
+    }
+
+    if (type == "BOOL") {
+      if (is.logical(col) && !is.object(col)) {
+        return(nanoarrow::as_nanoarrow_array(col))
+      }
+      bqs_stop_incompatible_type(name, col, "BOOL")
+    }
+
+    if (type == "STRING") {
+      if ((is.character(col) && (!is.object(col) || inherits(col, "wk_wkt"))) || is.factor(col)) {
+        return(nanoarrow::as_nanoarrow_array(as.character(col), schema = nanoarrow::na_string()))
+      }
+      if (bqs_is_all_na_logical(col)) {
+        return(nanoarrow::as_nanoarrow_array(rep(NA_character_, length(col)), schema = nanoarrow::na_string()))
+      }
+      if (bit64::is.integer64(col) || ((is.integer(col) || is.double(col) || is.logical(col)) && !is.object(col))) {
+        return(nanoarrow::as_nanoarrow_array(as.character(col), schema = nanoarrow::na_string()))
+      }
+      bqs_stop_incompatible_type(name, col, "STRING")
+    }
+
+    if (type == "JSON") {
+      if (is.character(col) && !is.object(col)) {
+        return(nanoarrow::as_nanoarrow_array(col, schema = nanoarrow::na_string()))
+      }
+      if (bqs_is_all_na_logical(col)) {
+        return(nanoarrow::as_nanoarrow_array(rep(NA_character_, length(col)), schema = nanoarrow::na_string()))
+      }
+      bqs_stop_incompatible_type(name, col, "JSON")
+    }
+
+    if (type == "GEOGRAPHY") {
+      if (inherits(col, "wk_wkt") || (is.character(col) && !is.object(col))) {
+        return(nanoarrow::as_nanoarrow_array(as.character(col), schema = nanoarrow::na_string()))
+      }
+      if (bqs_is_all_na_logical(col)) {
+        return(nanoarrow::as_nanoarrow_array(rep(NA_character_, length(col)), schema = nanoarrow::na_string()))
+      }
+      bqs_stop_incompatible_type(name, col, "GEOGRAPHY")
+    }
+
+    if (type == "BYTES") {
+      if (inherits(col, "blob")) {
+        return(nanoarrow::as_nanoarrow_array(col, schema = nanoarrow::na_binary()))
+      }
+      if (bqs_is_all_na_logical(col)) {
+        empty_blob <- structure(
+          vector("list", length(col)),
+          ptype = raw(0),
+          class = c("blob", "vctrs_list_of", "vctrs_vctr", "list")
+        )
+        return(nanoarrow::as_nanoarrow_array(empty_blob, schema = nanoarrow::na_binary()))
+      }
+      if (is.list(col) && !is.data.frame(col) && !inherits(col, "POSIXlt") &&
+          all(vapply(col, function(el) is.null(el) || is.raw(el), logical(1)))) {
+        raw_blob <- structure(
+          unclass(col),
+          ptype = raw(0),
+          class = c("blob", "vctrs_list_of", "vctrs_vctr", "list")
+        )
+        return(nanoarrow::as_nanoarrow_array(raw_blob, schema = nanoarrow::na_binary()))
+      }
+      bqs_stop_incompatible_type(name, col, "BYTES")
+    }
+
+    if (type == "DATE") {
+      if (inherits(col, "Date")) {
+        return(nanoarrow::as_nanoarrow_array(col, schema = nanoarrow::na_date32()))
+      }
+      if (is.character(col) && !is.object(col)) {
+        return(nanoarrow::as_nanoarrow_array(bqs_parse_date_strict(col, name), schema = nanoarrow::na_date32()))
+      }
+      if (bqs_is_all_na_logical(col)) {
+        return(nanoarrow::as_nanoarrow_array(
+          as.Date(rep(NA_real_, length(col)), origin = "1970-01-01"),
+          schema = nanoarrow::na_date32()
+        ))
+      }
+      bqs_stop_incompatible_type(name, col, "DATE")
+    }
+
+    if (type == "TIME") {
+      if (inherits(col, c("hms", "difftime"))) {
+        return(nanoarrow::as_nanoarrow_array(col, schema = nanoarrow::na_time64("us")))
+      }
+      if (is.character(col) && !is.object(col)) {
+        return(nanoarrow::as_nanoarrow_array(bqs_parse_time_strict(col, name), schema = nanoarrow::na_time64("us")))
+      }
+      if (bqs_is_all_na_logical(col)) {
+        return(nanoarrow::as_nanoarrow_array(
+          structure(rep(NA_real_, length(col)), units = "secs", class = c("hms", "difftime")),
+          schema = nanoarrow::na_time64("us")
+        ))
+      }
+      bqs_stop_incompatible_type(name, col, "TIME")
+    }
+
+    if (type %in% c("DATETIME", "TIMESTAMP")) {
+      tz <- if (type == "DATETIME") "" else "UTC"
+      if (inherits(col, "POSIXt")) {
+        return(nanoarrow::as_nanoarrow_array(col, schema = nanoarrow::na_timestamp("us", timezone = tz)))
+      }
+      if (is.character(col) && !is.object(col)) {
+        return(nanoarrow::as_nanoarrow_array(
+          bqs_parse_timestamp_strict(col, name, type),
+          schema = nanoarrow::na_timestamp("us", timezone = tz)
+        ))
+      }
+      if (bqs_is_all_na_logical(col)) {
+        return(nanoarrow::as_nanoarrow_array(
+          as.POSIXct(rep(NA_real_, length(col)), origin = "1970-01-01", tz = "UTC"),
+          schema = nanoarrow::na_timestamp("us", timezone = tz)
+        ))
+      }
+      bqs_stop_incompatible_type(name, col, type)
+    }
+
+    if (type %in% c("NUMERIC", "BIGNUMERIC")) {
+      if (bit64::is.integer64(col) ||
+          ((is.integer(col) || is.double(col) || is.character(col)) && !is.object(col)) ||
+          bqs_is_all_na_logical(col)) {
+        prec <- if (type == "NUMERIC") 38L else 76L
+        scale <- if (type == "BIGNUMERIC" && is.character(col)) 38L else 9L
+        bitwidth <- if (type == "NUMERIC") 128L else 256L
+        return(bqs_decimal_to_arrow_array(col, precision = prec, scale = scale, bitwidth = bitwidth, name = name))
+      }
+      bqs_stop_incompatible_type(name, col, type)
+    }
+
+    return(nanoarrow::as_nanoarrow_array(col))
+  }
+
+  if (is.data.frame(col)) {
+    return(bqs_df_to_arrow_array(col, NULL))
   }
 
   if (is.list(col) && !inherits(col, "blob") && !inherits(col, "POSIXlt")) {
@@ -439,7 +714,7 @@ bqs_col_to_arrow_array <- function(col, name, field = NULL) {
     return(bqs_repeated_to_arrow_array(col, name, field))
   }
 
-  if (inherits(col, "wk_wkt") || type == "GEOGRAPHY") {
+  if (inherits(col, "wk_wkt")) {
     return(nanoarrow::as_nanoarrow_array(as.character(col), schema = nanoarrow::na_string()))
   }
 
@@ -447,61 +722,33 @@ bqs_col_to_arrow_array <- function(col, name, field = NULL) {
     return(nanoarrow::as_nanoarrow_array(as.character(col), schema = nanoarrow::na_string()))
   }
 
-  if (inherits(col, c("hms", "difftime")) || type == "TIME") {
-    if (!inherits(col, "difftime")) {
-      col <- hms::as_hms(col)
-    }
+  if (inherits(col, c("hms", "difftime"))) {
     return(nanoarrow::as_nanoarrow_array(col, schema = nanoarrow::na_time64("us")))
   }
 
-  if (type == "DATETIME") {
-    if (is.character(col)) {
-      col <- as.POSIXct(col, tz = "UTC")
-    }
-    return(nanoarrow::as_nanoarrow_array(col, schema = nanoarrow::na_timestamp("us", timezone = "")))
-  }
-
-  if (inherits(col, "POSIXt") || type == "TIMESTAMP") {
-    if (is.character(col)) {
-      col <- as.POSIXct(col, tz = "UTC")
-    }
+  if (inherits(col, "POSIXt")) {
     return(nanoarrow::as_nanoarrow_array(col, schema = nanoarrow::na_timestamp("us", timezone = "UTC")))
   }
 
-  if (inherits(col, "Date") || type == "DATE") {
-    if (is.character(col)) {
-      col <- as.Date(col)
-    }
+  if (inherits(col, "Date")) {
     return(nanoarrow::as_nanoarrow_array(col, schema = nanoarrow::na_date32()))
-  }
-
-  if (type == "NUMERIC") {
-    return(bqs_decimal_to_arrow_array(col, precision = 38L, scale = 9L, bitwidth = 128L))
-  }
-
-  if (type == "BIGNUMERIC") {
-    scale <- if (is.character(col)) 38L else 9L
-    return(bqs_decimal_to_arrow_array(col, precision = 76L, scale = scale, bitwidth = 256L))
-  }
-
-  if (type == "INT64" && !bit64::is.integer64(col) && !is.integer(col)) {
-    col <- bit64::as.integer64(col)
-  }
-
-  if (type == "FLOAT64" && is.integer(col)) {
-    col <- as.double(col)
-  }
-
-  if (type == "STRING" && !is.character(col)) {
-    col <- as.character(col)
   }
 
   nanoarrow::as_nanoarrow_array(col)
 }
 
 #' @noRd
-bqs_decimal_to_arrow_array <- function(col, precision, scale, bitwidth) {
-  enc <- bqs_encode_decimal(col, scale = scale, bitwidth = bitwidth)
+bqs_decimal_to_arrow_array <- function(col, precision, scale, bitwidth, name = NULL) {
+  enc <- tryCatch(
+    bqs_encode_decimal(col, scale = scale, bitwidth = bitwidth),
+    error = function(e) {
+      if (!is.null(name) && nzchar(name)) {
+        bq_type <- if (bitwidth == 128L) "NUMERIC" else "BIGNUMERIC"
+        bqs_stop_incompatible_type(name, col, bq_type, conditionMessage(e))
+      }
+      stop(e)
+    }
+  )
   sch <- if (bitwidth == 128L) {
     nanoarrow::na_decimal128(precision, scale)
   } else {
@@ -528,16 +775,20 @@ bqs_repeated_to_arrow_array <- function(col, name, field = NULL) {
   elem_field <- if (!is.null(field)) {
     ef <- field
     ef$mode <- "NULLABLE"
+    ef$type <- bqs_normalize_type(ef$type %||% "")
     ef
   } else {
     NULL
   }
 
   non_null <- Filter(Negate(is.null), col)
-  is_record <- (!is.null(elem_field) && elem_field$type %in% c("RECORD", "STRUCT")) ||
+  is_record <- (!is.null(elem_field) && elem_field$type == "RECORD") ||
     (length(non_null) > 0 && is.data.frame(non_null[[1]]))
 
   if (is_record) {
+    if (length(non_null) > 0 && !all(vapply(non_null, is.data.frame, logical(1)))) {
+      bqs_stop_incompatible_type(name, col, "REPEATED RECORD", "all non-NULL elements must be data.frames")
+    }
     lens <- vapply(col, function(el) if (is.null(el)) 0L else nrow(el), integer(1))
     offsets <- c(0L, cumsum(lens))
     non_empty <- Filter(function(el) !is.null(el) && nrow(el) > 0L, col)
@@ -554,14 +805,21 @@ bqs_repeated_to_arrow_array <- function(col, name, field = NULL) {
     }
     item_arr <- bqs_df_to_arrow_array(combined, if (!is.null(elem_field)) elem_field$fields else NULL)
   } else {
+    if (!is.null(elem_field) && elem_field$type %in% c("INT64", "FLOAT64", "NUMERIC", "BIGNUMERIC") &&
+        length(non_null) > 0) {
+      bad_lgl <- vapply(non_null, function(el) is.logical(el) && !bqs_is_all_na_logical(el), logical(1))
+      if (any(bad_lgl)) {
+        bqs_stop_incompatible_type(name, non_null[[which(bad_lgl)[1L]]], paste("REPEATED", elem_field$type))
+      }
+    }
     lens <- lengths(col)
     offsets <- c(0L, cumsum(lens))
     if (length(non_null) > 0) {
-      combined <- bqs_concat_vectors(non_null)
+      combined <- bqs_concat_vectors(non_null, name = name)
     } else {
       combined <- bqs_empty_col_for_field(elem_field)
     }
-    item_arr <- bqs_col_to_arrow_array(combined, "item", elem_field)
+    item_arr <- bqs_col_to_arrow_array(combined, name, elem_field)
   }
 
   item_sch <- nanoarrow::infer_nanoarrow_schema(item_arr)
@@ -624,13 +882,22 @@ bqs_rbind_dfs <- function(dfs) {
 }
 
 #' @noRd
-bqs_concat_vectors <- function(lst) {
+bqs_concat_vectors <- function(lst, name = "item") {
   non_empty <- Filter(function(x) length(x) > 0L, lst)
   first <- if (length(non_empty)) non_empty[[1]] else lst[[1]]
   if (bit64::is.integer64(first)) {
     raw_dbl <- unlist(lapply(lst, function(x) {
-      if (!bit64::is.integer64(x)) x <- bit64::as.integer64(x)
-      unclass(x)
+      if (bit64::is.integer64(x)) {
+        unclass(x)
+      } else if (is.integer(x) && !is.object(x)) {
+        unclass(bit64::as.integer64(x))
+      } else if (is.double(x) && !is.object(x)) {
+        unclass(bqs_double_to_integer64_strict(x, name))
+      } else if (bqs_is_all_na_logical(x)) {
+        unclass(rep(bit64::NA_integer64_, length(x)))
+      } else {
+        bqs_stop_incompatible_type(name, x, "INT64")
+      }
     }), recursive = FALSE, use.names = FALSE)
     class(raw_dbl) <- "integer64"
     return(raw_dbl)

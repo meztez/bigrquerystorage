@@ -41,10 +41,16 @@ struct RCallbacks {
 
 void noop_release_schema(struct ArrowSchema* s) { s->release = nullptr; }
 
+struct ProjectedArrayPriv {
+  std::shared_ptr<ArrowArray> owner;
+};
+
 void release_projected_struct_array(struct ArrowArray* a) {
   if (!a || !a->release) return;
   if (a->children) free(a->children);
   a->children = nullptr;
+  delete static_cast<ProjectedArrayPriv*>(a->private_data);
+  a->private_data = nullptr;
   a->release = nullptr;
 }
 
@@ -77,11 +83,11 @@ struct VecArrowArrayStream {
       }
       return rc;
     }
-    *out = self->borrowed_schema;
+    ArrowSchema tmp = self->borrowed_schema;
     if (!self->child_schema_ptrs.empty()) {
-      out->children = self->child_schema_ptrs.data();
+      tmp.children = self->child_schema_ptrs.data();
     }
-    out->release = noop_release_schema;
+    bqs_ipc::deep_copy_arrow_schema(&tmp, out);
     return 0;
   }
 
@@ -1003,21 +1009,27 @@ SEXP bqs_convert_stream(SEXP stream_xptr, SEXP ptype_df, std::string bigint) {
     return na_convert(stream_xptr, ptype_df);
   }
 
-  std::vector<ArrowArray> batches;
+  auto release_arrow_array = [](ArrowArray* a) {
+    if (a) {
+      if (a->release) a->release(a);
+      delete a;
+    }
+  };
+  std::vector<std::shared_ptr<ArrowArray>> batches;
   int64_t total_rows = 0;
   while (true) {
-    ArrowArray arr;
-    arr.release = nullptr;
-    if (stream->get_next(stream, &arr) != 0) {
+    std::shared_ptr<ArrowArray> arr(new ArrowArray{}, release_arrow_array);
+    arr->release = nullptr;
+    if (stream->get_next(stream, arr.get()) != 0) {
       const char* err = stream->get_last_error ? stream->get_last_error(stream) : "Failed to read next batch from ArrowArrayStream";
       std::string err_str = err ? err : "Failed to read next batch from ArrowArrayStream";
-      for (auto& b : batches) b.release(&b);
+      batches.clear();
       schema.release(&schema);
       Rcpp::stop(err_str.c_str());
     }
-    if (arr.release == nullptr) break;
-    total_rows += arr.length;
-    batches.push_back(arr);
+    if (arr->release == nullptr) break;
+    total_rows += arr->length;
+    batches.push_back(std::move(arr));
   }
 
   Rcpp::List out_cols(n_cols);
@@ -1029,7 +1041,7 @@ SEXP bqs_convert_stream(SEXP stream_xptr, SEXP ptype_df, std::string bigint) {
     double* out_ptr = REAL(col_vec);
     int64_t pos = 0;
     for (auto& b : batches) {
-      ArrowArray* child = b.children[col_idx];
+      ArrowArray* child = b->children[col_idx];
       int64_t len = child->length;
       int64_t offset = child->offset;
       const uint8_t* valid = child->null_count != 0 ? static_cast<const uint8_t*>(child->buffers[0]) : nullptr;
@@ -1054,7 +1066,7 @@ SEXP bqs_convert_stream(SEXP stream_xptr, SEXP ptype_df, std::string bigint) {
     int* out_ptr = INTEGER(col_vec);
     int64_t pos = 0;
     for (auto& b : batches) {
-      ArrowArray* child = b.children[col_idx];
+      ArrowArray* child = b->children[col_idx];
       int64_t len = child->length;
       int64_t offset = child->offset;
       const uint8_t* valid = child->null_count != 0 ? static_cast<const uint8_t*>(child->buffers[0]) : nullptr;
@@ -1081,7 +1093,7 @@ SEXP bqs_convert_stream(SEXP stream_xptr, SEXP ptype_df, std::string bigint) {
 
   for (int col_idx : list_int64_cols) {
     std::vector<ArrowArray*> col_batches(batches.size());
-    for (size_t b = 0; b < batches.size(); b++) col_batches[b] = batches[b].children[col_idx];
+    for (size_t b = 0; b < batches.size(); b++) col_batches[b] = batches[b]->children[col_idx];
     out_cols[col_idx] = convert_list_int64_batches(col_batches, total_rows);
   }
 
@@ -1113,7 +1125,7 @@ SEXP bqs_convert_stream(SEXP stream_xptr, SEXP ptype_df, std::string bigint) {
     sub_stream_impl->borrowed_schema.release = noop_release_schema;
     sub_stream_impl->batches.resize(batches.size());
     for (size_t b = 0; b < batches.size(); b++) {
-      ArrowArray& src = batches[b];
+      ArrowArray& src = *batches[b];
       ArrowArray& proj = sub_stream_impl->batches[b];
       size_t k = other_cols.size();
       auto** children = static_cast<ArrowArray**>(malloc(k * sizeof(ArrowArray*)));
@@ -1126,7 +1138,7 @@ SEXP bqs_convert_stream(SEXP stream_xptr, SEXP ptype_df, std::string bigint) {
       proj.buffers = src.buffers;
       proj.children = children;
       proj.dictionary = nullptr;
-      proj.private_data = nullptr;
+      proj.private_data = new ProjectedArrayPriv{batches[b]};
       proj.release = release_projected_struct_array;
     }
 
@@ -1149,9 +1161,9 @@ SEXP bqs_convert_stream(SEXP stream_xptr, SEXP ptype_df, std::string bigint) {
       std::vector<int64_t> lens(batches.size());
       for (int col_idx : repair_cols) {
         for (size_t b = 0; b < batches.size(); b++) {
-          arrs[b] = batches[b].children[col_idx];
-          starts[b] = batches[b].offset;
-          lens[b] = batches[b].length;
+          arrs[b] = batches[b]->children[col_idx];
+          starts[b] = batches[b]->offset;
+          lens[b] = batches[b]->length;
         }
         repair_int64_column(out_cols, col_idx, arrs, starts, lens, schema.children[col_idx], int64_class);
       }
@@ -1159,7 +1171,7 @@ SEXP bqs_convert_stream(SEXP stream_xptr, SEXP ptype_df, std::string bigint) {
     }
   }
 
-  for (auto& b : batches) b.release(&b);
+  batches.clear();
   schema.release(&schema);
 
   Rcpp::List full_ptype(ptype_df);
@@ -1610,6 +1622,7 @@ SEXP bqs_convert_decoded_streams(
       const DecodedBatchSlice& sl = slices[s];
       ArrowArray& root_a = fb_impl->batches[s];
       auto* rpriv = new bqs_ipc::BorrowedArrayPriv();
+      rpriv->storage = sl.batch->storage;
       root_a.length = sl.row_len;
       root_a.null_count = 0;
       root_a.offset = 0;

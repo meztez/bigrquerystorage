@@ -111,13 +111,17 @@ bool encode_batches_parallel(const ArrowSchema* schema,
                              std::vector<std::string>* out_batches,
                              std::string* err_out);
 
+struct DecodedBatchStorage {
+  std::string raw_ipc;
+  std::unique_ptr<uint8_t[]> decompressed;
+};
+
 struct DecodedBatch {
   int64_t length = 0;
   std::vector<FieldNodeDesc> nodes;
   std::vector<BufferDesc> buffers;
-  std::string raw_ipc;
+  std::shared_ptr<DecodedBatchStorage> storage;
   size_t raw_body_offset = 0;
-  std::unique_ptr<uint8_t[]> decompressed;
   const uint8_t* body_ptr = nullptr;
   size_t body_size = 0;
 
@@ -129,12 +133,11 @@ struct DecodedBatch {
       : length(other.length),
         nodes(std::move(other.nodes)),
         buffers(std::move(other.buffers)),
-        raw_ipc(std::move(other.raw_ipc)),
+        storage(std::move(other.storage)),
         raw_body_offset(other.raw_body_offset),
-        decompressed(std::move(other.decompressed)),
-        body_ptr(nullptr),
+        body_ptr(other.body_ptr),
         body_size(other.body_size) {
-    refresh_body_ptr();
+    other.raw_body_offset = 0;
     other.body_ptr = nullptr;
     other.body_size = 0;
   }
@@ -144,11 +147,11 @@ struct DecodedBatch {
       length = other.length;
       nodes = std::move(other.nodes);
       buffers = std::move(other.buffers);
-      raw_ipc = std::move(other.raw_ipc);
+      storage = std::move(other.storage);
       raw_body_offset = other.raw_body_offset;
-      decompressed = std::move(other.decompressed);
+      body_ptr = other.body_ptr;
       body_size = other.body_size;
-      refresh_body_ptr();
+      other.raw_body_offset = 0;
       other.body_ptr = nullptr;
       other.body_size = 0;
     }
@@ -156,19 +159,20 @@ struct DecodedBatch {
   }
 
   void refresh_body_ptr() {
-    if (decompressed) {
-      body_ptr = decompressed.get();
-    } else if (!raw_ipc.empty() && raw_body_offset <= raw_ipc.size()) {
-      body_ptr = reinterpret_cast<const uint8_t*>(raw_ipc.data()) + raw_body_offset;
+    if (!storage) {
+      body_ptr = nullptr;
+    } else if (storage->decompressed) {
+      body_ptr = storage->decompressed.get();
+    } else if (!storage->raw_ipc.empty() && raw_body_offset <= storage->raw_ipc.size()) {
+      body_ptr = reinterpret_cast<const uint8_t*>(storage->raw_ipc.data()) + raw_body_offset;
     } else {
       body_ptr = nullptr;
     }
   }
 
   void clear_memory() {
-    std::string().swap(raw_ipc);
+    storage.reset();
     raw_body_offset = 0;
-    decompressed.reset();
     body_ptr = nullptr;
     body_size = 0;
   }
@@ -205,9 +209,12 @@ bool validate_borrowed_field_buffers(const ArrowSchema* sch,
 
 struct BorrowedArrayPriv {
   const void* buffers[3] = {nullptr, nullptr, nullptr};
+  std::shared_ptr<DecodedBatchStorage> storage;
 };
 
 void release_borrowed_array(struct ArrowArray* a);
+
+void deep_copy_arrow_schema(const ArrowSchema* src, ArrowSchema* dst);
 
 ArrowArray* build_borrowed_field_array(const ArrowSchema* sch,
                                        const DecodedBatch& batch,
